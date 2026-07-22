@@ -1,0 +1,86 @@
+name: Import v3.5.2 source
+
+on:
+  push:
+    paths:
+      - "releases/v3.5.2/source-v3.5.2.ready"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import-source:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate upload parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f releases/v3.5.2/source-v3.5.2.zip.b64.part00
+          test -f releases/v3.5.2/source-v3.5.2.zip.b64.part01
+          test -f releases/v3.5.2/source-v3.5.2.zip.b64.part02
+          test -f releases/v3.5.2/source-v3.5.2.zip.b64.part03
+
+      - name: Rebuild source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat releases/v3.5.2/source-v3.5.2.zip.b64.part* > /tmp/source-v3.5.2.zip.b64
+          base64 --decode /tmp/source-v3.5.2.zip.b64 > releases/v3.5.2/source-v3.5.2.zip
+          echo "481d7ee27c0926c851fcde3c1e48e15b12461136a02ec86451d2d02f22a302fe  releases/v3.5.2/source-v3.5.2.zip" | sha256sum --check --strict
+
+      - name: Extract current stable source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf current
+          mkdir -p current
+          unzip -q releases/v3.5.2/source-v3.5.2.zip -d current
+
+      - name: Run tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            current/requirements.txt
+            current/requirements-dev.txt
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r current/requirements.txt -r current/requirements-dev.txt
+
+      - name: Verify source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd current
+          python -m compileall -q .
+          python -m pytest -q
+          find . -type d \( -name __pycache__ -o -name .pytest_cache \) -prune -exec rm -rf {} +
+          find . -type f -name '*.pyc' -delete
+
+      - name: Remove transport chunks
+        shell: bash
+        run: |
+          rm -f releases/v3.5.2/source-v3.5.2.zip.b64.part*
+          rm -f releases/v3.5.2/source-v3.5.2.ready
+
+      - name: Commit imported source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add current releases/v3.5.2
+          git diff --cached --quiet && exit 0
+          git commit -m "release: import cleaned v3.5.2 source"
+          git push
