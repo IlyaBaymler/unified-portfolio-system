@@ -1,0 +1,39 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Runtime state
+robot_state.json
+sandbox_diagnostic_state.json
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs and exports
+*.log
+trading_events*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Builds
+build/
+dist/
+*.spec
+
+# Local backups
+*.bak
+*.tmp
+backup/
+backups/
