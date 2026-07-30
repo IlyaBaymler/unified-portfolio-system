@@ -13,9 +13,11 @@
 
 ## Текущий статус
 
-**MOEX Research Robot v3.6.0 Stable** подготовлена как стабильная версия однопортфельного ядра для T-Invest Sandbox.
+**MOEX Research Robot v3.6.0 Stable** принята как стабильная версия однопортфельного ядра для T-Invest Sandbox.
 
 Stable основана на принятой `v3.6-rc1.4`. Пользовательский acceptance включал две длительные сессии общей продолжительностью 41 ч 27 мин, 30 уникальных исполнений, два ночных перехода `OPEN → MARKET_IDLE → OPEN`, disconnect и рестарты. Получено 0 duplicate submit, 0 fill без reconciliation, 0 execution без Risk accounting и 0 `RISK_RUNTIME_ERROR`.
+
+Windows-установка, запуск, standalone-сборка и работа в среде без установленного Python подтверждены пользователем.
 
 Поддерживаются recovery coordinator, атомарный runtime, backup/restore, Windows Credential Manager, Production Readiness, Risk Engine, виртуальный портфель, ownership/reconciliation, MARKET_IDLE и безопасная обработка временных отказов T-Invest API.
 
