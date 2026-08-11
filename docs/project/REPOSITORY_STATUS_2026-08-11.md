@@ -5,27 +5,45 @@
 - Stable baseline: `v3.6.0`.
 - Accepted development baseline: `v3.7-alpha3`.
 - Current development target: `v3.7-beta1`.
+- Следующий release-qualification этап после принятия beta1: `v3.7.0 Stable`.
+
+## Фактическое состояние GitHub
+
+На момент проверки `main` и `v3-7-beta1` содержали одну и ту же pre-beta baseline и не имели отдельного implementation diff beta1. Локальная реализация Codex должна быть отправлена в `v3-7-beta1` до анализа и acceptance.
+
+GitHub используется как auditable boundary между локальной имплементацией и ChatGPT-review.
 
 ## GitHub Issues
 
 - #17 — зонтичная задача Portfolio Manager; оставить открытой до `v3.7.0 Stable`.
-- #29 — alpha2 canonical preflight; закрыта как completed.
-- #30 — alpha2 checklist; закрыта как completed.
-- #31 — beta1 stabilization and observability cleanup; оставить open.
-- #32 — beta1 implementation checklist and acceptance matrix; оставить open.
+- #29 — alpha2 canonical preflight; closed/completed.
+- #30 — alpha2 checklist; closed/completed.
+- #31 — beta1 stabilization and observability cleanup; open.
+- #32 — beta1 implementation checklist and acceptance matrix; open.
+- sync/evidence issue beta1 — контролирует публикацию локальной реализации Codex и test evidence;
+- `v3.7.0 Stable` issue — release qualification после принятия beta1.
 
 ## Ветки
 
-Рекомендуемое состояние:
-
 ```text
-main                 — стабильная документация проекта
-v3-7-alpha3          — принятая alpha-база, freeze
-v3-7-beta1           — активная beta-разработка
+main                 — принятая проектная/документационная база и release metadata
+v3-7-alpha3          — frozen accepted alpha baseline
+v3-7-beta1           — активная beta implementation branch
 release-v3.6.0       — историческая stable release branch
 ```
 
-Beta-ветку создавать от принятой alpha3, а не от старого `main`, если source alpha3 ещё не влит в main.
+`develop` является исторической интеграционной веткой и не обязателен в текущем local-Codex workflow.
+
+## Codex -> GitHub -> ChatGPT
+
+```text
+Codex local implementation/tests/build
+→ push version branch
+→ GitHub commit/diff/evidence
+→ ChatGPT analysis/acceptance
+→ Issues/docs/roadmap/release decision
+→ next Codex task
+```
 
 ## Обязательная repository hygiene
 
@@ -34,39 +52,49 @@ Beta-ветку создавать от принятой alpha3, а не от с
 ```text
 .env
 *token*
+Account ID
 risk_state.json
 robot_state.json
 portfolio_state.json
 portfolio_legacy_shadow.json
-canonical_migration_report.json
+sandbox_diagnostic_state.json
+canonical_migration_report*.json
+runtime_bootstrap_report.json
 trading_events.db*
 *.log
 backups/
 support/
 runtime/
+несаницированные reports/
 ```
 
 Публиковать:
 
 ```text
 .env.example
+source + tests
 README.md
 ROADMAP.md
 versioned changelog
 architecture/test/recovery docs
 release manifest
+sanitized test summary
 SHA-256
 source ZIP или GitHub Release artifact
 ```
 
-## Следующая проверка репозитория
+## Следующий контрольный пункт
 
-Перед публикацией beta1:
+Перед beta1 acceptance:
 
-- актуальный README;
-- актуальный ROADMAP;
+- implementation diff присутствует в `v3-7-beta1`;
 - Issue #31/#32 отражают фактический scope;
-- alpha3 acceptance record присутствует;
-- beta1 не содержит старых alpha/RC документов в корне сборки;
-- `.gitignore` покрывает schema 2 runtime и migration artifacts;
+- full pytest и targeted beta tests PASS;
+- Risk Lab 8/8 PASS;
+- migration/crash/recovery regression PASS;
+- Windows/Sandbox acceptance выполнен;
+- standalone PASS;
+- `.gitignore` покрывает schema 2 runtime/migration artifacts;
 - full release hygiene и secret scan PASS.
+
+После принятия beta1 начинается только release qualification `v3.7.0 Stable`; новые торговые функции до Stable не добавляются.
