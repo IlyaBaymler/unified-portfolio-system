@@ -1,1 +1,0 @@
-This file should not have been necessary for issue creation.
