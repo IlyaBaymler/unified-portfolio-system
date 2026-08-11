@@ -9,7 +9,15 @@
 
 ## Фактическое состояние GitHub
 
-На момент проверки `main` и `v3-7-beta1` содержали одну и ту же pre-beta baseline и не имели отдельного implementation diff beta1. Локальная реализация Codex должна быть отправлена в `v3-7-beta1` до анализа и acceptance.
+На момент проверки удалённая `v3-7-beta1` не имела отдельного implementation diff beta1 относительно `main`: локальная реализация Codex ещё не была представлена в GitHub для независимого анализа.
+
+После обновления документации `main` и `v3-7-beta1` синхронизированы на commit:
+
+```text
+36f994e59d8c7ae3dfe5c458930d8c24e7c4d8eb
+```
+
+Локальному Codex перед push реализации beta1 необходимо получить эту remote-базу и затем отправить source/tests/build evidence в `v3-7-beta1`.
 
 GitHub используется как auditable boundary между локальной имплементацией и ChatGPT-review.
 
@@ -20,8 +28,8 @@ GitHub используется как auditable boundary между локал�
 - #30 — alpha2 checklist; closed/completed.
 - #31 — beta1 stabilization and observability cleanup; open.
 - #32 — beta1 implementation checklist and acceptance matrix; open.
-- sync/evidence issue beta1 — контролирует публикацию локальной реализации Codex и test evidence;
-- `v3.7.0 Stable` issue — release qualification после принятия beta1.
+- #33 — Codex -> GitHub implementation/evidence handoff для beta1; open.
+- #34 — `v3.7.0 Stable` release qualification and final acceptance; open, blocked until beta1 acceptance.
 
 ## Ветки
 
@@ -87,8 +95,8 @@ source ZIP или GitHub Release artifact
 
 Перед beta1 acceptance:
 
-- implementation diff присутствует в `v3-7-beta1`;
-- Issue #31/#32 отражают фактический scope;
+- #33 закрыт: implementation diff присутствует в `v3-7-beta1`;
+- #31/#32 отражают фактический scope и результаты;
 - full pytest и targeted beta tests PASS;
 - Risk Lab 8/8 PASS;
 - migration/crash/recovery regression PASS;
@@ -97,4 +105,4 @@ source ZIP или GitHub Release artifact
 - `.gitignore` покрывает schema 2 runtime/migration artifacts;
 - full release hygiene и secret scan PASS.
 
-После принятия beta1 начинается только release qualification `v3.7.0 Stable`; новые торговые функции до Stable не добавляются.
+После принятия beta1 начинается только Issue #34 / `v3.7.0 Stable` release qualification; новые торговые функции до Stable не добавляются.
