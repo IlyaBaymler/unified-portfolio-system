@@ -12,5 +12,5 @@ if not exist "app\MOEXResearchRobot.exe" (
     pause
     exit /b 1
 )
-start "MOEX Research Robot v3.7-alpha3" "app\MOEXResearchRobot.exe"
+start "MOEX Research Robot v3.7-beta1" "app\MOEXResearchRobot.exe"
 exit /b 0

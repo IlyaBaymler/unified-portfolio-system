@@ -54,6 +54,7 @@ def test_gui_source_contains_explicit_kill_switch_and_account_copy_controls():
     assert "bootstrap_runtime(RUNTIME_DIR" in source
     assert "probe_secret_provider" in source
     assert "probe.to_dict()" in source
+    assert 'snapshot.get("compatibility_shadow_status")' in source
 
 
 def test_backup_verification_gui_is_structured_not_raw_json():

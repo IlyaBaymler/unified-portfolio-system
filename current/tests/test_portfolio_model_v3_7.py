@@ -8,6 +8,7 @@ import pytest
 from trading_robot.portfolio_model import (
     AccountState,
     CashBalance,
+    CompatibilityShadowStatus,
     OwnershipStatus,
     PendingOrderState,
     PendingOrderStatus,
@@ -24,6 +25,16 @@ from trading_robot.portfolio_model import (
 
 def timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def test_legacy_not_configured_shadow_status_normalizes_to_disabled():
+    raw = PortfolioState.empty(account_id="account-1").to_dict()
+    raw["migration"]["compatibility_shadow_status"] = "NOT_CONFIGURED"
+
+    state = PortfolioState.from_dict(raw)
+
+    assert state.migration.compatibility_shadow_status is CompatibilityShadowStatus.DISABLED
+    assert state.to_dict()["migration"]["compatibility_shadow_status"] == "DISABLED"
 
 
 def sample_state() -> PortfolioState:

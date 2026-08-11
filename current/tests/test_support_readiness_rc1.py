@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import zipfile
@@ -7,7 +8,11 @@ import zipfile
 import pytest
 
 from trading_robot.journal import EventJournal, JournalEvent
-from trading_robot.portfolio_model import PortfolioState
+from trading_robot.portfolio_model import (
+    CompatibilityShadowStatus,
+    PortfolioMigrationMetadata,
+    PortfolioState,
+)
 from trading_robot.portfolio_repository import PortfolioRepository
 from trading_robot.readiness import ProductionReadinessEvaluator, ReadinessStatus
 from trading_robot.runtime_backup import RuntimeBackupManager
@@ -24,7 +29,12 @@ from trading_robot.support_bundle import (
 )
 
 
-def create_runtime(root: Path, *, account_id: str = "account-123") -> None:
+def create_runtime(
+    root: Path,
+    *,
+    account_id: str = "account-123",
+    shadow_status: CompatibilityShadowStatus = CompatibilityShadowStatus.DISABLED,
+) -> None:
     atomic_write_json(root / "strategy_profiles.json", {"version": 2, "profiles": {}})
     atomic_write_json(root / "risk_profiles.json", {"version": 1, "profiles": {}})
     atomic_write_json(
@@ -41,9 +51,12 @@ def create_runtime(root: Path, *, account_id: str = "account-123") -> None:
         },
     )
     atomic_write_json(root / "robot_state.json", {"version": 5, "bots": {}})
-    PortfolioRepository(root / "portfolio_state.json").save(
-        PortfolioState.empty(account_id=account_id)
+    state = PortfolioState.empty(account_id=account_id)
+    state = replace(
+        state,
+        migration=PortfolioMigrationMetadata.completed(shadow_status=shadow_status),
     )
+    PortfolioRepository(root / "portfolio_state.json").save(state)
     atomic_write_json(
         root / "sandbox_diagnostic_state.json", {"version": 4, "accounts": {}}
     )
@@ -115,11 +128,16 @@ def test_support_bundle_excludes_env_and_redacts_logs_and_events(tmp_path: Path)
     with zipfile.ZipFile(result.path) as archive:
         names = archive.namelist()
         assert ".env" not in names
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
         combined = "\n".join(
             archive.read(name).decode("utf-8", errors="replace") for name in names
         )
     assert secret not in combined
     assert "<REDACTED>" in combined
+    assert (
+        manifest["portfolio_observability"]["compatibility_shadow_status"]
+        == "DISABLED"
+    )
 
 
 def test_readiness_ready_with_valid_runtime_api_and_backup(tmp_path: Path):
@@ -147,6 +165,46 @@ def test_readiness_ready_with_valid_runtime_api_and_backup(tmp_path: Path):
     )
     assert report.status == ReadinessStatus.READY_FOR_SANDBOX
     assert all(check.status == "PASS" for check in report.checks)
+
+
+def test_degraded_shadow_is_reported_without_changing_canonical_readiness(
+    tmp_path: Path,
+):
+    account_id = "account-123"
+    create_runtime(
+        tmp_path,
+        account_id=account_id,
+        shadow_status=CompatibilityShadowStatus.DEGRADED,
+    )
+    backups = tmp_path / "backups"
+    RuntimeBackupManager(tmp_path, app_version="0.3.6").create_backup(
+        backups / "runtime.zip"
+    )
+    (tmp_path / "build_manifest.json").write_text(
+        json.dumps({"software_version": "0.3.6"}), encoding="utf-8"
+    )
+
+    report = ProductionReadinessEvaluator(
+        tmp_path,
+        app_version="0.3.6",
+        backups_dir=backups,
+    ).evaluate(
+        account_id=account_id,
+        api_status={
+            "authenticated": True,
+            "available": True,
+            "secret_provider": "Windows Credential Manager",
+            "secret_provider_secure": True,
+        },
+    )
+
+    assert report.status == ReadinessStatus.READY_FOR_SANDBOX
+    assert report.compatibility_shadow_status == "DEGRADED"
+    canonical = next(
+        check for check in report.checks if check.code == "CANONICAL_PORTFOLIO_STATE"
+    )
+    assert canonical.status == "PASS"
+    assert canonical.blocking is False
 
 
 def test_readiness_blocks_on_pending_and_kill_switch(tmp_path: Path):

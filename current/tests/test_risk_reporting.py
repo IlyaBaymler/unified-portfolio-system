@@ -275,6 +275,65 @@ def test_burn_in_report_warns_for_api_degraded_and_open_session():
     assert report.metrics["api_degraded_cycles"] == 1
 
 
+def test_recovered_transient_api_failure_is_infrastructure_warn():
+    rows = [
+        {
+            "id": 1,
+            "timestamp_utc": NOW.isoformat(),
+            "category": "api",
+            "event_type": "API_REQUEST_FAILED",
+            "severity": "ERROR",
+            "account_id": "ACC",
+            "payload": {"transient": True, "error_class": "IncompleteRead"},
+        },
+        {
+            "id": 2,
+            "timestamp_utc": (NOW + timedelta(seconds=10)).isoformat(),
+            "category": "portfolio",
+            "event_type": "PORTFOLIO_STATE_PUBLISHED",
+            "severity": "INFO",
+            "status": "READY",
+            "account_id": "ACC",
+            "payload": {
+                "portfolio_source": "CANONICAL",
+                "freshness": "FRESH",
+                "blocking": False,
+                "reconciliation_counts": {"MATCHED": 1},
+            },
+        },
+    ]
+
+    report = build_risk_burn_in_report(rows, account_id="ACC", now=NOW)
+    checks = {check.code: check for check in report.checks}
+
+    assert checks["API_FAILURE_CLASSIFICATION"].status == "WARN"
+    assert checks["RISK_RUNTIME_ERRORS"].status == "PASS"
+    assert report.overall_status == "WARN"
+    assert report.metrics["api_transient_recovered"] == 1
+    assert report.metrics["api_transient_unresolved"] == 0
+
+
+def test_unresolved_transient_api_failure_remains_fail():
+    rows = [
+        {
+            "id": 1,
+            "timestamp_utc": NOW.isoformat(),
+            "category": "api",
+            "event_type": "API_REQUEST_FAILED",
+            "severity": "ERROR",
+            "account_id": "ACC",
+            "payload": {"transient": True, "error_class": "ConnectionError"},
+        }
+    ]
+
+    report = build_risk_burn_in_report(rows, account_id="ACC", now=NOW)
+    checks = {check.code: check for check in report.checks}
+
+    assert checks["API_FAILURE_CLASSIFICATION"].status == "FAIL"
+    assert report.overall_status == "FAIL"
+    assert report.metrics["api_transient_unresolved"] == 1
+
+
 def test_report_writers_create_json_and_csv(tmp_path: Path):
     snapshot = build_risk_dashboard_snapshot(
         account_id="ACC",

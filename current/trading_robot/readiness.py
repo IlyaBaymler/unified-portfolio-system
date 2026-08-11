@@ -43,6 +43,7 @@ class ProductionReadinessReport:
     account_id: str | None
     checks: tuple[ReadinessCheck, ...]
     warnings: tuple[str, ...]
+    compatibility_shadow_status: str = "DISABLED"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -51,6 +52,7 @@ class ProductionReadinessReport:
             "account_id": self.account_id,
             "checks": [item.to_dict() for item in self.checks],
             "warnings": list(self.warnings),
+            "compatibility_shadow_status": self.compatibility_shadow_status,
         }
 
 
@@ -140,6 +142,13 @@ class ProductionReadinessEvaluator:
             str(migration.get("status") or "").upper() == "COMPLETED"
             and not bool(migration.get("legacy_read_path_enabled", True))
         )
+        shadow_status = str(
+            migration.get("compatibility_shadow_status") or "DISABLED"
+        ).upper()
+        if shadow_status == "NOT_CONFIGURED":
+            shadow_status = "DISABLED"
+        if shadow_status not in {"OK", "DEGRADED", "DISABLED"}:
+            shadow_status = "DEGRADED"
         portfolio_scope_mismatch = bool(
             normalized_account
             and portfolio_account
@@ -160,7 +169,7 @@ class ProductionReadinessEvaluator:
             f"source={portfolio_state.get('portfolio_source', '—')}",
             f"migration={migration.get('status', '—')}",
             f"legacy_read={migration.get('legacy_read_path_enabled', '—')}",
-            f"shadow={migration.get('compatibility_shadow_status', '—')}",
+            f"shadow={shadow_status}",
             f"account={portfolio_account or 'not-yet-bound'}",
         ]
         if portfolio_scope_mismatch:
@@ -536,6 +545,7 @@ class ProductionReadinessEvaluator:
             account_id=normalized_account,
             checks=tuple(checks),
             warnings=tuple(warnings),
+            compatibility_shadow_status=shadow_status,
         )
 
     def _runtime_writable(self) -> tuple[bool, str]:

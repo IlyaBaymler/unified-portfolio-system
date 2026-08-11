@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
-title MOEX Robot v3.7-alpha3 Tests
+title MOEX Robot v3.7-beta1 Tests
 call prepare_environment.bat --with-dev
 if errorlevel 1 goto :fail
 set "PYTHON=%CD%\.venv\Scripts\python.exe"

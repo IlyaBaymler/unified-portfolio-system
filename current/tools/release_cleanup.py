@@ -6,15 +6,15 @@ import shutil
 import sys
 
 CURRENT_FILES = {
-    "CHANGELOG_V3_7_ALPHA3_RU.md",
-    "MASTER_UPDATE_2026-08-10_V3_7_ALPHA3_RU.md",
-    "RELEASE_MANIFEST_V3_7_ALPHA3.txt",
-    "UPDATE_TO_V3_7_ALPHA3.md",
-    "V3_7_ALPHA3_ARCHITECTURE_RU.md",
-    "V3_7_ALPHA3_RECOVERY_RUNBOOK_RU.md",
-    "V3_7_ALPHA3_TEST_PLAN_RU.md",
-    "VERIFY_V3_7_ALPHA3.bat",
-    "install_and_verify_v3_7_alpha3.bat",
+    "CHANGELOG_V3_7_BETA1_RU.md",
+    "MASTER_UPDATE_2026-08-11_V3_7_BETA1_RU.md",
+    "RELEASE_MANIFEST_V3_7_BETA1.txt",
+    "UPDATE_TO_V3_7_BETA1.md",
+    "V3_7_BETA1_ARCHITECTURE_RU.md",
+    "V3_7_BETA1_RECOVERY_RUNBOOK_RU.md",
+    "V3_7_BETA1_TEST_PLAN_RU.md",
+    "VERIFY_V3_7_BETA1.bat",
+    "install_and_verify_v3_7_beta1.bat",
     "restore_stable_default_risk_profile.bat",
 }
 

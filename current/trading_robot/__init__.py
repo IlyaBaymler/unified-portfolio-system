@@ -1,3 +1,3 @@
 """Research-oriented trading robot for Moscow Exchange."""
 
-__version__ = "0.3.7a3"
+__version__ = "0.3.7b1"

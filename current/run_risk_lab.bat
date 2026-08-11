@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
-title MOEX Risk Lab v3.7-alpha3
+title MOEX Risk Lab v3.7-beta1
 
 set "NO_PAUSE=0"
 if /I "%~1"=="--no-pause" (

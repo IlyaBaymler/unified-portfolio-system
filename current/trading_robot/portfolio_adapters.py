@@ -668,7 +668,11 @@ class RuntimePortfolioAdapter:
                 )
                 for item in state.positions
             ),
-            warnings=tuple(state.warnings),
+            # Warnings describe one broker observation, not durable runtime
+            # authorization.  Carrying them into the next reconciliation makes
+            # already-resolved conditions survive indefinitely (for example an
+            # unattributed position after ownership has been confirmed).
+            warnings=(),
             state_status=state.state_status,
         )
 

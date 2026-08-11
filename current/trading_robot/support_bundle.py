@@ -121,6 +121,7 @@ class SupportBundleBuilder:
             target = target.with_suffix(".zip")
         with tempfile.TemporaryDirectory(prefix="moex-support-") as temp_name:
             staging = Path(temp_name)
+            portfolio_observability = self._portfolio_observability()
             manifest = {
                 "format_version": 1,
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -136,6 +137,7 @@ class SupportBundleBuilder:
                     else None
                 ),
                 "token_included": False,
+                "portfolio_observability": portfolio_observability,
                 "platform": {
                     "system": platform.system(),
                     "release": platform.release(),
@@ -265,6 +267,33 @@ class SupportBundleBuilder:
             members=tuple(members),
             secret_scan=SecretScanResult(clean=True, findings=()),
         )
+
+    def _portfolio_observability(self) -> dict[str, Any]:
+        path = self.app_dir / "portfolio_state.json"
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return {
+                "schema_version": None,
+                "portfolio_source": None,
+                "canonical_blocking": None,
+                "compatibility_shadow_status": "DISABLED",
+            }
+        migration = document.get("migration")
+        migration = migration if isinstance(migration, Mapping) else {}
+        shadow_status = str(
+            migration.get("compatibility_shadow_status") or "DISABLED"
+        ).upper()
+        if shadow_status == "NOT_CONFIGURED":
+            shadow_status = "DISABLED"
+        if shadow_status not in {"OK", "DEGRADED", "DISABLED"}:
+            shadow_status = "DEGRADED"
+        return {
+            "schema_version": document.get("version"),
+            "portfolio_source": document.get("portfolio_source"),
+            "canonical_blocking": bool(document.get("blocking")),
+            "compatibility_shadow_status": shadow_status,
+        }
 
     @staticmethod
     def _write_json(path: Path, value: Any) -> None:

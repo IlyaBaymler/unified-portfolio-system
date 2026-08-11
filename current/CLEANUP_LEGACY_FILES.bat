@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
-title MOEX Release Cleanup v3.7-alpha3
+title MOEX Release Cleanup v3.7-beta1
 if not exist ".venv\Scripts\python.exe" (
     call prepare_environment.bat
     if errorlevel 1 goto :fail

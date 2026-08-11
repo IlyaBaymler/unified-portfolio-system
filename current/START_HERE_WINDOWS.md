@@ -1,28 +1,26 @@
-# Быстрый запуск MOEX Research Robot v3.7-alpha3
+# Быстрый запуск MOEX Research Robot v3.7-beta1
 
-## Установка/проверка
-
-```bat
-install_and_verify_v3_7_alpha3.bat
-```
-
-## Обновление alpha2 runtime
+## Исходный пакет
 
 ```bat
-run_portfolio_cutover.bat preview --account-id <ACCOUNT_ID>
-run_portfolio_cutover.bat cutover --account-id <ACCOUNT_ID> --confirmation "CUTOVER PORTFOLIO STATE 2"
-```
-
-Затем:
-
-```bat
+install_and_verify_v3_7_beta1.bat
 run_gui.bat
 ```
 
-## Standalone
+Установщик создаёт локальную `.venv`, устанавливает зависимости и запускает
+beta1 verification gate. Используйте новую папку, а runtime alpha3 переносите
+только после создания backup и проверки canonical schema 2.
 
-```bat
-BUILD_STANDALONE.bat
-```
+## Portable package
 
-Перед торговлей: schema 2, source CANONICAL, migration COMPLETED, FRESH/MATCHED, pending/uncertain отсутствуют.
+Запустите `MOEX Research Robot.bat`. Python на целевом компьютере не требуется.
+
+## Перед Sandbox Execution
+
+- выбран правильный Sandbox account ID;
+- snapshot свежий, canonical source и `MATCHED`;
+- pending/uncertain отсутствуют;
+- Risk gate показывает `PASS`;
+- размер заявки равен 1 lot.
+
+Real-account execution в beta1 отключён.

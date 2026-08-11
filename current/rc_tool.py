@@ -20,7 +20,7 @@ def runtime_dir() -> Path:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description="v3.7-alpha3 readiness and recovery tool")
+    root = argparse.ArgumentParser(description="v3.7-beta1 readiness and recovery tool")
     root.add_argument("--runtime-dir", default=None)
     commands = root.add_subparsers(dest="command", required=True)
 

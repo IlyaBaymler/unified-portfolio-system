@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
-title Restore MOEX v3.7-alpha3 Stable Risk Profile
+title Restore MOEX v3.7-beta1 Stable Risk Profile
 
 echo This operation replaces the selected SANDBOX_EXECUTION risk profile.
 echo Standard stable limits include max_position_lots=1 and max_orders_per_day=4.

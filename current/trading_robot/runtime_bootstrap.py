@@ -29,6 +29,7 @@ from .risk_persistence import (
 from .state_persistence import atomic_write_json
 from .portfolio_model import PortfolioState
 from .portfolio_repository import PortfolioRepository, PortfolioRepositoryError
+from .secret_provider import SecretProvider, SecretProviderProbe, probe_secret_provider
 
 
 CANONICAL_RISK_PROFILE_NAME = "risk_profiles.json"
@@ -53,6 +54,7 @@ class RuntimeSetupReport:
     items: tuple[RuntimeSetupItem, ...]
     warnings: tuple[str, ...]
     errors: tuple[str, ...]
+    credential_probe: SecretProviderProbe | None = None
 
     @property
     def ok(self) -> bool:
@@ -95,6 +97,19 @@ class RuntimeSetupReport:
         return self.changed or bool(self.warnings) or bool(self.errors)
 
     def to_dict(self) -> dict[str, Any]:
+        credential = (
+            self.credential_probe.to_dict()
+            if self.credential_probe is not None
+            else {
+                "credential_status": "not_checked",
+                "secret_provider": None,
+                "secret_provider_secure": None,
+                "secret_provider_available": None,
+                "secret_present": None,
+                "secret_key": "TBANK_SANDBOX_TOKEN",
+                "secret_probe_error": None,
+            }
+        )
         return {
             "app_dir": self.app_dir,
             "ok": self.ok,
@@ -105,6 +120,7 @@ class RuntimeSetupReport:
             "items": [item.to_dict() for item in self.items],
             "warnings": list(self.warnings),
             "errors": list(self.errors),
+            **credential,
         }
 
     def format_text(self) -> str:
@@ -135,6 +151,12 @@ class RuntimeSetupReport:
         lines.extend(
             [
                 "",
+                "Статус Sandbox credential: "
+                + (
+                    self.credential_probe.status
+                    if self.credential_probe is not None
+                    else "not_checked"
+                ),
                 "Каноническое имя риск-профилей: risk_profiles.json.",
                 "Существующие пользовательские файлы не перезаписываются.",
             ]
@@ -338,6 +360,7 @@ def bootstrap_runtime_files(
     app_dir: str | Path,
     *,
     create_missing: bool = True,
+    secret_provider: SecretProvider | None = None,
 ) -> RuntimeSetupReport:
     """Create/validate the canonical local runtime set without overwriting users.
 
@@ -352,6 +375,7 @@ def bootstrap_runtime_files(
     items: list[RuntimeSetupItem] = []
     warnings: list[str] = []
     errors: list[str] = []
+    credential_probe: SecretProviderProbe | None = None
     lock = InterProcessFileLock(
         root / RUNTIME_BOOTSTRAP_LOCK_NAME,
         timeout_seconds=5.0,
@@ -396,10 +420,21 @@ def bootstrap_runtime_files(
         env_values: Mapping[str, Any] = (
             dotenv_values(env_path) if env_path.exists() else {}
         )
-        if not str(env_values.get("TBANK_SANDBOX_TOKEN") or "").strip():
+        credential_probe = probe_secret_provider(root, provider=secret_provider)
+        if credential_probe.status == "credential_absent":
             warnings.append(
-                "Sandbox API-токен пока не задан. Вставьте его во вкладке "
-                "Sandbox и сохраните подключение."
+                "Sandbox credential отсутствует и в защищённом provider, и в .env. "
+                "Откройте вкладку Sandbox и сохраните подключение."
+            )
+        elif credential_probe.status == "provider_unavailable":
+            warnings.append(
+                "Защищённый Sandbox credential provider недоступен; наличие токена "
+                "не подтверждено."
+            )
+        elif credential_probe.status == ".env_fallback":
+            warnings.append(
+                "Sandbox credential загружен через .env fallback; защищённый provider "
+                "не используется."
             )
 
         strategy_path = root / "strategy_profiles.json"
@@ -521,7 +556,7 @@ def bootstrap_runtime_files(
                         )
                     )
                     warnings.append(
-                        "portfolio_state.json использует schema 1; alpha3 не выполнит cutover автоматически."
+                        "portfolio_state.json использует schema 1; beta1 не выполнит cutover автоматически."
                     )
                 else:
                     items.append(RuntimeSetupItem(portfolio_state_path.name, "VALIDATED"))
@@ -575,6 +610,7 @@ def bootstrap_runtime_files(
         items=tuple(items),
         warnings=unique_warnings,
         errors=unique_errors,
+        credential_probe=credential_probe,
     )
 
 
@@ -582,8 +618,13 @@ def bootstrap_runtime(
     app_dir: str | Path,
     *,
     write_report: bool = True,
+    secret_provider: SecretProvider | None = None,
 ) -> RuntimeSetupReport:
-    report = bootstrap_runtime_files(app_dir, create_missing=True)
+    report = bootstrap_runtime_files(
+        app_dir,
+        create_missing=True,
+        secret_provider=secret_provider,
+    )
     if write_report:
         report_path = Path(app_dir).resolve() / RUNTIME_BOOTSTRAP_REPORT_NAME
         try:
@@ -594,8 +635,16 @@ def bootstrap_runtime(
     return report
 
 
-def validate_runtime_files(app_dir: str | Path) -> RuntimeSetupReport:
-    return bootstrap_runtime_files(app_dir, create_missing=False)
+def validate_runtime_files(
+    app_dir: str | Path,
+    *,
+    secret_provider: SecretProvider | None = None,
+) -> RuntimeSetupReport:
+    return bootstrap_runtime_files(
+        app_dir,
+        create_missing=False,
+        secret_provider=secret_provider,
+    )
 
 
 __all__ = [

@@ -11,6 +11,31 @@ from trading_robot.runtime_bootstrap import (
     RUNTIME_BOOTSTRAP_REPORT_NAME,
     bootstrap_runtime,
 )
+from trading_robot.secret_provider import EnvFileSecretProvider
+
+
+class FakeSecretProvider:
+    def __init__(
+        self,
+        *,
+        value: str | None,
+        error: Exception | None = None,
+    ) -> None:
+        self.name = "Windows Credential Manager"
+        self.secure = True
+        self.value = value
+        self.error = error
+
+    def get(self, key: str) -> str | None:
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+    def set(self, key: str, value: str) -> None:
+        self.value = value
+
+    def delete(self, key: str) -> None:
+        self.value = None
 
 
 EXPECTED_RUNTIME_FILES = {
@@ -59,6 +84,52 @@ def test_first_run_bootstrap_creates_complete_canonical_runtime_set(tmp_path: Pa
     )
     assert set(strategy_document["profiles"]) == {"DRY_RUN", "SANDBOX_EXECUTION"}
     assert set(risk_document["profiles"]) == {"DRY_RUN", "SANDBOX_EXECUTION"}
+
+
+def test_bootstrap_reports_protected_credential_without_false_missing_warning(
+    tmp_path: Path,
+):
+    provider = FakeSecretProvider(value="TOP-SECRET-CANARY")
+
+    report = bootstrap_runtime(tmp_path, secret_provider=provider)
+    payload = report.to_dict()
+
+    assert payload["credential_status"] == "credential_present"
+    assert payload["secret_provider"] == "Windows Credential Manager"
+    assert payload["secret_provider_secure"] is True
+    assert payload["secret_present"] is True
+    assert not any("credential отсутствует" in item for item in report.warnings)
+    assert "TOP-SECRET-CANARY" not in json.dumps(payload)
+
+
+def test_bootstrap_distinguishes_absent_and_unavailable_provider(tmp_path: Path):
+    absent = bootstrap_runtime(
+        tmp_path / "absent",
+        secret_provider=FakeSecretProvider(value=None),
+    )
+    unavailable = bootstrap_runtime(
+        tmp_path / "unavailable",
+        secret_provider=FakeSecretProvider(value=None, error=OSError("offline")),
+    )
+
+    assert absent.to_dict()["credential_status"] == "credential_absent"
+    assert any("credential отсутствует" in item for item in absent.warnings)
+    assert unavailable.to_dict()["credential_status"] == "provider_unavailable"
+    assert any("provider недоступен" in item for item in unavailable.warnings)
+
+
+def test_bootstrap_reports_env_fallback_separately(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("TBANK_SANDBOX_TOKEN=env-only-token\n", encoding="utf-8")
+
+    report = bootstrap_runtime(
+        tmp_path,
+        secret_provider=EnvFileSecretProvider(env_path),
+    )
+
+    assert report.to_dict()["credential_status"] == ".env_fallback"
+    assert any(".env fallback" in item for item in report.warnings)
+    assert not any("credential отсутствует" in item for item in report.warnings)
 
 
 def test_bootstrap_is_idempotent_and_preserves_user_runtime_files(tmp_path: Path):

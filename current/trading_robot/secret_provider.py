@@ -176,8 +176,19 @@ class SecretProviderProbe:
     key: str
     error: str | None = None
 
+    @property
+    def status(self) -> str:
+        if not self.available:
+            return "provider_unavailable"
+        if not self.credential_present:
+            return "credential_absent"
+        if self.secure:
+            return "credential_present"
+        return ".env_fallback"
+
     def to_dict(self) -> dict[str, object]:
         return {
+            "credential_status": self.status,
             "secret_provider": self.provider,
             "secret_provider_secure": self.secure,
             "secret_provider_available": self.available,
@@ -199,26 +210,51 @@ def probe_secret_provider(
     value is discarded immediately and never enters the result.
     """
 
-    selected = provider or preferred_secret_provider(app_dir)
+    def _probe(selected: SecretProvider) -> SecretProviderProbe:
+        try:
+            value = selected.get(key)
+            present = bool(str(value or "").strip())
+            return SecretProviderProbe(
+                provider=str(selected.name),
+                secure=bool(selected.secure),
+                available=True,
+                credential_present=present,
+                key=str(key),
+            )
+        except Exception as exc:  # provider availability is diagnostic, not fatal
+            return SecretProviderProbe(
+                provider=str(getattr(selected, "name", "unknown")),
+                secure=bool(getattr(selected, "secure", False)),
+                available=False,
+                credential_present=False,
+                key=str(key),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    if provider is not None:
+        return _probe(provider)
+
+    fallback = EnvFileSecretProvider(Path(app_dir) / ".env")
+    if os.name != "nt":
+        return _probe(fallback)
+
     try:
-        value = selected.get(key)
-        present = bool(str(value or "").strip())
-        return SecretProviderProbe(
-            provider=str(selected.name),
-            secure=bool(selected.secure),
-            available=True,
-            credential_present=present,
-            key=str(key),
-        )
-    except Exception as exc:  # provider availability is diagnostic, not fatal
-        return SecretProviderProbe(
-            provider=str(getattr(selected, "name", "unknown")),
-            secure=bool(getattr(selected, "secure", False)),
+        protected = _probe(WindowsCredentialManagerProvider())
+    except Exception as exc:
+        protected = SecretProviderProbe(
+            provider="Windows Credential Manager",
+            secure=True,
             available=False,
             credential_present=False,
             key=str(key),
             error=f"{type(exc).__name__}: {exc}",
         )
+    if protected.credential_present:
+        return protected
+    env_probe = _probe(fallback)
+    if env_probe.credential_present:
+        return env_probe
+    return protected
 
 
 @dataclass(frozen=True, slots=True)

@@ -220,6 +220,43 @@ def test_manager_detects_unattributed_broker_position(tmp_path: Path):
     assert state.blocking is True
 
 
+def test_matched_refresh_discards_resolved_snapshot_warnings(tmp_path: Path):
+    api = FakePortfolioAPI(lots=1)
+    manager = make_manager(tmp_path, api, seed_canonical=False)
+
+    unattributed = manager.refresh(record_event=False)
+    assert unattributed.blocking is True
+    assert any("UNATTRIBUTED_OPEN_POSITION" in item for item in unattributed.warnings)
+
+    manager.stage_confirmed_target(
+        instrument_id="uid-sber",
+        target_lots=1,
+        strategy_id="sma",
+        config_hash="a" * 64,
+        candle_interval="CANDLE_INTERVAL_10_MIN",
+        ticker="SBER",
+        figi="figi-sber",
+        class_code="TQBR",
+        candle_time="2026-07-31T10:00:00+00:00",
+    )
+    matched = manager.refresh(record_event=False)
+
+    assert matched.state_status == "READY"
+    assert matched.blocking is False
+    assert matched.positions[0].reconciliation.status is ReconciliationStatus.MATCHED
+    assert not any("UNATTRIBUTED_OPEN_POSITION" in item for item in matched.warnings)
+
+
+def test_first_empty_snapshot_discards_bootstrap_warning(tmp_path: Path):
+    manager = make_manager(tmp_path, FakePortfolioAPI(lots=0), seed_canonical=False)
+
+    state = manager.refresh(record_event=False)
+
+    assert state.state_status == "EMPTY"
+    assert state.blocking is False
+    assert "Portfolio snapshot has not been collected yet." not in state.warnings
+
+
 def test_external_broker_order_without_position_is_not_hidden(tmp_path: Path):
     api = FakePortfolioAPI(lots=0)
     api.orders = [

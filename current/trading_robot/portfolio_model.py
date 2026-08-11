@@ -34,7 +34,17 @@ class PortfolioMigrationStatus(StrEnum):
 class CompatibilityShadowStatus(StrEnum):
     OK = "OK"
     DEGRADED = "DEGRADED"
-    NOT_CONFIGURED = "NOT_CONFIGURED"
+    DISABLED = "DISABLED"
+    # Source-compatible alias for alpha3 callers. Persisted beta1 documents use
+    # DISABLED, while the loader below still accepts legacy NOT_CONFIGURED.
+    NOT_CONFIGURED = "DISABLED"
+
+
+def _compatibility_shadow_status(value: Any) -> CompatibilityShadowStatus:
+    token = str(value or "DISABLED").upper()
+    if token == "NOT_CONFIGURED":
+        token = "DISABLED"
+    return _enum(CompatibilityShadowStatus, token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +56,7 @@ class PortfolioMigrationMetadata:
     migrated_at: str | None = None
     legacy_read_path_enabled: bool = False
     compatibility_shadow_status: CompatibilityShadowStatus = (
-        CompatibilityShadowStatus.NOT_CONFIGURED
+        CompatibilityShadowStatus.DISABLED
     )
     detail: str = "Canonical schema is active."
 
@@ -57,7 +67,7 @@ class PortfolioMigrationMetadata:
         object.__setattr__(
             self,
             "compatibility_shadow_status",
-            _enum(CompatibilityShadowStatus, self.compatibility_shadow_status),
+            _compatibility_shadow_status(self.compatibility_shadow_status),
         )
         if self.migrated_at:
             _parse_timestamp(self.migrated_at, "migrated_at")
@@ -69,7 +79,7 @@ class PortfolioMigrationMetadata:
         source_schema: int = PORTFOLIO_STATE_SCHEMA_VERSION,
         migration_id: str | None = None,
         migrated_at: str | None = None,
-        shadow_status: CompatibilityShadowStatus = CompatibilityShadowStatus.NOT_CONFIGURED,
+        shadow_status: CompatibilityShadowStatus = CompatibilityShadowStatus.DISABLED,
         detail: str = "Canonical schema is active.",
     ) -> "PortfolioMigrationMetadata":
         return cls(
@@ -128,9 +138,8 @@ class PortfolioMigrationMetadata:
             legacy_read_path_enabled=bool(
                 raw.get("legacy_read_path_enabled", False)
             ),
-            compatibility_shadow_status=_enum(
-                CompatibilityShadowStatus,
-                raw.get("compatibility_shadow_status") or "NOT_CONFIGURED",
+            compatibility_shadow_status=_compatibility_shadow_status(
+                raw.get("compatibility_shadow_status")
             ),
             detail=str(raw.get("detail") or ""),
         )

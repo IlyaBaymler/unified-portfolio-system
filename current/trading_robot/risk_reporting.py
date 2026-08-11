@@ -985,6 +985,82 @@ def build_risk_burn_in_report(
         )
     )
 
+    safe_canonical_snapshot_indices: list[int] = []
+    for index, row in enumerate(ordered):
+        if str(row.get("event_type") or "") != "PORTFOLIO_STATE_PUBLISHED":
+            continue
+        payload = row.get("payload")
+        payload = payload if isinstance(payload, Mapping) else {}
+        reconciliation_counts = payload.get("reconciliation_counts")
+        reconciliation_counts = (
+            reconciliation_counts
+            if isinstance(reconciliation_counts, Mapping)
+            else {}
+        )
+        non_matched = sum(
+            int(count or 0)
+            for status, count in reconciliation_counts.items()
+            if str(status).upper() != "MATCHED"
+        )
+        if (
+            str(payload.get("portfolio_source") or "").upper() == "CANONICAL"
+            and str(row.get("status") or "").upper() in {"READY", "EMPTY"}
+            and str(payload.get("freshness") or "").upper() == "FRESH"
+            and not bool(payload.get("blocking"))
+            and non_matched == 0
+        ):
+            safe_canonical_snapshot_indices.append(index)
+
+    recovered_transient_api_failures: list[str] = []
+    unresolved_transient_api_failures: list[str] = []
+    non_transient_api_failures: list[str] = []
+    for index, row in enumerate(ordered):
+        if str(row.get("event_type") or "") != "API_REQUEST_FAILED":
+            continue
+        payload = row.get("payload")
+        payload = payload if isinstance(payload, Mapping) else {}
+        event_id = str(row.get("id") or "")
+        if bool(payload.get("transient")):
+            recovered = any(item > index for item in safe_canonical_snapshot_indices)
+            if recovered:
+                recovered_transient_api_failures.append(event_id)
+            else:
+                unresolved_transient_api_failures.append(event_id)
+        else:
+            non_transient_api_failures.append(event_id)
+
+    api_failure_status = (
+        "FAIL"
+        if unresolved_transient_api_failures or non_transient_api_failures
+        else "WARN"
+        if recovered_transient_api_failures
+        else "PASS"
+    )
+    checks.append(
+        BurnInCheck(
+            code="API_FAILURE_CLASSIFICATION",
+            status=api_failure_status,
+            title="Классификация отказов T-Invest API",
+            details=(
+                "Recovered transient outages: "
+                f"{len(recovered_transient_api_failures)}; unresolved transient: "
+                f"{len(unresolved_transient_api_failures)}; non-transient: "
+                f"{len(non_transient_api_failures)}."
+                if (
+                    recovered_transient_api_failures
+                    or unresolved_transient_api_failures
+                    or non_transient_api_failures
+                )
+                else "API_REQUEST_FAILED за период отсутствуют."
+            ),
+            affected_ids=tuple(
+                unresolved_transient_api_failures
+                + non_transient_api_failures
+                + recovered_transient_api_failures
+            ),
+        )
+    )
+
     expected_policy_blocks: list[str] = []
     policy_block_breaches: Counter[str] = Counter()
     for row in ordered:
@@ -1213,6 +1289,9 @@ def build_risk_burn_in_report(
         "kill_switch_engaged": int(event_types.get("KILL_SWITCH_ENGAGED", 0)),
         "kill_switch_cleared": int(event_types.get("KILL_SWITCH_CLEARED", 0)),
         "api_degraded_cycles": api_degraded,
+        "api_transient_recovered": len(recovered_transient_api_failures),
+        "api_transient_unresolved": len(unresolved_transient_api_failures),
+        "api_non_transient_failures": len(non_transient_api_failures),
         "market_idle_entered": market_idle_entered,
         "market_idle_exited": market_idle_exited,
         "market_idle_heartbeats": market_idle_heartbeats,
