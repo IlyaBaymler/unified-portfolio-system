@@ -1,0 +1,27 @@
+MOEX Research Robot v3.7-alpha3
+Python package: 0.3.7a3
+Build date: 2026-08-10
+PortfolioState schema: 2
+Portfolio source: CANONICAL
+Portfolio mode: canonical-only
+Legacy portfolio reads: disabled
+Compatibility shadow: write-only
+Sandbox only: true
+Real account execution: false
+Multi-instrument execution: false
+
+Release artifacts:
+- moex_trading_robot_research_v3_7_alpha3.zip
+- moex_trading_robot_v3_7_alpha3_hotfix.zip
+- moex_trading_robot_v3_7_alpha3_SHA256.txt
+
+Automated test counts and SHA-256 are finalized by the release build record.
+
+Automated verification:
+- full pytest: 443 passed
+- alpha3 targeted: 20 passed
+- alpha2 regression: 19 passed
+- alpha1.1 regression: 35 passed
+- alpha1.2 transport: 7 passed
+- alpha1.3 UX/path: 5 passed
+- Risk Lab: 8/8 PASS

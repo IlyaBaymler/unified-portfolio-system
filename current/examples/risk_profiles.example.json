@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "last_selected_mode": "DRY_RUN",
+  "profiles": {
+    "DRY_RUN": {
+      "policy": {
+        "enabled": true,
+        "max_position_lots": 1,
+        "max_position_value_rub": 10000.0,
+        "max_position_share_of_equity": 0.2,
+        "max_order_value_rub": 10000.0,
+        "cash_reserve_rub": 10000.0,
+        "max_cash_usage_fraction": 1.0,
+        "commission_buffer_fraction": 0.002,
+        "risk_per_trade_rub": 500.0,
+        "risk_per_trade_fraction": null,
+        "atr_multiplier": 3.0,
+        "daily_loss_limit_rub": 500.0,
+        "daily_loss_limit_fraction": 0.01,
+        "weekly_loss_limit_rub": 1500.0,
+        "weekly_loss_limit_fraction": null,
+        "max_drawdown_fraction": 0.05,
+        "max_daily_turnover_rub": 20000.0,
+        "max_orders_per_day": 4,
+        "max_snapshot_age_seconds": 120,
+        "block_on_unknown_equity": true,
+        "block_on_unknown_cash": true,
+        "block_on_unknown_price": true,
+        "block_on_unknown_risk_distance": true,
+        "block_on_stale_snapshot": true,
+        "block_on_unreconciled_position": true,
+        "block_on_pending_order": true,
+        "allow_risk_reducing_orders_during_halt": true
+      },
+      "policy_hash": "ff5e5e750a5c5bd80031a43cf3b5e7678e1d7760102eb021657e360dafb3bc71",
+      "updated_at": "2026-07-22T00:00:00+00:00"
+    },
+    "SANDBOX_EXECUTION": {
+      "policy": {
+        "enabled": true,
+        "max_position_lots": 1,
+        "max_position_value_rub": 10000.0,
+        "max_position_share_of_equity": 0.2,
+        "max_order_value_rub": 10000.0,
+        "cash_reserve_rub": 10000.0,
+        "max_cash_usage_fraction": 1.0,
+        "commission_buffer_fraction": 0.002,
+        "risk_per_trade_rub": 500.0,
+        "risk_per_trade_fraction": null,
+        "atr_multiplier": 3.0,
+        "daily_loss_limit_rub": 500.0,
+        "daily_loss_limit_fraction": 0.01,
+        "weekly_loss_limit_rub": 1500.0,
+        "weekly_loss_limit_fraction": null,
+        "max_drawdown_fraction": 0.05,
+        "max_daily_turnover_rub": 20000.0,
+        "max_orders_per_day": 4,
+        "max_snapshot_age_seconds": 120,
+        "block_on_unknown_equity": true,
+        "block_on_unknown_cash": true,
+        "block_on_unknown_price": true,
+        "block_on_unknown_risk_distance": true,
+        "block_on_stale_snapshot": true,
+        "block_on_unreconciled_position": true,
+        "block_on_pending_order": true,
+        "allow_risk_reducing_orders_during_halt": true
+      },
+      "policy_hash": "ff5e5e750a5c5bd80031a43cf3b5e7678e1d7760102eb021657e360dafb3bc71",
+      "updated_at": "2026-07-22T00:00:00+00:00"
+    }
+  }
+}

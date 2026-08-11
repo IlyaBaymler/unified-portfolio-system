@@ -1,0 +1,38 @@
+{
+  "name": "CUSTOM_MAX_POSITION_AND_CASH_RESERVE",
+  "policy": {
+    "max_position_lots": 3,
+    "max_position_value_rub": 10000.0,
+    "max_position_share_of_equity": 0.2,
+    "max_order_value_rub": 10000.0,
+    "cash_reserve_rub": 10000.0,
+    "risk_per_trade_rub": 500.0,
+    "risk_per_trade_fraction": null,
+    "daily_loss_limit_rub": 500.0,
+    "daily_loss_limit_fraction": 0.01,
+    "weekly_loss_limit_rub": 1500.0,
+    "weekly_loss_limit_fraction": null,
+    "max_drawdown_fraction": 0.05,
+    "max_daily_turnover_rub": 20000.0,
+    "max_orders_per_day": 4,
+    "max_snapshot_age_seconds": 120
+  },
+  "snapshots": [
+    {
+      "now": "2026-07-22T12:00:00+00:00",
+      "snapshot_at": "2026-07-22T12:00:00+00:00",
+      "strategy_target_lots": 5,
+      "current_lots": 0,
+      "price_rub": 250.0,
+      "lot_size": 10,
+      "portfolio_equity_rub": 50000.0,
+      "cash_rub": 50000.0,
+      "securities_value_rub": 0.0,
+      "atr_rub": 5.0,
+      "position_reconciled": true,
+      "pending_order": false,
+      "mode": "DRY_RUN"
+    }
+  ],
+  "expected_statuses": ["ADJUSTED"]
+}
