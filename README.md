@@ -5,7 +5,7 @@
 Целевая архитектура объединяет:
 
 - торговый робот и исполнение заявок;
-- Portfolio Manager как единый источник состояния счёта;
+- Portfolio Manager как единый источник портфельного состояния;
 - Risk Engine;
 - Cash-flow Manager;
 - автоматическое реинвестирование;
@@ -28,13 +28,13 @@
 - `PortfolioTransactionCoordinator` как единственный writer;
 - write-only compatibility shadow;
 - обязательный canonical preflight и post-fill reconciliation;
-- migration tests schema 1 → schema 2 — PASS;
+- migration tests schema 1 -> schema 2 — PASS;
 - около 15 ч 19 мин Sandbox burn-in;
-- 10 исполнений, включая 4 полных Strategy BUY→SELL;
+- 10 исполнений, включая 4 полных Strategy BUY->SELL;
 - 0 duplicate submit;
 - 0 fill без canonical reconciliation;
 - 0 execution без Risk accounting;
-- revision 0→19 без rollback;
+- revision 0->19 без rollback;
 - disconnect, circuit breaker persistence, restart и MARKET_IDLE — PASS.
 
 ### Текущий beta-кандидат
@@ -69,9 +69,34 @@ burn-in с recovery-сценариями. Функциональный резу�
 GitHub-задачи этапа:
 
 - Issue #31 — общий scope beta1;
-- Issue #32 — implementation checklist и acceptance matrix.
+- Issue #32 — implementation checklist и acceptance matrix;
+- Issue #33 — обязательный handoff локальной реализации Codex и test evidence в `v3-7-beta1`.
 
-## Архитектурные границы
+### Следующий этап
+
+После принятия beta1 начинается **v3.7.0 Stable release qualification** — Issue #34.
+
+Это не функциональное расширение: schema 2, canonical-only reads, single-writer, Risk/Execution protocol и broker lifecycle замораживаются; выполняются full regression, clean install/upgrade, backup/restore, standalone, rollback, release hygiene и финальный Sandbox burn-in.
+
+После `v3.7.0 Stable` следующий функциональный этап — `v3.8.0 Multi-Instrument Sandbox`.
+
+## Рабочая связка ChatGPT + Codex
+
+```text
+Codex local
+  -> implementation / tests / build
+  -> push version branch
+GitHub
+  -> auditable code diff / Issues / evidence
+ChatGPT
+  -> анализ результатов / архитектурный контроль / acceptance
+  -> новые Issues / docs / roadmap / release decision
+  -> следующий task для Codex
+```
+
+Код новой версии должен быть отправлен в соответствующую version branch до ChatGPT-review. Локальные неподтверждённые результаты сами по себе не считаются acceptance evidence.
+
+## Архитектурные границы v3.7
 
 ```text
 T-Invest Sandbox only
@@ -88,15 +113,18 @@ multi-instrument execution disabled
 
 ## Структура репозитория
 
-- `releases/` — архивы опубликованных версий и сопровождающие заметки;
+- `releases/` — release records, manifests и SHA-256;
 - `docs/releases/` — release/acceptance records;
 - `docs/plans/` — планы следующих этапов;
-- `docs/project/` — сводный статус проекта;
+- `docs/project/` — сводный статус, Codex sync gate и review notes;
+- `docs/DEVELOPMENT_PROCESS.md` — процесс ChatGPT/Codex/GitHub;
+- `docs/ARCHITECTURE.md` — текущая v3.7 и целевая архитектура;
 - `ROADMAP.md` — последовательность версий;
-- `SECURITY.md` — правила работы с секретами и реальным счётом;
-- `develop` — общая ветка разработки;
-- `v3-7-alpha3` — принятая alpha-ветка;
-- `v3-7-beta1` — ветка стабилизации beta1.
+- `SECURITY.md` — правила работы с секретами и execution boundary;
+- `v3-7-alpha3` — frozen accepted alpha baseline;
+- `v3-7-beta1` — активная beta implementation branch.
+
+`develop` сохраняется как историческая ветка и не является обязательной частью текущего local-Codex workflow.
 
 ## Безопасность репозитория
 
@@ -104,14 +132,21 @@ multi-instrument execution disabled
 
 ```text
 .env
-API-токены
+API tokens / credentials
 Account ID
-runtime JSON
-SQLite DB/WAL/SHM
-логи
-backup
-support bundle
-локальные lock-файлы
+risk_state.json
+robot_state.json
+portfolio_state.json
+portfolio_legacy_shadow.json
+sandbox_diagnostic_state.json
+canonical_migration_report*.json
+runtime_bootstrap_report.json
+trading_events.db*
+working logs
+runtime/
+backups/
+support/
+unsanitized reports/
 ```
 
-Использовать только `.env.example`, release manifest, SHA-256 и очищенные диагностические материалы.
+Использовать только `.env.example`, исходники/тесты, release manifests, SHA-256 и очищенные диагностические материалы.

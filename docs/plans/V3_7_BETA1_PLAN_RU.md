@@ -1,6 +1,6 @@
 # v3.7-beta1 — План стабилизации
 
-Версия: `0.3.7b1`.  
+Версия: `0.3.7b1`.
 База: принятая `v3.7-alpha3`.
 
 Статус на 2026-08-11: реализация и функциональный Windows/Sandbox acceptance
@@ -9,6 +9,24 @@
 ## Цель
 
 Стабилизировать canonical-only Portfolio Manager перед `v3.7.0 Stable`, не расширяя торговую функциональность и не меняя проверенный broker order lifecycle.
+
+## Handoff gate из локального Codex
+
+До ChatGPT-review реализация должна быть отправлена в `v3-7-beta1`.
+
+Минимальный evidence package:
+
+- implementation commit SHA;
+- diff относительно `v3-7-alpha3`;
+- исходный код и тесты;
+- build/version manifest `0.3.7b1`;
+- full pytest summary;
+- targeted beta1 test summary;
+- Risk Lab 8/8;
+- migration/crash/recovery regression summary;
+- release hygiene/secret scan summary.
+
+Runtime logs и state-файлы передаются отдельно и не коммитятся.
 
 ## Обязательные исправления
 
@@ -125,7 +143,7 @@ real-account execution
 - SecretProvider metadata-only tests;
 - transient outage report classification tests;
 - compatibility shadow degraded tests;
-- migration schema 1 → 2 regression;
+- migration schema 1 -> 2 regression;
 - crash/recovery matrix;
 - Risk Lab 8/8;
 - standalone, release hygiene и secret scan;
@@ -140,14 +158,14 @@ standalone layout и deterministic ZIP audit — PASS.
 
 Минимум:
 
-1. Upgrade accepted alpha3 → beta1.
+1. Upgrade accepted alpha3 -> beta1.
 2. Schema 2 и canonical-only сохраняются.
 3. `READY/MATCHED` не содержит stale warnings.
 4. Credential Manager отражается корректно.
 5. Intentional disconnect создаёт infrastructure WARN, не ложный FAIL.
-6. 2–4 Strategy BUY→SELL.
+6. 2–4 Strategy BUY->SELL.
 7. Restart с открытой позицией.
-8. `OPEN → MARKET_IDLE → OPEN`.
+8. `OPEN -> MARKET_IDLE -> OPEN`.
 9. Standalone без Python.
 10. Reports/support bundle reviewed.
 11. 12–24 h burn-in.
@@ -177,3 +195,7 @@ standalone layout и deterministic ZIP audit — PASS.
 real account disabled
 multi-instrument execution absent
 ```
+
+## Решение после beta1
+
+Если gate пройден без блокирующих дефектов, следующий этап — `v3.7.0 Stable` release qualification. Если выявлен блокирующий дефект, создаётся минимальный `v3.7-beta1.x` без расширения scope.

@@ -39,11 +39,11 @@
 - `PortfolioState` schema 2;
 - canonical-only read path;
 - `PortfolioTransactionCoordinator` — единственный writer;
-- explicit schema 1 → 2 migration;
+- explicit schema 1 -> 2 migration;
 - write-only compatibility shadow;
 - recovery через broker + EventJournal + canonical state;
 - migration tests — PASS;
-- 15+ часов burn-in, 10 исполнений, 4 Strategy BUY→SELL;
+- 15+ часов burn-in, 10 исполнений, 4 Strategy BUY->SELL;
 - 0 duplicate submit, 0 missing reconciliation/accounting;
 - revision monotonicity и disconnect/restart/MARKET_IDLE — PASS.
 
@@ -76,18 +76,47 @@
 restart с открытой позицией, `OPEN → MARKET_IDLE → OPEN` и review
 reports/support bundle.
 
-## v3.7.0 — Portfolio Manager Stable
+### Beta1 handoff gate
 
-- accepted canonical-only Portfolio Manager для одного инструмента;
-- финальная release hygiene;
-- clean install, upgrade и rollback;
-- длительный beta/stable burn-in;
-- единый источник состояния для GUI, Risk, Execution и Recovery.
+Source, tests, build manifest и sanitized evidence подготовлены в локальном
+Codex и публикуются в `v3-7-beta1` для GitHub/ChatGPT review. Issue #33
+отслеживает этот handoff отдельно от длительного burn-in.
+
+Текущие Issues:
+
+- #31 — beta1 scope;
+- #32 — implementation/acceptance checklist;
+- #33 — Codex -> GitHub implementation/evidence handoff.
+
+Следующий результат: принятая `v3.7-beta1 / 0.3.7b1`.
+
+## v3.7.0 — Portfolio Manager Stable — следующий этап
+
+Issue #34 — release qualification and final acceptance.
+
+Цель: зафиксировать canonical-only Portfolio Manager как стабильное одноинструментное Sandbox-ядро без изменения архитектуры.
+
+Gate:
+
+- beta1 acceptance complete;
+- full regression и crash/recovery PASS;
+- migration schema1->schema2 regression PASS;
+- clean install/upgrade PASS;
+- backup/verify/restore и support bundle PASS;
+- standalone without Python PASS;
+- rollback to accepted beta1 PASS;
+- release hygiene/secret scan PASS;
+- 0 duplicate submit;
+- 0 fill without canonical reconciliation;
+- 0 execution without Risk accounting;
+- финальный Sandbox burn-in, рекомендуется 24–48 h.
 
 ## v3.8.0 — Multi-Instrument Sandbox
 
+Первый функциональный этап после `v3.7.0 Stable`:
+
 - до трёх инструментов;
-- InstrumentRuntime;
+- `InstrumentRuntime`;
 - Global Scheduler;
 - Central Order Manager;
 - cash reservation;
@@ -129,9 +158,9 @@ reports/support bundle.
 
 ## Не делать до соответствующего этапа
 
-- не разрешать real execution в v3.7;
+- не разрешать real execution в v3.7/v3.8;
 - не добавлять multi-instrument до v3.8;
-- не менять PortfolioState schema в beta1;
-- не совмещать observability fixes с новыми стратегиями;
+- не менять PortfolioState schema в beta1/Stable без отдельной архитектурной причины;
+- не совмещать observability/release fixes с новыми стратегиями;
 - не удалять recovery/audit данные ради упрощения;
 - не считать Sandbox acceptance доказательством прибыльности.
