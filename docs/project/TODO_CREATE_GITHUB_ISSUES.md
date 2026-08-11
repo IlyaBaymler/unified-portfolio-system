@@ -1,1 +1,0 @@
-Pending issue creation via GitHub connector.
