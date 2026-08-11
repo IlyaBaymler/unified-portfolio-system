@@ -5,14 +5,30 @@
 
 # Runtime state
 robot_state.json
+risk_state.json
+portfolio_state.json
+portfolio_legacy_shadow.json
 sandbox_diagnostic_state.json
+canonical_migration_report*.json
+runtime_bootstrap_report.json
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 
 # Logs and exports
 *.log
 trading_events*.csv
+risk_alpha_report.json
+risk_alpha_summary.csv
+
+# Runtime / diagnostics / local outputs
+runtime/
+reports/
+support/
+backup/
+backups/
 
 # Python
 __pycache__/
@@ -32,8 +48,7 @@ build/
 dist/
 *.spec
 
-# Local backups
+# Temporary files
 *.bak
 *.tmp
-backup/
-backups/
+*.lock
