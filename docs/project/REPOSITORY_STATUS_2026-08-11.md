@@ -16,8 +16,8 @@
 branch: v3-7-beta1-rebuild
 upstream: origin/v3-7-beta1
 base: origin/main @ 0a5bfcd
-local commits ahead after this documentation update: 4
-remote publication: not performed
+publication target: origin/v3-7-beta1
+publication tracking: GitHub Issue #33
 ```
 
 Коммиты реализации:
@@ -27,7 +27,12 @@ remote publication: not performed
 aa046a6 feat: rebuild v3.7-beta1 stabilization release
 3d15edd fix: keep portable risk and state in runtime directory
 docs      record v3.7-beta1 functional acceptance
+docs      add reproducible GitHub handoff evidence
 ```
+
+Для содержательного beta1 review использовать baseline commit `6e4f7da`.
+Прямой diff удалённой alpha3-ветки к beta1 дополнительно показывает импорт
+распакованного source tree, поскольку alpha3 ранее публиковалась архивом.
 
 ## Проверки
 

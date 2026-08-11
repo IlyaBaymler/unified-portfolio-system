@@ -63,6 +63,9 @@ Beta1 не меняет торговую архитектуру. Реализо�
 burn-in с recovery-сценариями. Функциональный результат зафиксирован в
 `docs/releases/V3_7_BETA1_FUNCTIONAL_ACCEPTANCE_RU.md`.
 
+Проверяемый GitHub handoff для Issues #31–#33 находится в
+`docs/releases/V3_7_BETA1_GITHUB_HANDOFF_RU.md`.
+
 GitHub-задачи этапа:
 
 - Issue #31 — общий scope beta1;
