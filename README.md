@@ -37,17 +37,31 @@
 - revision 0→19 без rollback;
 - disconnect, circuit breaker persistence, restart и MARKET_IDLE — PASS.
 
-### Активный этап
+### Текущий beta-кандидат
 
-**v3.7-beta1 — canonical Portfolio Manager stabilization and observability cleanup.**
+**v3.7-beta1 / `0.3.7b1` — функциональный acceptance пройден 2026-08-11.**
 
-Beta1 не меняет торговую архитектуру. В scope входят:
+Beta1 не меняет торговую архитектуру. Реализованы:
 
 - пересчёт Portfolio warnings из текущего snapshot без stale carry-over;
 - metadata-only проверка Windows Credential Manager в bootstrap report;
 - классификация восстановленных transient outages как infrastructure WARN/PASS;
 - отдельная observability write-only compatibility shadow;
-- полный regression alpha3, standalone и 12–24-часовой Sandbox burn-in.
+- split-runtime fix: Risk, robot и portfolio state используют единый sibling
+  `runtime`-каталог portable-сборки.
+
+Подтверждено:
+
+- полный regression — `454 passed`, Risk Lab — `8/8 PASS`;
+- установка, standalone-запуск и restart из `run_gui.bat` — PASS;
+- один полный Sandbox BUY→HOLD→SELL, 2/2 заявок исполнены и учтены Risk;
+- 0 duplicate submit, runtime/API/canonical transaction errors;
+- финальный canonical state: `READY`, `FRESH`, `MATCHED`, `blocking=false`,
+  compatibility shadow `OK`, warnings `0`.
+
+Перед финальным выпуском beta1 остаётся расширенный 12–24-часовой Sandbox
+burn-in с recovery-сценариями. Функциональный результат зафиксирован в
+`docs/releases/V3_7_BETA1_FUNCTIONAL_ACCEPTANCE_RU.md`.
 
 GitHub-задачи этапа:
 

@@ -47,11 +47,11 @@
 - 0 duplicate submit, 0 missing reconciliation/accounting;
 - revision monotonicity и disconnect/restart/MARKET_IDLE — PASS.
 
-## v3.7-beta1 — активный этап
+## v3.7-beta1 — функциональный acceptance пройден
 
 Цель: стабилизация принятой canonical-only архитектуры без новых торговых функций.
 
-Обязательный scope:
+Реализованный scope:
 
 - warnings пересчитываются из текущего snapshot;
 - `READY + MATCHED + blocking=false` не содержит stale blocking warnings;
@@ -59,9 +59,22 @@
 - recovered transient outages отражаются как infrastructure WARN/PASS;
 - compatibility shadow имеет независимый статус `OK/DEGRADED/DISABLED`;
 - schema 2, single-writer, preflight и post-fill protocol не меняются;
-- полный alpha3 regression, standalone и 12–24 h Sandbox burn-in.
+- единый sibling `runtime` для Risk, robot и portfolio state в portable-сборке;
+- полный alpha3 regression и standalone functional smoke.
 
-Следующий результат: `v3.7-beta1 / 0.3.7b1`.
+Проверено 2026-08-11:
+
+- `454 passed`, Risk Lab `8/8 PASS`;
+- установка, standalone-запуск и restart из `run_gui.bat` — PASS;
+- один полный BUY→HOLD→SELL с 2/2 исполнениями;
+- 0 duplicate submit, missing reconciliation, missing Risk accounting и
+  runtime/API/canonical transaction errors;
+- финальный canonical state `READY/FRESH/MATCHED`, `blocking=false`, shadow
+  `OK`, warnings `0`.
+
+Оставшийся release gate: 12–24 h Sandbox burn-in, intentional disconnect,
+restart с открытой позицией, `OPEN → MARKET_IDLE → OPEN` и review
+reports/support bundle.
 
 ## v3.7.0 — Portfolio Manager Stable
 

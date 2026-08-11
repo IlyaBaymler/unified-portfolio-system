@@ -26,7 +26,23 @@ Automatic position adoption: disabled
   неразрешённый transient outage и non-transient failure;
 - compatibility shadow имеет единый статус `OK`, `DEGRADED` или `DISABLED` и
   отображается в GUI, readiness и support bundle, не подменяя canonical
-  readiness.
+  readiness;
+- portable GUI, Risk Engine, robot state и canonical PortfolioState используют
+  единый mutable sibling `runtime`-каталог, включая запуск после restart.
+
+## Статус приёмки
+
+Функциональный Windows/Sandbox smoke 2026-08-11 — PASS:
+
+- установка, standalone-запуск и restart из `run_gui.bat`;
+- один полный BUY→HOLD→SELL, 2/2 заявок исполнены;
+- 2/2 post-fill canonical reconciliation и 2/2 Risk accounting;
+- 0 duplicate submit, Risk runtime, API и canonical transaction errors;
+- финальный state `READY/FRESH/MATCHED`, `blocking=false`, shadow `OK`,
+  warnings `0`.
+
+До финального release acceptance остаётся расширенный 12–24-часовой Sandbox
+burn-in с disconnect, restart с открытой позицией и MARKET_IDLE recovery.
 
 ## Быстрый запуск Windows
 
@@ -42,6 +58,9 @@ run_gui.bat
 Перед включением Sandbox Execution проверьте account ID, свежесть broker
 snapshot, `MATCHED`, отсутствие pending/uncertain order и Risk gate `PASS`.
 Beta1 не включает выполнение на реальном счёте.
+
+Mutable-файлы сохраняются рядом с `app`, в каталоге `runtime`. Не копируйте их
+в `app` и не запускайте разные beta1-сборки с одним общим runtime одновременно.
 
 ## Документация
 

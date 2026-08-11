@@ -32,6 +32,21 @@ Shadow — write-only совместимость, не источник авто
 Статус виден в GUI, readiness report и support manifest. `DEGRADED` не меняет
 canonical readiness, но остаётся заметным оператору.
 
+## Portable runtime layout
+
+Standalone-пакет разделён на неизменяемый код и mutable state:
+
+```text
+MOEX_Research_Robot_v3_7_beta1/
+├── app/       executable, libraries, bundled resources
+└── runtime/   risk, robot, portfolio, EventJournal, logs and reports
+```
+
+`desktop_gui.py` передаёт один `runtime`-каталог Risk Engine, robot state,
+Portfolio Manager и recovery-компонентам. Каталог `app` не является источником
+mutable Risk/robot/portfolio state. Этот инвариант сохраняется после restart и
+исключает расхождение между профилем, сохранённым GUI, и execution runtime.
+
 ## Неизменяемые границы
 
 Canonical-only read, single-writer transaction, revision/checksum lease,

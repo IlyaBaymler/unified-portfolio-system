@@ -12,9 +12,9 @@
 - compileall — PASS;
 - Risk Lab — 8/8 PASS.
 
-Установка и GUI-launch portable-пакета подтверждены пользователем на Windows.
-После исправления split-runtime требуется повторить restart с сохранённым
-SANDBOX_EXECUTION profile и убедиться, что Risk status больше не RUNTIME_ERROR.
+Установка, GUI-launch и restart portable-пакета подтверждены пользователем на
+Windows. После split-runtime fix сохранённый SANDBOX_EXECUTION profile успешно
+загружен; Risk runtime error не повторился.
 
 ## Beta1 targeted matrix
 
@@ -40,3 +40,21 @@ restart/disconnect recovery и отсутствие private runtime файлов
 
 Первый запуск — execution off. Затем один контролируемый BUY→HOLD→SELL при 1 lot
 с полным canonical reconciliation. Real-account smoke не допускается.
+
+Результат 2026-08-11 — PASS:
+
+- один полный BUY→HOLD→SELL;
+- submitted/accepted/filled — 2/2/2;
+- canonical reconciliation и Risk accounting — 2/2;
+- duplicate submit, Risk runtime, API и canonical transaction errors — 0;
+- финальный state — `READY/FRESH/MATCHED`, `blocking=false`, shadow `OK`,
+  warnings `0`.
+
+## Расширенный release smoke — pending
+
+- 12–24 h Sandbox burn-in;
+- 2–4 Strategy BUY→SELL суммарно;
+- intentional disconnect и восстановление fresh `MATCHED`;
+- restart с открытой позицией;
+- `OPEN → MARKET_IDLE → OPEN`;
+- review Risk Burn-in report и support bundle.

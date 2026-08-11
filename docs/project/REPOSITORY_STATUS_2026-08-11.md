@@ -1,72 +1,57 @@
 # Repository Status — 2026-08-11
 
-## Принятая база
+## Версии
 
 - Stable baseline: `v3.6.0`.
 - Accepted development baseline: `v3.7-alpha3`.
-- Current development target: `v3.7-beta1`.
+- Current candidate: `v3.7-beta1 / 0.3.7b1`.
+- Beta1 functional acceptance: PASS.
+- Beta1 extended 12–24 h burn-in: pending.
+
+## Локальная ветка
+
+Работа выполнена заново в чистом worktree:
+
+```text
+branch: v3-7-beta1-rebuild
+upstream: origin/v3-7-beta1
+base: origin/main @ 0a5bfcd
+local commits ahead after this documentation update: 4
+remote publication: not performed
+```
+
+Коммиты реализации:
+
+```text
+6e4f7da chore: import accepted v3.7-alpha3 source baseline
+aa046a6 feat: rebuild v3.7-beta1 stabilization release
+3d15edd fix: keep portable risk and state in runtime directory
+docs      record v3.7-beta1 functional acceptance
+```
+
+## Проверки
+
+- full pytest regression — `454 passed`;
+- Risk Lab — `8/8 PASS`;
+- release hygiene, compileall, standalone layout и deterministic ZIP — PASS;
+- установка, standalone-запуск и restart из `run_gui.bat` — PASS;
+- Sandbox BUY→HOLD→SELL — PASS, 2/2 orders;
+- duplicate submit, missing reconciliation, missing Risk accounting — 0;
+- runtime/API/canonical transaction failures — 0;
+- финальный canonical state — `READY/FRESH/MATCHED`, `blocking=false`, shadow
+  `OK`, warnings `0`, revision `5`.
 
 ## GitHub Issues
 
-- #17 — зонтичная задача Portfolio Manager; оставить открытой до `v3.7.0 Stable`.
-- #29 — alpha2 canonical preflight; закрыта как completed.
-- #30 — alpha2 checklist; закрыта как completed.
-- #31 — beta1 stabilization and observability cleanup; оставить open.
-- #32 — beta1 implementation checklist and acceptance matrix; оставить open.
+- #17 — Portfolio Manager umbrella; оставить open до `v3.7.0 Stable`.
+- #29/#30 — alpha2; completed.
+- #31/#32 — beta1 scope и acceptance matrix; оставить open до расширенного
+  burn-in, review артефактов и публикации beta1.
 
-## Ветки
+## Repository hygiene
 
-Рекомендуемое состояние:
+Не публиковать `.env`, tokens/account ID, runtime JSON, SQLite DB/WAL/SHM,
+логи, backup, support bundle и локальные lock-файлы.
 
-```text
-main                 — стабильная документация проекта
-v3-7-alpha3          — принятая alpha-база, freeze
-v3-7-beta1           — активная beta-разработка
-release-v3.6.0       — историческая stable release branch
-```
-
-Beta-ветку создавать от принятой alpha3, а не от старого `main`, если source alpha3 ещё не влит в main.
-
-## Обязательная repository hygiene
-
-Не публиковать:
-
-```text
-.env
-*token*
-risk_state.json
-robot_state.json
-portfolio_state.json
-portfolio_legacy_shadow.json
-canonical_migration_report.json
-trading_events.db*
-*.log
-backups/
-support/
-runtime/
-```
-
-Публиковать:
-
-```text
-.env.example
-README.md
-ROADMAP.md
-versioned changelog
-architecture/test/recovery docs
-release manifest
-SHA-256
-source ZIP или GitHub Release artifact
-```
-
-## Следующая проверка репозитория
-
-Перед публикацией beta1:
-
-- актуальный README;
-- актуальный ROADMAP;
-- Issue #31/#32 отражают фактический scope;
-- alpha3 acceptance record присутствует;
-- beta1 не содержит старых alpha/RC документов в корне сборки;
-- `.gitignore` покрывает schema 2 runtime и migration artifacts;
-- full release hygiene и secret scan PASS.
+Перед публикацией beta1 повторно проверить SHA-256 source ZIP, release hygiene,
+secret scan и соответствие release README фактическому acceptance.

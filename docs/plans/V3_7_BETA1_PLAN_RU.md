@@ -3,6 +3,9 @@
 Версия: `0.3.7b1`.  
 База: принятая `v3.7-alpha3`.
 
+Статус на 2026-08-11: реализация и функциональный Windows/Sandbox acceptance
+завершены; расширенный 12–24-часовой burn-in остаётся release gate.
+
 ## Цель
 
 Стабилизировать canonical-only Portfolio Manager перед `v3.7.0 Stable`, не расширяя торговую функциональность и не меняя проверенный broker order lifecycle.
@@ -130,6 +133,9 @@ real-account execution
 - 0 fill без canonical reconciliation;
 - 0 execution без Risk accounting.
 
+Результат: `454 passed`, Risk Lab `8/8 PASS`, release hygiene, compileall,
+standalone layout и deterministic ZIP audit — PASS.
+
 ## Windows/Sandbox acceptance
 
 Минимум:
@@ -145,6 +151,19 @@ real-account execution
 9. Standalone без Python.
 10. Reports/support bundle reviewed.
 11. 12–24 h burn-in.
+
+Функциональный smoke 2026-08-11:
+
+- пункты 1–4 и 9 — PASS;
+- установка, standalone-запуск и restart из `run_gui.bat` — PASS;
+- один полный BUY→HOLD→SELL, 2/2 broker orders — PASS;
+- canonical reconciliation и Risk accounting — 2/2;
+- duplicate submit, runtime/API/canonical transaction failures — 0;
+- финальный snapshot — `READY/FRESH/MATCHED`, `blocking=false`, shadow `OK`,
+  warnings `0`.
+
+До release acceptance остаются пункты 5, 7, 8, 10 и 11, а также расширение
+числа Strategy BUY→SELL до диапазона, заданного планом.
 
 ## Release gate
 

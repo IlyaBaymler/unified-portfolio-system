@@ -17,6 +17,7 @@
 - metadata-only SecretProvider probe;
 - recovered/unresolved transient API classification;
 - compatibility shadow statuses `OK`, `DEGRADED`, `DISABLED`.
+- единый sibling `runtime` для Risk, robot и portfolio state portable-сборки.
 
 ## Проверено локально
 
@@ -25,13 +26,19 @@
 - release hygiene, compileall и deterministic ZIP audit — PASS;
 - PyInstaller portable tree и standalone layout — PASS.
 
-Установка и GUI-launch portable-пакета подтверждены пользователем на Windows.
-В ходе Sandbox restart обнаружен и исправлен split-runtime: рабочий цикл читал
-Risk/robot/portfolio state из `app`, тогда как GUI сохранял их в `runtime`.
-Для приёмки требуется повторить Sandbox Risk restart на обновлённом архиве.
+Установка, standalone-запуск и restart из `run_gui.bat` подтверждены
+пользователем на Windows. После split-runtime fix выполнен полный Sandbox
+BUY→HOLD→SELL: 2/2 заявок submitted/accepted/filled, 2/2 canonical
+reconciliation и Risk accounting, 0 duplicate submit и runtime/API/canonical
+transaction errors. Финальный state — `READY/FRESH/MATCHED`, `blocking=false`,
+shadow `OK`, warnings `0`.
+
+Функциональный acceptance — PASS. До финальной приёмки beta1 остаётся
+расширенный 12–24-часовой burn-in с disconnect, restart с открытой позицией,
+MARKET_IDLE recovery и review диагностических артефактов.
 
 ## Исходный архив
 
 ```text
-d5ca027168e14370d512071547abf54f80ad5e91353358803e90ad001de308fb  moex_trading_robot_research_v3_7_beta1.zip
+730a1d1dbef8bafd87bede739dd6d33574896ee6f0a466c4a861592771cd4ee2  moex_trading_robot_research_v3_7_beta1.zip
 ```
