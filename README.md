@@ -13,25 +13,88 @@
 
 ## Текущий статус
 
-**MOEX Research Robot v3.6.0 Stable** принята как стабильная версия однопортфельного ядра для T-Invest Sandbox.
+### Последняя стабильная версия
 
-Stable основана на принятой `v3.6-rc1.4`. Пользовательский acceptance включал две длительные сессии общей продолжительностью 41 ч 27 мин, 30 уникальных исполнений, два ночных перехода `OPEN → MARKET_IDLE → OPEN`, disconnect и рестарты. Получено 0 duplicate submit, 0 fill без reconciliation, 0 execution без Risk accounting и 0 `RISK_RUNTIME_ERROR`.
+**MOEX Research Robot v3.6.0 Stable** — принятое одноинструментное ядро для T-Invest Sandbox.
 
-Windows-установка, запуск, standalone-сборка и работа в среде без установленного Python подтверждены пользователем.
+### Текущая принятая версия разработки
 
-Поддерживаются recovery coordinator, атомарный runtime, backup/restore, Windows Credential Manager, Production Readiness, Risk Engine, виртуальный портфель, ownership/reconciliation, MARKET_IDLE и безопасная обработка временных отказов T-Invest API.
+**v3.7-alpha3 Canonical State Cutover** — пользовательский acceptance пройден.
 
-Реальный торговый счёт не разрешён. Следующий архитектурный этап — **v3.7 Portfolio Manager**.
+Подтверждено:
+
+- `PortfolioState` schema 2;
+- canonical-only read path;
+- `PortfolioTransactionCoordinator` как единственный writer;
+- write-only compatibility shadow;
+- обязательный canonical preflight и post-fill reconciliation;
+- migration tests schema 1 → schema 2 — PASS;
+- около 15 ч 19 мин Sandbox burn-in;
+- 10 исполнений, включая 4 полных Strategy BUY→SELL;
+- 0 duplicate submit;
+- 0 fill без canonical reconciliation;
+- 0 execution без Risk accounting;
+- revision 0→19 без rollback;
+- disconnect, circuit breaker persistence, restart и MARKET_IDLE — PASS.
+
+### Активный этап
+
+**v3.7-beta1 — canonical Portfolio Manager stabilization and observability cleanup.**
+
+Beta1 не меняет торговую архитектуру. В scope входят:
+
+- пересчёт Portfolio warnings из текущего snapshot без stale carry-over;
+- metadata-only проверка Windows Credential Manager в bootstrap report;
+- классификация восстановленных transient outages как infrastructure WARN/PASS;
+- отдельная observability write-only compatibility shadow;
+- полный regression alpha3, standalone и 12–24-часовой Sandbox burn-in.
+
+GitHub-задачи этапа:
+
+- Issue #31 — общий scope beta1;
+- Issue #32 — implementation checklist и acceptance matrix.
+
+## Архитектурные границы
+
+```text
+T-Invest Sandbox only
+one executable instrument
+long-only
+PortfolioState schema 2
+canonical-only reads
+single writer
+real account execution disabled
+multi-instrument execution disabled
+```
+
+Реальный торговый счёт не разрешён. Переход к multi-instrument execution относится к v3.8 и возможен только после принятия v3.7.0 Stable.
 
 ## Структура репозитория
 
 - `releases/` — архивы опубликованных версий и сопровождающие заметки;
-- `docs/` — архитектура, протоколы и проектные решения;
-- `ROADMAP.md` — последовательность будущих версий;
-- `SECURITY.md` — правила работы с токенами и реальными счетами;
-- `develop` — ветка разработки следующей версии;
-- `release-v3.6.0` — ветка подготовки stable-релиза.
+- `docs/releases/` — release/acceptance records;
+- `docs/plans/` — планы следующих этапов;
+- `docs/project/` — сводный статус проекта;
+- `ROADMAP.md` — последовательность версий;
+- `SECURITY.md` — правила работы с секретами и реальным счётом;
+- `develop` — общая ветка разработки;
+- `v3-7-alpha3` — принятая alpha-ветка;
+- `v3-7-beta1` — ветка стабилизации beta1.
 
-## Важно
+## Безопасность репозитория
 
-Проект остаётся исследовательским. До отдельного acceptance реального контура используется только T-Invest Sandbox. Репозиторий не должен содержать `.env`, API-токены, идентификаторы счетов, локальные state-файлы, базы событий, логи, backup или support bundle.
+Репозиторий не должен содержать:
+
+```text
+.env
+API-токены
+Account ID
+runtime JSON
+SQLite DB/WAL/SHM
+логи
+backup
+support bundle
+локальные lock-файлы
+```
+
+Использовать только `.env.example`, release manifest, SHA-256 и очищенные диагностические материалы.
