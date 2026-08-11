@@ -2806,7 +2806,7 @@ class TradingRobotGUI(tk.Tk):
                 poll_seconds=poll,
                 max_order_lots=max_lots,
                 dry_run=dry_run,
-                state_file=str(APP_DIR / "robot_state.json"),
+                state_file=str(ROBOT_STATE_PATH),
                 journal_file=str(EVENT_DB_PATH),
                 failure_threshold=failure_threshold,
                 circuit_open_seconds=circuit_seconds,
@@ -2951,7 +2951,7 @@ class TradingRobotGUI(tk.Tk):
         def work() -> dict[str, Any]:
             with self._make_tbank_client(token, ca_bundle) as api:
                 risk_runtime = RiskRuntimeAdapter.from_directory(
-                    APP_DIR,
+                    RUNTIME_DIR,
                     account_id=account_id,
                     mode=(
                         "SANDBOX_EXECUTION" if execute else "DRY_RUN"
@@ -3032,7 +3032,7 @@ class TradingRobotGUI(tk.Tk):
             try:
                 with self._make_tbank_client(token, ca_bundle) as api:
                     risk_runtime = RiskRuntimeAdapter.from_directory(
-                        APP_DIR,
+                        RUNTIME_DIR,
                         account_id=account_id,
                         mode=(
                             "SANDBOX_EXECUTION" if execute else "DRY_RUN"

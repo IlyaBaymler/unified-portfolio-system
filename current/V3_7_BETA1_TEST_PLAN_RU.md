@@ -7,14 +7,14 @@
 Обязательные результаты:
 
 - version/manifest `0.3.7b1` — PASS;
-- full pytest regression — `453 passed`;
+- full pytest regression — `454 passed`;
 - release hygiene и deterministic ZIP audit — PASS;
 - compileall — PASS;
 - Risk Lab — 8/8 PASS.
 
-Перед публичным выпуском отдельно запустить portable GUI на чистой Windows.
-Локальная Codex-среда может проверить PyInstaller layout, но её Tcl/Tk runtime
-не подходит для GUI smoke.
+Установка и GUI-launch portable-пакета подтверждены пользователем на Windows.
+После исправления split-runtime требуется повторить restart с сохранённым
+SANDBOX_EXECUTION profile и убедиться, что Risk status больше не RUNTIME_ERROR.
 
 ## Beta1 targeted matrix
 
@@ -27,6 +27,8 @@
 7. Legacy `NOT_CONFIGURED` читается как `DISABLED`.
 8. Shadow `DEGRADED` отображается, но не подменяет canonical readiness.
 9. Support manifest содержит только безопасные portfolio observability metadata.
+10. Portable GUI использует sibling `runtime` для risk, robot и portfolio state;
+    mutable state не создаётся внутри `app`.
 
 ## Safety regression
 

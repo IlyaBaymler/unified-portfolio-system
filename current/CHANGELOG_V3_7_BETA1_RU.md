@@ -13,6 +13,8 @@
   runtime failure; неразрешённый и non-transient сбой остаются FAIL.
 - Compatibility shadow нормализован до `OK`, `DEGRADED`, `DISABLED` и добавлен
   в безопасную observability-поверхность.
+- Portable GUI теперь передаёт Risk Engine, robot state и canonical portfolio
+  единый mutable `runtime`-каталог; устранён split-runtime после рестарта.
 
 ## Не изменено
 

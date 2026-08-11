@@ -17,14 +17,14 @@ SOURCE ARCHIVE
 - runtime/private files excluded
 
 REQUIRED GATES
-- full pytest regression: 453 passed
+- full pytest regression: 454 passed
 - Risk Lab: 8/8 PASS
 - release hygiene: PASS
 - compileall: PASS
 - deterministic release builder audit: PASS
 - standalone layout verifier: PASS
 
-LOCAL VERIFICATION LIMITATION
-- PyInstaller produced the portable tree and the layout verifier passed.
-- GUI launch smoke must be repeated with a normal Windows Python/Tcl/Tk install;
-  the bundled Codex verification runtime has an unusable Tcl script library.
+USER-HOST STANDALONE SMOKE
+- installation and GUI launch: PASS (2026-08-11)
+- split-runtime defect found during Sandbox restart and fixed in source candidate
+- Sandbox Risk restart retest is required with the rebuilt archive

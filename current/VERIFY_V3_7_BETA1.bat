@@ -56,7 +56,7 @@ if errorlevel 1 set "RC=20" & goto :fail_run
 set "RC=0"
 "%PYTHON%" -c "from pathlib import Path; print(Path(r'%LOG_FILE%').read_text(encoding='utf-8',errors='replace'))"
 echo Verification v3.7-beta1 completed successfully.
-echo Expected full suite: 453 passed; Risk Lab: 8/8 PASS.
+echo Expected full suite: 454 passed; Risk Lab: 8/8 PASS.
 echo Log: %LOG_FILE%
 if "%NO_PAUSE%"=="0" pause
 exit /b 0

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 from tools.verify_standalone_layout import verify_layout
 from trading_robot.paths import resolve_app_paths
@@ -44,3 +45,20 @@ def test_standalone_sources_are_present_and_use_portable_environment():
     assert "verify_standalone_layout.py" in builder
     assert "MOEX_ROBOT_PORTABLE_LAYOUT=1" in launcher
     assert "MOEX_ROBOT_RUNTIME_DIR" in launcher
+
+
+def test_gui_robot_loop_uses_resolved_runtime_for_all_mutable_state():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "desktop_gui.py").read_text(encoding="utf-8")
+
+    assert "state_file=str(ROBOT_STATE_PATH)" in source
+    assert len(
+        re.findall(
+            r"RiskRuntimeAdapter\.from_directory\(\s*RUNTIME_DIR,",
+            source,
+        )
+    ) == 2
+    assert not re.search(
+        r"RiskRuntimeAdapter\.from_directory\(\s*APP_DIR,",
+        source,
+    )

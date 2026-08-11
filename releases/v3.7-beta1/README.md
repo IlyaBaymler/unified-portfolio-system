@@ -20,17 +20,18 @@
 
 ## Проверено локально
 
-- `453 passed`;
+- `454 passed`;
 - Risk Lab `8/8 PASS`;
 - release hygiene, compileall и deterministic ZIP audit — PASS;
 - PyInstaller portable tree и standalone layout — PASS.
 
-Перед публичным выпуском остаётся GUI-launch smoke portable-пакета на обычной
-Windows Python/Tcl/Tk среде. Bundled Codex runtime собрал executable, но его
-собственная Tcl script library непригодна для функционального GUI smoke.
+Установка и GUI-launch portable-пакета подтверждены пользователем на Windows.
+В ходе Sandbox restart обнаружен и исправлен split-runtime: рабочий цикл читал
+Risk/robot/portfolio state из `app`, тогда как GUI сохранял их в `runtime`.
+Для приёмки требуется повторить Sandbox Risk restart на обновлённом архиве.
 
 ## Исходный архив
 
 ```text
-2187928f100e6ce1385cb1dc77870dfc7a11bfe594a3210cc496b824ff082dfd  moex_trading_robot_research_v3_7_beta1.zip
+d5ca027168e14370d512071547abf54f80ad5e91353358803e90ad001de308fb  moex_trading_robot_research_v3_7_beta1.zip
 ```
