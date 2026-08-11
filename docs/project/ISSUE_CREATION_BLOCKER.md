@@ -1,0 +1,1 @@
+Issue creation should be completed through GitHub.create_issue; temporary note.
