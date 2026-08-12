@@ -26,6 +26,7 @@
 | Compileall | PASS |
 | Deterministic ZIP audit | PASS |
 | Standalone layout verifier | PASS |
+| Accepted alpha3 rollback artifact | SHA-256/manifest/safety PASS, 443 passed, hygiene PASS |
 
 ## Windows/Sandbox functional smoke
 

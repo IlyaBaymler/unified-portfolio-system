@@ -44,3 +44,4 @@ BETA RELEASE ACCEPTANCE (2026-08-12)
 - duplicate submit, missing reconciliation, missing Risk accounting: 0/0/0
 - unresolved pending/uncertain execution: 0
 - standard max_orders_per_day restored to 4
+- accepted alpha3 rollback artifact: SHA-256/manifest/safety PASS, 443 tests PASS

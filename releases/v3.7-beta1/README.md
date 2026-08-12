@@ -25,6 +25,8 @@
 - Risk Lab `8/8 PASS`;
 - release hygiene, compileall и deterministic ZIP audit — PASS;
 - PyInstaller portable tree и standalone layout — PASS.
+- accepted alpha3 rollback artifact: SHA-256/manifest/safety, `443 passed` и
+  release hygiene — PASS.
 
 Установка, standalone-запуск и restart из `run_gui.bat` подтверждены
 пользователем на Windows. После split-runtime fix выполнен полный Sandbox
@@ -42,5 +44,5 @@ support bundle просмотрены. Стандартный `max_orders_per_da
 ## Исходный архив
 
 ```text
-212d9e56bc020c3f42db6017e11d1f6321effb22607230eaef16845a210dd90f  moex_trading_robot_research_v3_7_beta1.zip
+7cd4fc8335e22440289c2d2c810abf44aa5178bec4562c78d94fbfcae4c3b929  moex_trading_robot_research_v3_7_beta1.zip
 ```

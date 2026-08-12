@@ -63,3 +63,7 @@ restart/disconnect recovery и отсутствие private runtime файлов
 
 Временный burn-in лимит `max_orders_per_day=32` после проверки возвращён к
 стандартному значению `4`.
+
+Rollback artifact принятого alpha3 проверен 2026-08-12 в изолированной копии:
+SHA-256, manifest/safety contract и release hygiene — PASS; regression —
+`443 passed`.

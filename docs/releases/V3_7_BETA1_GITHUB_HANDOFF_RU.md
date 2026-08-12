@@ -64,6 +64,7 @@ git diff 6e4f7da..v3-7-beta1 -- current/trading_robot current/tests
 | Compileall | PASS |
 | Standalone layout verifier | PASS |
 | Deterministic ZIP audit | PASS |
+| Accepted alpha3 rollback artifact | SHA-256/manifest/safety PASS, `443 passed`, hygiene PASS |
 
 Воспроизведение на Windows из `current/`:
 
@@ -104,7 +105,7 @@ alpha3 source baseline SHA-256:
 2a643a9a48e53db1731fd91d6487c4040b774d947c92d63943665d655e429455
 
 beta1 source ZIP SHA-256:
-212d9e56bc020c3f42db6017e11d1f6321effb22607230eaef16845a210dd90f
+7cd4fc8335e22440289c2d2c810abf44aa5178bec4562c78d94fbfcae4c3b929
 ```
 
 Файлы:
