@@ -84,9 +84,8 @@
 
 ### Beta1 handoff gate
 
-Source, tests, build manifest и sanitized evidence подготовлены в локальном
-Codex и публикуются в `v3-7-beta1` для GitHub/ChatGPT review. Issue #33
-отслеживает этот handoff отдельно от длительного burn-in.
+Source, tests, build manifest и sanitized evidence опубликованы в
+`v3-7-beta1`, прошли GitHub/ChatGPT review и объединены в `main` через PR #35.
 
 Issues этапа:
 
@@ -96,26 +95,35 @@ Issues этапа:
 
 Результат: принятая `v3.7-beta1 / 0.3.7b1`.
 
-## v3.7.0 — Portfolio Manager Stable — активный следующий этап
+## v3.7.0 — Portfolio Manager Stable — кандидат квалифицируется
 
 Issue #34 — release qualification and final acceptance.
 
 Цель: зафиксировать canonical-only Portfolio Manager как стабильное одноинструментное Sandbox-ядро без изменения архитектуры.
 
-Gate:
+Локально выполнено 2026-08-12:
 
 - beta1 acceptance complete;
-- full regression и crash/recovery PASS;
+- full regression `455 passed`;
+- crash/recovery, migration и backup/restore subset `61 passed`;
 - migration schema1->schema2 regression PASS;
-- clean install/upgrade PASS;
-- backup/verify/restore и support bundle PASS;
-- standalone without Python PASS;
-- rollback to accepted beta1 PASS;
+- Risk Lab `8/8 PASS`;
+- standalone build и layout PASS;
+- accepted beta1 rollback artifact: hash PASS, `454 passed`;
 - release hygiene/secret scan PASS;
+- deterministic clean source ZIP PASS;
 - 0 duplicate submit;
 - 0 fill without canonical reconciliation;
-- 0 execution without Risk accounting;
-- финальный Sandbox burn-in, рекомендуется 24–48 h.
+- 0 execution without Risk accounting.
+
+Остаётся подтвердить на пользовательском Windows/Sandbox-контуре:
+
+- clean install/upgrade;
+- фактический standalone без установленного Python;
+- rollback exercise в тестовой копии;
+- backup/verify/restore и sanitized support bundle рабочего runtime;
+- финальный Sandbox burn-in 24–48 h;
+- review evidence и отдельное пользовательское acceptance.
 
 ## v3.8.0 — Multi-Instrument Sandbox
 

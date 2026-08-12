@@ -3,6 +3,11 @@
 Версия: `v3.7.0` / `0.3.7`.
 База: принятая `v3.7-beta1`.
 
+Статус на 2026-08-12: локальный Stable candidate подготовлен; автоматическая
+часть gate PASS, ручные Windows/Sandbox проверки и пользовательское acceptance
+ожидаются. Протокол:
+`docs/releases/V3_7_0_STABLE_QUALIFICATION_RU.md`.
+
 ## Цель
 
 Зафиксировать canonical-only Portfolio Manager как стабильное одноинструментное Sandbox-ядро без расширения торговой функциональности.

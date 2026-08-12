@@ -6,21 +6,22 @@ import shutil
 import sys
 
 CURRENT_FILES = {
-    "CHANGELOG_V3_7_BETA1_RU.md",
-    "MASTER_UPDATE_2026-08-11_V3_7_BETA1_RU.md",
-    "RELEASE_MANIFEST_V3_7_BETA1.txt",
-    "UPDATE_TO_V3_7_BETA1.md",
-    "V3_7_BETA1_ARCHITECTURE_RU.md",
-    "V3_7_BETA1_RECOVERY_RUNBOOK_RU.md",
-    "V3_7_BETA1_TEST_PLAN_RU.md",
-    "VERIFY_V3_7_BETA1.bat",
-    "install_and_verify_v3_7_beta1.bat",
+    "CHANGELOG_V3_7_0_STABLE_RU.md",
+    "MASTER_UPDATE_2026-08-12_V3_7_0_STABLE_RU.md",
+    "RELEASE_MANIFEST_V3_7_0_STABLE.txt",
+    "UPDATE_TO_V3_7_0_STABLE.md",
+    "V3_7_0_STABLE_ARCHITECTURE_RU.md",
+    "V3_7_0_STABLE_RECOVERY_RUNBOOK_RU.md",
+    "V3_7_0_STABLE_TEST_PLAN_RU.md",
+    "VERIFY_V3_7_0_STABLE.bat",
+    "install_and_verify_v3_7_0.bat",
     "restore_stable_default_risk_profile.bat",
 }
 
 
 
 LEGACY_RELATIVE_PATHS = {
+    "tests/test_beta_release_v3_7.py",
     "tests/test_runtime_backup_rc1_1.py",
     "tests/test_stable_release_v3_6_0.py",
 }

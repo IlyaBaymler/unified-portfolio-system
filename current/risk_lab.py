@@ -276,7 +276,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Offline synthetic test harness for MOEX Research Robot "
-            "v3.7-beta1 Risk Engine. It never connects to the broker."
+            "v3.7.0 Risk Engine. It never connects to the broker."
         )
     )
     parser.add_argument(

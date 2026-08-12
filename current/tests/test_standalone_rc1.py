@@ -27,7 +27,8 @@ def test_standalone_layout_verifier_accepts_expected_tree(tmp_path: Path):
     (tmp_path / "MOEX Research Robot.bat").write_text("launcher", encoding="utf-8")
     (tmp_path / "app" / "MOEXResearchRobot.exe").write_bytes(b"placeholder")
     (tmp_path / "app" / "build_manifest.json").write_text(
-        json.dumps({"software_version": "0.3.7b1"}), encoding="utf-8"
+        json.dumps({"software_version": "0.3.7", "release_channel": "stable"}),
+        encoding="utf-8",
     )
     assert verify_layout(tmp_path) == []
 
@@ -39,7 +40,8 @@ def test_standalone_sources_are_present_and_use_portable_environment():
     launcher = (root / "portable_launcher.bat").read_text(encoding="utf-8")
     assert "desktop_gui.py" in spec
     assert "MOEXResearchRobot" in spec
-    assert "V3_7_BETA1_RECOVERY_RUNBOOK_RU.md" in spec
+    assert "V3_7_0_STABLE_RECOVERY_RUNBOOK_RU.md" in spec
+    assert "V3_7_BETA1_RECOVERY_RUNBOOK_RU.md" not in spec
     assert "V3_7_ALPHA3_RECOVERY_RUNBOOK_RU.md" not in spec
     assert "PyInstaller" in builder
     assert "verify_standalone_layout.py" in builder

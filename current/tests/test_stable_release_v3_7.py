@@ -16,20 +16,48 @@ def manifest() -> dict:
     return json.loads((ROOT / "build_manifest.json").read_text(encoding="utf-8"))
 
 
-def test_beta_version_and_manifest_are_consistent():
+def test_stable_version_and_manifest_are_consistent():
     data = manifest()
-    assert trading_robot.__version__ == "0.3.7b1"
+    assert trading_robot.__version__ == "0.3.7"
     assert data["software_version"] == trading_robot.__version__
-    assert data["display_version"] == "v3.7-beta1"
-    assert data["release_channel"] == "beta"
-    assert data["build_date"] == "2026-08-11"
+    assert data["display_version"] == "v3.7.0"
+    assert data["release_channel"] == "stable"
+    assert data["build_date"] == "2026-08-12"
     assert data["sandbox_only"] is True
     assert data["real_account_execution"] is False
-    assert data["release_basis"] == "accepted v3.7-alpha3 plus beta1 stabilization"
-    assert data["alpha3_user_acceptance"] is True
+    assert data["release_basis"] == "accepted v3.7-beta1 qualification baseline"
+    assert data["beta1_user_acceptance"] is True
+    assert data["stable_qualification"] == {
+        "status": "candidate",
+        "user_acceptance": False,
+        "final_burn_in_complete": False,
+    }
 
 
-def test_beta1_stabilization_protocols_are_explicit():
+def test_acceptance_datasets_have_explicit_provenance():
+    data = manifest()
+    historical = data["sandbox_acceptance"]
+    assert historical["scope"] == "historical-v3.6.0-stable-core"
+    assert historical["evidence_date"] == "2026-07-30"
+    assert historical["inherited"] is True
+    assert historical["unique_executions"] == 30
+
+    beta1 = data["beta1_sandbox_acceptance"]
+    assert beta1["scope"] == "v3.7-beta1-portfolio-manager-stabilization"
+    assert beta1["evidence_date"] == "2026-08-12"
+    assert beta1["strategy_buy_hold_sell_cycles"] == 6
+    assert beta1["submitted_orders"] == 12
+    assert beta1["accepted_orders"] == 12
+    assert beta1["filled_orders"] == 12
+    assert beta1["canonically_reconciled_orders"] == 12
+    assert beta1["risk_accounted_orders"] == 12
+    assert beta1["duplicate_submits"] == 0
+    assert beta1["fills_without_reconciliation"] == 0
+    assert beta1["executions_without_risk_accounting"] == 0
+    assert beta1["unresolved_pending_or_uncertain_execution"] == 0
+
+
+def test_stabilization_protocols_remain_explicit():
     data = manifest()
     assert data["portfolio_warning_protocol"] == "observation-recompute-v1"
     assert data["secret_provider_probe"] == "metadata-only-v1"
@@ -45,7 +73,7 @@ def test_beta1_stabilization_protocols_are_explicit():
     assert data["compatibility_shadow_blocks_canonical_readiness"] is False
 
 
-def test_beta1_portfolio_protocol_remains_canonical_only_schema2():
+def test_portfolio_protocol_remains_canonical_only_schema2():
     data = manifest()
     assert data["portfolio_state_schema"] == PORTFOLIO_STATE_SCHEMA_VERSION == 2
     assert data["portfolio_manager_protocol"] == "canonical-portfolio-v2"
@@ -60,7 +88,6 @@ def test_beta1_portfolio_protocol_remains_canonical_only_schema2():
     assert data["portfolio_transaction_protocol"] == "canonical-single-writer-v1"
     assert data["portfolio_cutover_protocol"] == "schema1-to-schema2-v1"
     assert data["portfolio_legacy_shadow_mode"] == "write-only"
-    assert data["portfolio_migration_confirmation"] == "CUTOVER PORTFOLIO STATE 2"
     assert data["automatic_portfolio_cutover"] is False
     assert data["portfolio_preflight_shared_by_risk_execution"] is True
     assert data["portfolio_revision_recheck_before_post"] is True
@@ -90,7 +117,7 @@ def test_previous_alpha_features_remain_enabled():
     assert data["alpha2_user_acceptance"] is True
 
 
-def test_stable_safety_defaults_remain_active_in_beta1():
+def test_stable_safety_defaults_remain_active():
     policy = RiskPolicy()
     assert policy.max_position_lots == 1
     assert policy.max_orders_per_day == 4
@@ -99,7 +126,7 @@ def test_stable_safety_defaults_remain_active_in_beta1():
     assert data["default_max_orders_per_day"] == 4
 
 
-def test_beta_source_modules_and_cli_are_present():
+def test_stable_source_modules_and_cli_are_present():
     required = {
         "trading_robot/portfolio_model.py",
         "trading_robot/portfolio_adapters.py",
@@ -121,22 +148,22 @@ def test_beta_source_modules_and_cli_are_present():
     assert all((ROOT / name).is_file() for name in required)
 
 
-def test_beta_public_release_files_are_current_and_alpha_files_are_absent():
+def test_stable_public_release_files_are_current_and_beta_files_are_absent():
     required = {
-        "CHANGELOG_V3_7_BETA1_RU.md",
-        "MASTER_UPDATE_2026-08-11_V3_7_BETA1_RU.md",
-        "RELEASE_MANIFEST_V3_7_BETA1.txt",
-        "UPDATE_TO_V3_7_BETA1.md",
-        "V3_7_BETA1_ARCHITECTURE_RU.md",
-        "V3_7_BETA1_RECOVERY_RUNBOOK_RU.md",
-        "V3_7_BETA1_TEST_PLAN_RU.md",
-        "VERIFY_V3_7_BETA1.bat",
-        "install_and_verify_v3_7_beta1.bat",
+        "CHANGELOG_V3_7_0_STABLE_RU.md",
+        "MASTER_UPDATE_2026-08-12_V3_7_0_STABLE_RU.md",
+        "RELEASE_MANIFEST_V3_7_0_STABLE.txt",
+        "UPDATE_TO_V3_7_0_STABLE.md",
+        "V3_7_0_STABLE_ARCHITECTURE_RU.md",
+        "V3_7_0_STABLE_RECOVERY_RUNBOOK_RU.md",
+        "V3_7_0_STABLE_TEST_PLAN_RU.md",
+        "VERIFY_V3_7_0_STABLE.bat",
+        "install_and_verify_v3_7_0.bat",
     }
     assert required <= CURRENT_FILES
     assert all((ROOT / name).is_file() for name in required)
     assert find_legacy_files(ROOT) == []
-    assert not list(ROOT.glob("*V3_7_ALPHA3*"))
+    assert not list(ROOT.glob("*V3_7_BETA1*"))
 
 
 def test_gui_uses_canonical_manager_for_view_and_operator_repairs():

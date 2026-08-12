@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Command-line maintenance tool for v3.7-beta1 runtime operations."""
+"""Command-line maintenance tool for v3.7.0 runtime operations."""
 
 import argparse
 from datetime import datetime, timezone
@@ -27,7 +27,7 @@ def _json(value) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="v3.7-beta1 runtime maintenance tool")
+    parser = argparse.ArgumentParser(description="v3.7.0 runtime maintenance tool")
     sub = parser.add_subparsers(dest="command", required=True)
 
     readiness = sub.add_parser("readiness", help="Evaluate Sandbox production-readiness gate.")

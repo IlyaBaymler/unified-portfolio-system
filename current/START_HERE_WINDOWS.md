@@ -1,15 +1,15 @@
-# Быстрый запуск MOEX Research Robot v3.7-beta1
+# Быстрый запуск MOEX Research Robot v3.7.0 Stable
 
 ## Исходный пакет
 
 ```bat
-install_and_verify_v3_7_beta1.bat
+install_and_verify_v3_7_0.bat
 run_gui.bat
 ```
 
 Установщик создаёт локальную `.venv`, устанавливает зависимости и запускает
-beta1 verification gate. Используйте новую папку, а runtime alpha3 переносите
-только после создания backup и проверки canonical schema 2.
+Stable verification gate. Используйте новую папку, а runtime beta1/alpha3
+переносите только после создания backup и проверки canonical schema 2.
 
 ## Portable package
 
@@ -23,4 +23,4 @@ beta1 verification gate. Используйте новую папку, а runtim
 - Risk gate показывает `PASS`;
 - размер заявки равен 1 lot.
 
-Real-account execution в beta1 отключён.
+Real-account execution в v3.7.0 отключён.

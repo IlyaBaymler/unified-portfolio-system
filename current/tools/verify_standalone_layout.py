@@ -41,8 +41,10 @@ def verify_layout(root: str | Path) -> list[str]:
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             errors.append(f"Invalid build manifest: {exc}")
         else:
-            if manifest.get("software_version") != "0.3.7b1":
-                errors.append("Build manifest version is not 0.3.7b1")
+            if manifest.get("software_version") != "0.3.7":
+                errors.append("Build manifest version is not 0.3.7")
+            if manifest.get("release_channel") != "stable":
+                errors.append("Build manifest channel is not stable")
     for name in FORBIDDEN_RUNTIME_NAMES:
         if (base / name).exists() or (base / "app" / name).exists():
             errors.append(f"Private runtime file leaked into package: {name}")
@@ -50,7 +52,7 @@ def verify_layout(root: str | Path) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify v3.7-beta1 portable layout.")
+    parser = argparse.ArgumentParser(description="Verify v3.7.0 Stable portable layout.")
     parser.add_argument("--root", required=True)
     args = parser.parse_args(argv)
     errors = verify_layout(args.root)
