@@ -1,66 +1,102 @@
-# Repository Status — 2026-08-11
+# Repository Status — 2026-08-12
 
-## Принятая база
+## Версии
 
 - Stable baseline: `v3.6.0`.
-- Accepted development baseline: `v3.7-alpha3`.
-- Current development target: `v3.7-beta1`.
-- Следующий release-qualification этап после принятия beta1: `v3.7.0 Stable`.
+- Accepted alpha baseline: `v3.7-alpha3`.
+- Accepted development version: `v3.7-beta1 / 0.3.7b1`.
+- Beta1 functional acceptance: PASS.
+- Beta1 extended burn-in/recovery acceptance: PASS 2026-08-12.
+- Активный следующий этап: Issue #34 / `v3.7.0 Stable`.
 
-## Фактическое состояние GitHub
+## Ветка и GitHub handoff
 
-На момент проверки удалённая `v3-7-beta1` не имела отдельного implementation diff beta1 относительно `main`: локальная реализация Codex ещё не была представлена в GitHub для независимого анализа.
-
-После обновления документации `main` и `v3-7-beta1` синхронизированы на commit:
+Локальная реализация выполнена заново в чистом worktree и объединена с
+актуальной документационной историей удалённой beta-ветки:
 
 ```text
-36f994e59d8c7ae3dfe5c458930d8c24e7c4d8eb
+local branch: v3-7-beta1-rebuild
+publication target: origin/v3-7-beta1
+base before local implementation: origin/main @ 0a5bfcd
+incoming remote documentation head: 89db2dd
+publication tracking: GitHub Issue #33
 ```
 
-Локальному Codex перед push реализации beta1 необходимо получить эту remote-базу и затем отправить source/tests/build evidence в `v3-7-beta1`.
+Ключевые локальные коммиты:
 
-GitHub используется как auditable boundary между локальной имплементацией и ChatGPT-review.
+```text
+6e4f7da chore: import accepted v3.7-alpha3 source baseline
+aa046a6 feat: rebuild v3.7-beta1 stabilization release
+3d15edd fix: keep portable risk and state in runtime directory
+e99f6c7 docs: record v3.7-beta1 functional acceptance
+5273ed5 docs: add beta1 GitHub handoff evidence
+```
+
+Для содержательного beta1 review использовать baseline commit `6e4f7da`.
+Прямой diff удалённой alpha3-ветки к beta1 дополнительно показывает импорт
+распакованного source tree, поскольку alpha3 ранее публиковалась архивом.
+
+GitHub используется как auditable boundary:
+
+```text
+Codex local implementation/tests/build
+→ v3-7-beta1 source diff and evidence
+→ GitHub/ChatGPT review
+→ user burn-in acceptance
+→ Issues #31/#32 release decision
+```
+
+## Проверки
+
+- full pytest regression — `454 passed`;
+- Risk Lab — `8/8 PASS`;
+- migration schema 1 → 2 и crash/recovery matrix — PASS;
+- release hygiene, secret scan, compileall, standalone layout и deterministic
+  ZIP — PASS;
+- установка, standalone-запуск и restart из `run_gui.bat` — PASS;
+- Sandbox BUY→HOLD→SELL — PASS, 2/2 orders;
+- duplicate submit, missing reconciliation, missing Risk accounting — 0;
+- runtime/API/canonical transaction failures — 0;
+- финальный canonical state — `READY/FRESH/MATCHED`, `blocking=false`, shadow
+  `OK`, warnings `0`, revision `5`.
+- 16 ч 09 мин extended burn-in, 6 BUY→HOLD→SELL, 12/12 orders — PASS;
+- intentional disconnect, restart с открытой позицией и MARKET_IDLE recovery —
+  PASS;
+- Risk Burn-in report/support bundle — reviewed;
+- duplicate submit, missing reconciliation/accounting и unresolved execution —
+  0.
+
+Подробный sanitized handoff:
+`docs/releases/V3_7_BETA1_GITHUB_HANDOFF_RU.md`.
 
 ## GitHub Issues
 
-- #17 — зонтичная задача Portfolio Manager; оставить открытой до `v3.7.0 Stable`.
-- #29 — alpha2 canonical preflight; closed/completed.
-- #30 — alpha2 checklist; closed/completed.
-- #31 — beta1 stabilization and observability cleanup; open.
-- #32 — beta1 implementation checklist and acceptance matrix; open.
-- #33 — Codex -> GitHub implementation/evidence handoff для beta1; open.
-- #34 — `v3.7.0 Stable` release qualification and final acceptance; open, blocked until beta1 acceptance.
+- #17 — Portfolio Manager umbrella; оставить open до `v3.7.0 Stable`.
+- #29/#30 — alpha2; closed/completed.
+- #31 — beta1 stabilization; completed.
+- #32 — beta1 checklist; completed.
+- #33 — Codex → GitHub implementation/evidence handoff; completed.
+- #34 — Stable qualification; разблокирована принятием beta1.
 
 ## Ветки
 
 ```text
-main                 — принятая проектная/документационная база и release metadata
+main                 — принятая проектная/документационная база
 v3-7-alpha3          — frozen accepted alpha baseline
-v3-7-beta1           — активная beta implementation branch
+v3-7-beta1           — beta implementation and evidence branch
 release-v3.6.0       — историческая stable release branch
 ```
 
-`develop` является исторической интеграционной веткой и не обязателен в текущем local-Codex workflow.
+`develop` является исторической интеграционной веткой и не обязателен в
+текущем local-Codex workflow.
 
-## Codex -> GitHub -> ChatGPT
-
-```text
-Codex local implementation/tests/build
-→ push version branch
-→ GitHub commit/diff/evidence
-→ ChatGPT analysis/acceptance
-→ Issues/docs/roadmap/release decision
-→ next Codex task
-```
-
-## Обязательная repository hygiene
+## Repository hygiene
 
 Не публиковать:
 
 ```text
 .env
-*token*
-Account ID
+tokens / Account ID
 risk_state.json
 robot_state.json
 portfolio_state.json
@@ -76,33 +112,12 @@ runtime/
 несаницированные reports/
 ```
 
-Публиковать:
-
-```text
-.env.example
-source + tests
-README.md
-ROADMAP.md
-versioned changelog
-architecture/test/recovery docs
-release manifest
-sanitized test summary
-SHA-256
-source ZIP или GitHub Release artifact
-```
+Публиковать исходники, тесты, `.env.example`, versioned release docs, sanitized
+test/acceptance summary, source ZIP и SHA-256.
 
 ## Следующий контрольный пункт
 
-Перед beta1 acceptance:
-
-- #33 закрыт: implementation diff присутствует в `v3-7-beta1`;
-- #31/#32 отражают фактический scope и результаты;
-- full pytest и targeted beta tests PASS;
-- Risk Lab 8/8 PASS;
-- migration/crash/recovery regression PASS;
-- Windows/Sandbox acceptance выполнен;
-- standalone PASS;
-- `.gitignore` покрывает schema 2 runtime/migration artifacts;
-- full release hygiene и secret scan PASS.
-
-После принятия beta1 начинается только Issue #34 / `v3.7.0 Stable` release qualification; новые торговые функции до Stable не добавляются.
+1. Опубликовать финальный acceptance commit в `v3-7-beta1`.
+2. Закрыть Issues #31/#32 и перевести PR #35 в ready-for-review.
+3. Не выполнять merge в `main` без отдельного решения.
+4. Начать qualification checklist Issue #34 от принятой beta1.

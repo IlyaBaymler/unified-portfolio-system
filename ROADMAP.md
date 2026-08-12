@@ -1,6 +1,6 @@
 # Roadmap
 
-Дата обновления: 2026-08-11.
+Дата обновления: 2026-08-12.
 
 ## v3.6.0 — Stable Sandbox Core — завершено
 
@@ -47,11 +47,11 @@
 - 0 duplicate submit, 0 missing reconciliation/accounting;
 - revision monotonicity и disconnect/restart/MARKET_IDLE — PASS.
 
-## v3.7-beta1 — активный этап
+## v3.7-beta1 — принято 2026-08-12
 
 Цель: стабилизация принятой canonical-only архитектуры без новых торговых функций.
 
-Обязательный scope:
+Реализованный scope:
 
 - warnings пересчитываются из текущего snapshot;
 - `READY + MATCHED + blocking=false` не содержит stale blocking warnings;
@@ -59,21 +59,44 @@
 - recovered transient outages отражаются как infrastructure WARN/PASS;
 - compatibility shadow имеет независимый статус `OK/DEGRADED/DISABLED`;
 - schema 2, single-writer, preflight и post-fill protocol не меняются;
-- полный alpha3 regression, standalone и 12–24 h Sandbox burn-in.
+- единый sibling `runtime` для Risk, robot и portfolio state в portable-сборке;
+- полный alpha3 regression и standalone functional smoke.
+
+Проверено 2026-08-11 и 2026-08-12:
+
+- `454 passed`, Risk Lab `8/8 PASS`;
+- установка, standalone-запуск и restart из `run_gui.bat` — PASS;
+- один полный BUY→HOLD→SELL с 2/2 исполнениями;
+- 0 duplicate submit, missing reconciliation, missing Risk accounting и
+  runtime/API/canonical transaction errors;
+- финальный canonical state `READY/FRESH/MATCHED`, `blocking=false`, shadow
+  `OK`, warnings `0`.
+
+Финальный gate пройден:
+
+- 16 ч 09 мин Sandbox burn-in;
+- 6 Strategy BUY→HOLD→SELL, 12/12 orders;
+- intentional disconnect и restart с открытой позицией — PASS;
+- `OPEN → MARKET_IDLE → OPEN` — PASS;
+- reports/support bundle reviewed;
+- 0 duplicate submit, missing reconciliation, missing Risk accounting и
+  unresolved pending/uncertain execution.
 
 ### Beta1 handoff gate
 
-Локальная реализация Codex должна быть отправлена в `v3-7-beta1` до ChatGPT-review. Issue #33 отслеживает source/tests/build manifest и test evidence.
+Source, tests, build manifest и sanitized evidence подготовлены в локальном
+Codex и публикуются в `v3-7-beta1` для GitHub/ChatGPT review. Issue #33
+отслеживает этот handoff отдельно от длительного burn-in.
 
-Текущие Issues:
+Issues этапа:
 
-- #31 — beta1 scope;
-- #32 — implementation/acceptance checklist;
-- #33 — Codex -> GitHub implementation/evidence handoff.
+- #31 — beta1 scope, completed;
+- #32 — implementation/acceptance checklist, completed;
+- #33 — Codex → GitHub implementation/evidence handoff, completed.
 
-Следующий результат: принятая `v3.7-beta1 / 0.3.7b1`.
+Результат: принятая `v3.7-beta1 / 0.3.7b1`.
 
-## v3.7.0 — Portfolio Manager Stable — следующий этап
+## v3.7.0 — Portfolio Manager Stable — активный следующий этап
 
 Issue #34 — release qualification and final acceptance.
 

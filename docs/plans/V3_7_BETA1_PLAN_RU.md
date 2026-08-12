@@ -3,6 +3,9 @@
 Версия: `0.3.7b1`.
 База: принятая `v3.7-alpha3`.
 
+Статус на 2026-08-12: реализация, automated gate и финальный
+Windows/Sandbox acceptance завершены; beta1 принята.
+
 ## Цель
 
 Стабилизировать canonical-only Portfolio Manager перед `v3.7.0 Stable`, не расширяя торговую функциональность и не меняя проверенный broker order lifecycle.
@@ -148,6 +151,9 @@ real-account execution
 - 0 fill без canonical reconciliation;
 - 0 execution без Risk accounting.
 
+Результат: `454 passed`, Risk Lab `8/8 PASS`, release hygiene, compileall,
+standalone layout и deterministic ZIP audit — PASS.
+
 ## Windows/Sandbox acceptance
 
 Минимум:
@@ -164,6 +170,27 @@ real-account execution
 10. Reports/support bundle reviewed.
 11. 12–24 h burn-in.
 
+Функциональный smoke 2026-08-11:
+
+- пункты 1–4 и 9 — PASS;
+- установка, standalone-запуск и restart из `run_gui.bat` — PASS;
+- один полный BUY→HOLD→SELL, 2/2 broker orders — PASS;
+- canonical reconciliation и Risk accounting — 2/2;
+- duplicate submit, runtime/API/canonical transaction failures — 0;
+- финальный snapshot — `READY/FRESH/MATCHED`, `blocking=false`, shadow `OK`,
+  warnings `0`.
+
+Расширенный acceptance 2026-08-12:
+
+- пункты 5–8, 10 и 11 — PASS;
+- 16 ч 09 мин burn-in и 6 Strategy BUY→HOLD→SELL;
+- 12/12 orders, reconciliation и Risk accounting;
+- restart с открытой позицией и intentional disconnect — PASS без duplicate
+  POST;
+- `OPEN → MARKET_IDLE → OPEN` — PASS;
+- Risk Burn-in report/support bundle — reviewed;
+- release gate violations — 0.
+
 ## Release gate
 
 ```text
@@ -179,4 +206,5 @@ multi-instrument execution absent
 
 ## Решение после beta1
 
-Если gate пройден без блокирующих дефектов, следующий этап — `v3.7.0 Stable` release qualification. Если выявлен блокирующий дефект, создаётся минимальный `v3.7-beta1.x` без расширения scope.
+Gate пройден без блокирующих дефектов. Следующий этап — `v3.7.0 Stable`
+release qualification (Issue #34) без расширения scope.

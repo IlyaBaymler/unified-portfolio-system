@@ -17,7 +17,7 @@
 
 **MOEX Research Robot v3.6.0 Stable** — принятое одноинструментное ядро для T-Invest Sandbox.
 
-### Текущая принятая версия разработки
+### Принятый alpha baseline
 
 **v3.7-alpha3 Canonical State Cutover** — пользовательский acceptance пройден.
 
@@ -37,27 +37,49 @@
 - revision 0->19 без rollback;
 - disconnect, circuit breaker persistence, restart и MARKET_IDLE — PASS.
 
-### Активный этап
+### Текущая принятая версия разработки
 
-**v3.7-beta1 — canonical Portfolio Manager stabilization and observability cleanup.**
+**v3.7-beta1 / `0.3.7b1` — финальный acceptance пройден 2026-08-12.**
 
-Beta1 не меняет торговую архитектуру. В scope входят:
+Beta1 не меняет торговую архитектуру. Реализованы:
 
 - пересчёт Portfolio warnings из текущего snapshot без stale carry-over;
 - metadata-only проверка Windows Credential Manager в bootstrap report;
 - классификация восстановленных transient outages как infrastructure WARN/PASS;
 - отдельная observability write-only compatibility shadow;
-- полный regression alpha3, standalone и 12–24-часовой Sandbox burn-in.
+- split-runtime fix: Risk, robot и portfolio state используют единый sibling
+  `runtime`-каталог portable-сборки.
+
+Подтверждено:
+
+- полный regression — `454 passed`, Risk Lab — `8/8 PASS`;
+- установка, standalone-запуск и restart из `run_gui.bat` — PASS;
+- один полный Sandbox BUY→HOLD→SELL, 2/2 заявок исполнены и учтены Risk;
+- 0 duplicate submit, runtime/API/canonical transaction errors;
+- финальный canonical state: `READY`, `FRESH`, `MATCHED`, `blocking=false`,
+  compatibility shadow `OK`, warnings `0`.
+
+Дополнительно подтверждены 16 ч 09 мин burn-in, 6 полных BUY→HOLD→SELL,
+12/12 заявок с reconciliation/Risk accounting, intentional disconnect,
+restart с открытой позицией и `OPEN → MARKET_IDLE → OPEN`. На всей принятой
+сессии: 0 duplicate submit, missing reconciliation, missing Risk accounting и
+unresolved execution. Итоговый Risk report и support bundle просмотрены.
+Финальный результат зафиксирован в
+`docs/releases/V3_7_BETA1_FUNCTIONAL_ACCEPTANCE_RU.md`.
+
+Проверяемый GitHub handoff для Issues #31–#33 находится в
+`docs/releases/V3_7_BETA1_GITHUB_HANDOFF_RU.md`.
 
 GitHub-задачи этапа:
 
-- Issue #31 — общий scope beta1;
-- Issue #32 — implementation checklist и acceptance matrix;
-- Issue #33 — обязательный handoff локальной реализации Codex и test evidence в `v3-7-beta1`.
+- Issue #31 — beta1 scope, completed;
+- Issue #32 — implementation/acceptance matrix, completed;
+- Issue #33 — Codex → GitHub handoff, completed;
+- Issue #34 — активный следующий этап `v3.7.0 Stable` qualification.
 
 ### Следующий этап
 
-После принятия beta1 начинается **v3.7.0 Stable release qualification** — Issue #34.
+После принятия beta1 разблокирована **v3.7.0 Stable release qualification** — Issue #34.
 
 Это не функциональное расширение: schema 2, canonical-only reads, single-writer, Risk/Execution protocol и broker lifecycle замораживаются; выполняются full regression, clean install/upgrade, backup/restore, standalone, rollback, release hygiene и финальный Sandbox burn-in.
 
