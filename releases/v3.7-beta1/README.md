@@ -33,12 +33,14 @@ reconciliation и Risk accounting, 0 duplicate submit и runtime/API/canonical
 transaction errors. Финальный state — `READY/FRESH/MATCHED`, `blocking=false`,
 shadow `OK`, warnings `0`.
 
-Функциональный acceptance — PASS. До финальной приёмки beta1 остаётся
-расширенный 12–24-часовой burn-in с disconnect, restart с открытой позицией,
-MARKET_IDLE recovery и review диагностических артефактов.
+Финальный beta1 acceptance — PASS 2026-08-12. Выполнены 16 ч 09 мин burn-in,
+6 полных BUY→HOLD→SELL и 12/12 broker orders с canonical reconciliation и Risk
+accounting. Intentional disconnect, restart с открытой позицией и
+`OPEN → MARKET_IDLE → OPEN` прошли без duplicate POST; Risk Burn-in report и
+support bundle просмотрены. Стандартный `max_orders_per_day=4` восстановлен.
 
 ## Исходный архив
 
 ```text
-730a1d1dbef8bafd87bede739dd6d33574896ee6f0a466c4a861592771cd4ee2  moex_trading_robot_research_v3_7_beta1.zip
+212d9e56bc020c3f42db6017e11d1f6321effb22607230eaef16845a210dd90f  moex_trading_robot_research_v3_7_beta1.zip
 ```

@@ -1,8 +1,8 @@
 # v3.7-beta1 — GitHub Handoff and Evidence Package
 
-Дата: 2026-08-11.  
-Версия: `v3.7-beta1 / 0.3.7b1`.  
-GitHub: Issues #31, #32 и #33.  
+Дата: 2026-08-12.
+Версия: `v3.7-beta1 / 0.3.7b1`.
+GitHub: Issues #31, #32 и #33.
 Publication target: `v3-7-beta1`.
 
 ## Назначение
@@ -11,8 +11,8 @@ Publication target: `v3-7-beta1`.
 Windows/Sandbox evidence. Raw runtime, token, Account ID, SQLite, logs,
 backups, support bundles и несаницированные reports в Git не включаются.
 
-Расширенный 12–24-часовой beta burn-in ведётся отдельно и не подменяется этим
-handoff.
+Расширенный beta burn-in и recovery acceptance завершены 2026-08-12 и
+зафиксированы отдельным sanitized summary без публикации raw runtime.
 
 ## История и граница diff
 
@@ -104,7 +104,7 @@ alpha3 source baseline SHA-256:
 2a643a9a48e53db1731fd91d6487c4040b774d947c92d63943665d655e429455
 
 beta1 source ZIP SHA-256:
-730a1d1dbef8bafd87bede739dd6d33574896ee6f0a466c4a861592771cd4ee2
+212d9e56bc020c3f42db6017e11d1f6321effb22607230eaef16845a210dd90f
 ```
 
 Файлы:
@@ -117,13 +117,19 @@ beta1 source ZIP SHA-256:
 - `current/V3_7_BETA1_TEST_PLAN_RU.md`;
 - `current/V3_7_BETA1_RECOVERY_RUNBOOK_RU.md`.
 
-## Незакрытый beta release gate
+## Beta release gate — PASS 2026-08-12
 
-- расширенный 12–24 h Sandbox burn-in;
-- intentional disconnect и recovery до fresh `MATCHED`;
-- restart с открытой позицией;
-- `OPEN → MARKET_IDLE → OPEN`;
-- review итогового Risk Burn-in report и support bundle.
+- 16 ч 09 мин Sandbox burn-in;
+- 6 полных Strategy BUY→HOLD→SELL, 12/12 orders;
+- 0 duplicate submit, missing reconciliation, missing Risk accounting и
+  unresolved pending/uncertain execution;
+- intentional disconnect восстановлен до fresh `MATCHED` с ожидаемым
+  infrastructure WARN и 0 FAIL;
+- restart с открытой позицией — HOLD `1/1`, без повторного broker POST;
+- `OPEN → MARKET_IDLE → OPEN` — PASS;
+- итоговый Risk Burn-in report и support bundle просмотрены;
+- стандартный `max_orders_per_day=4` восстановлен.
 
-После завершения этого gate пользователь принимает решение по Issues #31/#32.
-Issue #34 `v3.7.0 Stable` до этого не начинается.
+Полная очищенная запись находится в
+`docs/releases/V3_7_BETA1_FUNCTIONAL_ACCEPTANCE_RU.md`. Issues #31/#32
+закрываются как completed, а Issue #34 `v3.7.0 Stable` разблокируется.

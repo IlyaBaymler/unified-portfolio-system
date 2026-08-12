@@ -17,7 +17,7 @@
 
 **MOEX Research Robot v3.6.0 Stable** — принятое одноинструментное ядро для T-Invest Sandbox.
 
-### Текущая принятая версия разработки
+### Принятый alpha baseline
 
 **v3.7-alpha3 Canonical State Cutover** — пользовательский acceptance пройден.
 
@@ -37,9 +37,9 @@
 - revision 0->19 без rollback;
 - disconnect, circuit breaker persistence, restart и MARKET_IDLE — PASS.
 
-### Текущий beta-кандидат
+### Текущая принятая версия разработки
 
-**v3.7-beta1 / `0.3.7b1` — функциональный acceptance пройден 2026-08-11.**
+**v3.7-beta1 / `0.3.7b1` — финальный acceptance пройден 2026-08-12.**
 
 Beta1 не меняет торговую архитектуру. Реализованы:
 
@@ -59,8 +59,12 @@ Beta1 не меняет торговую архитектуру. Реализо�
 - финальный canonical state: `READY`, `FRESH`, `MATCHED`, `blocking=false`,
   compatibility shadow `OK`, warnings `0`.
 
-Перед финальным выпуском beta1 остаётся расширенный 12–24-часовой Sandbox
-burn-in с recovery-сценариями. Функциональный результат зафиксирован в
+Дополнительно подтверждены 16 ч 09 мин burn-in, 6 полных BUY→HOLD→SELL,
+12/12 заявок с reconciliation/Risk accounting, intentional disconnect,
+restart с открытой позицией и `OPEN → MARKET_IDLE → OPEN`. На всей принятой
+сессии: 0 duplicate submit, missing reconciliation, missing Risk accounting и
+unresolved execution. Итоговый Risk report и support bundle просмотрены.
+Финальный результат зафиксирован в
 `docs/releases/V3_7_BETA1_FUNCTIONAL_ACCEPTANCE_RU.md`.
 
 Проверяемый GitHub handoff для Issues #31–#33 находится в
@@ -68,13 +72,14 @@ burn-in с recovery-сценариями. Функциональный резу�
 
 GitHub-задачи этапа:
 
-- Issue #31 — общий scope beta1;
-- Issue #32 — implementation checklist и acceptance matrix;
-- Issue #33 — обязательный handoff локальной реализации Codex и test evidence в `v3-7-beta1`.
+- Issue #31 — beta1 scope, completed;
+- Issue #32 — implementation/acceptance matrix, completed;
+- Issue #33 — Codex → GitHub handoff, completed;
+- Issue #34 — активный следующий этап `v3.7.0 Stable` qualification.
 
 ### Следующий этап
 
-После принятия beta1 начинается **v3.7.0 Stable release qualification** — Issue #34.
+После принятия beta1 разблокирована **v3.7.0 Stable release qualification** — Issue #34.
 
 Это не функциональное расширение: schema 2, canonical-only reads, single-writer, Risk/Execution protocol и broker lifecycle замораживаются; выполняются full regression, clean install/upgrade, backup/restore, standalone, rollback, release hygiene и финальный Sandbox burn-in.
 

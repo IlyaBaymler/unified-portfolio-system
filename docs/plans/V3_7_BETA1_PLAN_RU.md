@@ -3,8 +3,8 @@
 Версия: `0.3.7b1`.
 База: принятая `v3.7-alpha3`.
 
-Статус на 2026-08-11: реализация и функциональный Windows/Sandbox acceptance
-завершены; расширенный 12–24-часовой burn-in остаётся release gate.
+Статус на 2026-08-12: реализация, automated gate и финальный
+Windows/Sandbox acceptance завершены; beta1 принята.
 
 ## Цель
 
@@ -180,8 +180,16 @@ standalone layout и deterministic ZIP audit — PASS.
 - финальный snapshot — `READY/FRESH/MATCHED`, `blocking=false`, shadow `OK`,
   warnings `0`.
 
-До release acceptance остаются пункты 5, 7, 8, 10 и 11, а также расширение
-числа Strategy BUY→SELL до диапазона, заданного планом.
+Расширенный acceptance 2026-08-12:
+
+- пункты 5–8, 10 и 11 — PASS;
+- 16 ч 09 мин burn-in и 6 Strategy BUY→HOLD→SELL;
+- 12/12 orders, reconciliation и Risk accounting;
+- restart с открытой позицией и intentional disconnect — PASS без duplicate
+  POST;
+- `OPEN → MARKET_IDLE → OPEN` — PASS;
+- Risk Burn-in report/support bundle — reviewed;
+- release gate violations — 0.
 
 ## Release gate
 
@@ -198,4 +206,5 @@ multi-instrument execution absent
 
 ## Решение после beta1
 
-Если gate пройден без блокирующих дефектов, следующий этап — `v3.7.0 Stable` release qualification. Если выявлен блокирующий дефект, создаётся минимальный `v3.7-beta1.x` без расширения scope.
+Gate пройден без блокирующих дефектов. Следующий этап — `v3.7.0 Stable`
+release qualification (Issue #34) без расширения scope.

@@ -1,13 +1,13 @@
-# Repository Status — 2026-08-11
+# Repository Status — 2026-08-12
 
 ## Версии
 
 - Stable baseline: `v3.6.0`.
-- Accepted development baseline: `v3.7-alpha3`.
-- Current candidate: `v3.7-beta1 / 0.3.7b1`.
+- Accepted alpha baseline: `v3.7-alpha3`.
+- Accepted development version: `v3.7-beta1 / 0.3.7b1`.
 - Beta1 functional acceptance: PASS.
-- Beta1 extended 12–24 h burn-in: pending.
-- Следующий этап после принятия beta1: Issue #34 / `v3.7.0 Stable`.
+- Beta1 extended burn-in/recovery acceptance: PASS 2026-08-12.
+- Активный следующий этап: Issue #34 / `v3.7.0 Stable`.
 
 ## Ветка и GitHub handoff
 
@@ -59,6 +59,12 @@ Codex local implementation/tests/build
 - runtime/API/canonical transaction failures — 0;
 - финальный canonical state — `READY/FRESH/MATCHED`, `blocking=false`, shadow
   `OK`, warnings `0`, revision `5`.
+- 16 ч 09 мин extended burn-in, 6 BUY→HOLD→SELL, 12/12 orders — PASS;
+- intentional disconnect, restart с открытой позицией и MARKET_IDLE recovery —
+  PASS;
+- Risk Burn-in report/support bundle — reviewed;
+- duplicate submit, missing reconciliation/accounting и unresolved execution —
+  0.
 
 Подробный sanitized handoff:
 `docs/releases/V3_7_BETA1_GITHUB_HANDOFF_RU.md`.
@@ -67,10 +73,10 @@ Codex local implementation/tests/build
 
 - #17 — Portfolio Manager umbrella; оставить open до `v3.7.0 Stable`.
 - #29/#30 — alpha2; closed/completed.
-- #31 — beta1 stabilization; open до полного beta acceptance.
-- #32 — beta1 checklist; open до burn-in/recovery review.
-- #33 — Codex → GitHub implementation/evidence handoff; текущая публикация.
-- #34 — Stable qualification; заблокирована до принятия beta1.
+- #31 — beta1 stabilization; completed.
+- #32 — beta1 checklist; completed.
+- #33 — Codex → GitHub implementation/evidence handoff; completed.
+- #34 — Stable qualification; разблокирована принятием beta1.
 
 ## Ветки
 
@@ -111,9 +117,7 @@ test/acceptance summary, source ZIP и SHA-256.
 
 ## Следующий контрольный пункт
 
-1. Ветка `v3-7-beta1` и draft PR доступны для review.
-2. Issue #33 содержит ссылки на commit/PR/evidence.
-3. Пользователь завершает расширенный Sandbox burn-in.
-4. По результату обновляются и закрываются Issues #31/#32 либо создаётся
-   минимальный beta1.x fix.
-5. Issue #34 начинается только после принятия beta1.
+1. Опубликовать финальный acceptance commit в `v3-7-beta1`.
+2. Закрыть Issues #31/#32 и перевести PR #35 в ready-for-review.
+3. Не выполнять merge в `main` без отдельного решения.
+4. Начать qualification checklist Issue #34 от принятой beta1.

@@ -28,5 +28,11 @@
 
 Все перечисленные automated gate пройдены: `454 passed`, Risk Lab `8/8 PASS`.
 Установка, standalone-запуск, restart из `run_gui.bat` и один полный Sandbox
-BUY→HOLD→SELL также прошли успешно. Для release acceptance остаётся расширенный
-12–24-часовой burn-in и recovery matrix.
+BUY→HOLD→SELL также прошли успешно.
+
+Финальный release acceptance завершён 2026-08-12: 16 ч 09 мин burn-in,
+6 полных Strategy BUY→HOLD→SELL, intentional disconnect, restart с открытой
+позицией, `OPEN → MARKET_IDLE → OPEN` и review Risk Burn-in report/support
+bundle — PASS. На всей принятой сессии: 0 duplicate submit, missing canonical
+reconciliation, missing Risk accounting и unresolved pending/uncertain
+execution. Следующий этап — `v3.7.0 Stable` release qualification.

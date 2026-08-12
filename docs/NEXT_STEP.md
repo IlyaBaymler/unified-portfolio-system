@@ -1,31 +1,30 @@
 # Следующий шаг
 
-Дата обновления: 2026-08-11.
+Дата обновления: 2026-08-12.
 
-Функциональный acceptance `v3.7-beta1 / 0.3.7b1` пройден. Source, tests,
-manifest и sanitized evidence подготовлены для Issue #33 и ветки
-`v3-7-beta1`.
+`v3.7-beta1 / 0.3.7b1` принята после automated gate, standalone smoke,
+16-часового burn-in и recovery acceptance. Issues #31/#32/#33 закрываются как
+completed. PR #35 готовится к review; merge в `main` остаётся отдельным
+решением.
 
-## Параллельные контрольные действия beta1
+## Текущий этап: Issue #34 / v3.7.0 Stable
 
-### 1. GitHub handoff
+Release qualification выполняется без новых торговых функций и без изменения
+PortfolioState schema 2, canonical-only reads, single-writer coordinator,
+Risk/Execution protocol или broker lifecycle.
 
-- опубликовать fast-forward/merge history в `v3-7-beta1` без force-push;
-- открыть draft PR к `main`;
-- использовать `6e4f7da..v3-7-beta1` как содержательный beta1 diff;
-- выполнить GitHub/ChatGPT review evidence package;
-- закрыть Issue #33 после подтверждения доступности source/tests/evidence.
+Первый контрольный набор:
 
-### 2. Расширенный Sandbox burn-in
+1. Зафиксировать принятую beta1 как qualification baseline.
+2. Повторить full regression, migration и crash/recovery matrix.
+3. Проверить clean install и upgrade с принятой beta1.
+4. Проверить backup/verify/restore и sanitized support bundle.
+5. Проверить standalone without Python и rollback на принятую beta1 в тестовой
+   копии.
+6. Повторить release hygiene/secret scan.
+7. Провести финальный 24–48-часовой Sandbox burn-in.
 
-1. Использовать standalone-пакет с единым sibling `runtime`.
-2. Выполнить 12–24 часа наблюдения и 2–4 контролируемых BUY→HOLD→SELL.
-3. Проверить intentional disconnect и восстановление до fresh `MATCHED`.
-4. Проверить restart с открытой позицией без повторного broker POST.
-5. Проверить `OPEN → MARKET_IDLE → OPEN` и отклонение stale decision.
-6. Просмотреть trading events, Risk Burn-in report и support bundle.
-
-## Beta release gate
+## Неизменяемый safety gate
 
 ```text
 0 duplicate submit
@@ -38,6 +37,4 @@ real account disabled
 multi-instrument execution absent
 ```
 
-После Issue #33 и пользовательского burn-in review принимается решение по
-Issues #31/#32. Затем начинается Issue #34 / `v3.7.0 Stable` — отдельный
-release-qualification этап без новых торговых функций.
+Подробный план: `docs/plans/V3_7_0_STABLE_PLAN_RU.md`.

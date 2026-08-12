@@ -50,11 +50,16 @@ restart/disconnect recovery и отсутствие private runtime файлов
 - финальный state — `READY/FRESH/MATCHED`, `blocking=false`, shadow `OK`,
   warnings `0`.
 
-## Расширенный release smoke — pending
+## Расширенный release smoke — PASS 2026-08-12
 
-- 12–24 h Sandbox burn-in;
-- 2–4 Strategy BUY→SELL суммарно;
-- intentional disconnect и восстановление fresh `MATCHED`;
-- restart с открытой позицией;
-- `OPEN → MARKET_IDLE → OPEN`;
-- review Risk Burn-in report и support bundle.
+- 16 ч 09 мин Sandbox burn-in — PASS;
+- 6 Strategy BUY→HOLD→SELL, 12/12 broker orders — PASS;
+- intentional disconnect и восстановление fresh `MATCHED` — PASS;
+- restart с открытой позицией без повторного POST — PASS;
+- `OPEN → MARKET_IDLE → OPEN` — PASS;
+- Risk Burn-in report и support bundle — reviewed;
+- duplicate submit, fill без canonical reconciliation, execution без Risk
+  accounting и unresolved pending/uncertain execution — 0.
+
+Временный burn-in лимит `max_orders_per_day=32` после проверки возвращён к
+стандартному значению `4`.

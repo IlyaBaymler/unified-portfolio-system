@@ -32,7 +32,8 @@ Automatic position adoption: disabled
 
 ## Статус приёмки
 
-Функциональный Windows/Sandbox smoke 2026-08-11 — PASS:
+Финальный Windows/Sandbox acceptance завершён 2026-08-12 — PASS.
+Функциональный smoke 2026-08-11 подтвердил:
 
 - установка, standalone-запуск и restart из `run_gui.bat`;
 - один полный BUY→HOLD→SELL, 2/2 заявок исполнены;
@@ -41,8 +42,20 @@ Automatic position adoption: disabled
 - финальный state `READY/FRESH/MATCHED`, `blocking=false`, shadow `OK`,
   warnings `0`.
 
-До финального release acceptance остаётся расширенный 12–24-часовой Sandbox
-burn-in с disconnect, restart с открытой позицией и MARKET_IDLE recovery.
+Расширенный gate 2026-08-12 также пройден:
+
+- 16 ч 09 мин непрерывного burn-in, 6 полных BUY→HOLD→SELL;
+- 12/12 заявок submitted/accepted/filled, reconciled и учтены Risk;
+- intentional disconnect восстановлен до `READY/FRESH/MATCHED` без повторного
+  broker POST;
+- restart с открытой позицией сохранил actual/target `1/1` без duplicate submit;
+- `OPEN → MARKET_IDLE → OPEN` — PASS;
+- Risk Burn-in report и support bundle просмотрены;
+- 0 duplicate submit, fill без canonical reconciliation, execution без Risk
+  accounting и unresolved pending/uncertain execution.
+
+Стандартный Risk profile восстановлен: `max_position_lots=1`,
+`max_orders_per_day=4`. Следующий этап — отдельная квалификация `v3.7.0 Stable`.
 
 ## Быстрый запуск Windows
 

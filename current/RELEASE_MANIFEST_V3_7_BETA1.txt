@@ -33,9 +33,14 @@ USER-HOST STANDALONE SMOKE
 - duplicate submit, Risk runtime, API and canonical transaction errors: 0
 - final canonical state: READY/FRESH/MATCHED, blocking=false, shadow=OK, warnings=0
 
-REMAINING RELEASE GATE
-- extended 12-24 h Sandbox burn-in
-- intentional disconnect recovery
-- restart with an open position
-- OPEN -> MARKET_IDLE -> OPEN
-- Risk Burn-in report and support bundle review
+BETA RELEASE ACCEPTANCE (2026-08-12)
+- extended Sandbox burn-in: PASS, 16 h 09 min
+- Strategy BUY-HOLD-SELL cycles: 6
+- broker orders submitted/accepted/filled/reconciled/risk-accounted: 12/12/12/12/12
+- intentional disconnect recovery: PASS
+- restart with an open position and no duplicate POST: PASS
+- OPEN -> MARKET_IDLE -> OPEN: PASS
+- Risk Burn-in report and support bundle: reviewed
+- duplicate submit, missing reconciliation, missing Risk accounting: 0/0/0
+- unresolved pending/uncertain execution: 0
+- standard max_orders_per_day restored to 4
