@@ -19,7 +19,7 @@
 
 Релиз остаётся кандидатом до завершения ручных Windows/Sandbox-проверок,
 финального burn-in и отдельного пользовательского подтверждения. Артефакт
-передан в PR #36; Stable tag и GitHub Release не создавались.
+merged в `main` через PR #36; Stable tag и GitHub Release не создавались.
 
 Подробный протокол:
 `docs/releases/V3_7_0_STABLE_QUALIFICATION_RU.md`.
