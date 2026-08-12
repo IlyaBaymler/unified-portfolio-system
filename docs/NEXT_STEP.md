@@ -26,18 +26,16 @@ PR #36 reviewed и merged в `main` commit
 Clean install/upgrade, standalone launch без установленного Python и
 backup/verify/restore подтверждены. При review реального support bundle найден
 release-blocker: Account ID сохранялся внутри составного `transaction_id`.
-Небезопасный локальный bundle удалён. В ветке
-`fix/v3-7-support-bundle-redaction` добавлены auto-discovery канонического
-Account ID, embedded-value redaction и regression-тест. Новый bundle прошёл
+Небезопасный локальный bundle удалён. Через PR #38 добавлены auto-discovery
+канонического Account ID, embedded-value redaction и regression-тест. Новый bundle прошёл
 независимый scan: Account ID `0`, token `0`, forbidden members `0`, checksum
 mismatches `0`.
 
 ## Следующий контрольный набор
 
-1. Review/merge qualification security fix.
-2. Проверить rollback на принятую beta1 в тестовой копии.
-3. Провести финальный Sandbox burn-in 24–48 часов.
-4. Просмотреть итоговый evidence и явно принять либо отклонить Stable.
+1. Проверить rollback на принятую beta1 в тестовой копии.
+2. Провести финальный Sandbox burn-in 24–48 часов.
+3. Просмотреть итоговый evidence и явно принять либо отклонить Stable.
 
 После acceptance можно отдельно обновить Issue #34, создать tag `v3.7.0` и
 опубликовать GitHub Release.

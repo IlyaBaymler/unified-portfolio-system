@@ -22,7 +22,8 @@ Clean extraction: `456 passed`, release hygiene PASS.
 
 Релиз остаётся кандидатом до завершения ручных Windows/Sandbox-проверок,
 финального burn-in и отдельного пользовательского подтверждения. Артефакт
-merged в `main` через PR #36; Stable tag и GitHub Release не создавались.
+merged в `main` через PR #36; support-bundle security hardening опубликован
+через PR #38. Stable tag и GitHub Release не создавались.
 
 Подробный протокол:
 `docs/releases/V3_7_0_STABLE_QUALIFICATION_RU.md`.

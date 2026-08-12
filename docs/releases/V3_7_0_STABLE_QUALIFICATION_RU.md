@@ -69,17 +69,15 @@ SHA-256:
 - sanitized support bundle review и независимый scan — PASS.
 
 Qualification поймала исходную утечку Account ID до публикации. Небезопасный
-локальный bundle удалён; исправление и regression подготовлены в ветке
-`fix/v3-7-support-bundle-redaction`.
+локальный bundle удалён; исправление и regression опубликованы через PR #38.
 
 ## Оставшиеся gates
 
 Необходимо:
 
-1. review/merge security fix;
-2. rollback на принятую beta1 в тестовой копии;
-3. финальный Sandbox burn-in 24–48 часов без invariant violations;
-4. итоговый review evidence и явное пользовательское acceptance.
+1. rollback на принятую beta1 в тестовой копии;
+2. финальный Sandbox burn-in 24–48 часов без invariant violations;
+3. итоговый review evidence и явное пользовательское acceptance.
 
 До этого `stable_qualification.status=candidate`,
 `user_acceptance=false`, `final_burn_in_complete=false`. Git tag, GitHub

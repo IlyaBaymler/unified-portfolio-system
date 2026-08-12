@@ -17,6 +17,7 @@ branch: fix/v3-7-support-bundle-redaction
 base: origin/main @ 5cf717e
 handoff: PR #36 merged, main @ d696f74
 docs sync: PR #37 merged, main @ 5cf717e
+security fix: PR #38
 release publication: не выполнялась
 ```
 
@@ -59,6 +60,6 @@ SHA-256 aece8e64ad7306bdb2870a0d10481577cd57a16e9dee1a49034734c30feb952a
 
 ## Следующий контрольный пункт
 
-Review/merge security fix, затем rollback exercise и 24–48-часовой burn-in.
-После review финального evidence требуется явное acceptance; только затем
+После PR #38 остаются rollback exercise и 24–48-часовой burn-in. После review
+финального evidence требуется явное acceptance; только затем
 завершается Issue #34 и создаются tag/GitHub Release.
