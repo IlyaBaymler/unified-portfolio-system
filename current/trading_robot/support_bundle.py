@@ -2,22 +2,22 @@ from __future__ import annotations
 
 """Create a redacted support bundle that is safe to share for diagnostics."""
 
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path
 import platform
 import re
 import tempfile
-from typing import Any, Iterable, Mapping
 import zipfile
+from collections.abc import Iterable, Mapping
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 from .journal import EventJournal
 from .logging_setup import redact_sensitive_text
-from .runtime_integrity import inspect_json_file, inspect_sqlite_file, sha256_file
 from .portfolio_model import PORTFOLIO_STATE_SCHEMA_VERSION, validate_portfolio_document
-
+from .runtime_integrity import inspect_json_file, inspect_sqlite_file, sha256_file
 
 _SECRET_KEY_PARTS = (
     "token",
@@ -34,7 +34,31 @@ _SECRET_LIKE_RE = re.compile(
 )
 
 
-def redact_object(value: Any) -> Any:
+def _normalise_known_values(values: Iterable[str]) -> tuple[str, ...]:
+    normalised = {
+        str(value).strip()
+        for value in values
+        if value is not None and str(value).strip()
+    }
+    return tuple(sorted(normalised, key=len, reverse=True))
+
+
+def _redact_text(text: str, known_values: tuple[str, ...]) -> str:
+    redacted = redact_sensitive_text(text)
+    for value in known_values:
+        redacted = redacted.replace(value, "<REDACTED>")
+    return redacted
+
+
+def redact_object(
+    value: Any,
+    *,
+    known_values: Iterable[str] = (),
+) -> Any:
+    return _redact_object(value, _normalise_known_values(known_values))
+
+
+def _redact_object(value: Any, known_values: tuple[str, ...]) -> Any:
     if isinstance(value, Mapping):
         result: dict[str, Any] = {}
         for raw_key, nested in value.items():
@@ -42,14 +66,14 @@ def redact_object(value: Any) -> Any:
             if any(part in key.lower() for part in _SECRET_KEY_PARTS):
                 result[key] = "<REDACTED>"
             else:
-                result[key] = redact_object(nested)
+                result[key] = _redact_object(nested, known_values)
         return result
     if isinstance(value, list):
-        return [redact_object(item) for item in value]
+        return [_redact_object(item, known_values) for item in value]
     if isinstance(value, tuple):
-        return [redact_object(item) for item in value]
+        return [_redact_object(item, known_values) for item in value]
     if isinstance(value, str):
-        return redact_sensitive_text(value)
+        return _redact_text(value, known_values)
     return value
 
 
@@ -119,6 +143,14 @@ class SupportBundleBuilder:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.suffix.lower() != ".zip":
             target = target.with_suffix(".zip")
+        canonical_account_id = self._portfolio_account_id()
+        explicit_account_id = str(account_id).strip() if account_id else None
+        effective_account_id = explicit_account_id or canonical_account_id
+        scan_secrets = _normalise_known_values(
+            tuple(known_secrets)
+            + ((canonical_account_id,) if canonical_account_id else ())
+            + ((explicit_account_id,) if explicit_account_id else ())
+        )
         with tempfile.TemporaryDirectory(prefix="moex-support-") as temp_name:
             staging = Path(temp_name)
             portfolio_observability = self._portfolio_observability()
@@ -128,12 +160,14 @@ class SupportBundleBuilder:
                 "app_version": self.app_version,
                 "account_id": (
                     None
-                    if not account_id
-                    else "<REDACTED_ACCOUNT:" + str(account_id)[-4:] + ">"
+                    if not effective_account_id
+                    else "<REDACTED_ACCOUNT:" + effective_account_id[-4:] + ">"
                 ),
                 "account_id_sha256": (
-                    __import__("hashlib").sha256(str(account_id).encode("utf-8")).hexdigest()
-                    if account_id
+                    __import__("hashlib").sha256(
+                        effective_account_id.encode("utf-8")
+                    ).hexdigest()
+                    if effective_account_id
                     else None
                 ),
                 "token_included": False,
@@ -147,7 +181,11 @@ class SupportBundleBuilder:
                 },
                 "process": {"pid": os.getpid()},
             }
-            self._write_json(staging / "manifest.json", manifest)
+            # The manifest is assembled only from non-sensitive metadata and
+            # irreversible/masked account references. A second generic pass
+            # would erase those safe references because their keys contain
+            # ``account_id``.
+            self._write_json(staging / "manifest.json", manifest, redact=False)
 
             integrity: dict[str, Any] = {}
             for name in (
@@ -185,7 +223,10 @@ class SupportBundleBuilder:
                     document = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, UnicodeError, json.JSONDecodeError):
                     continue
-                self._write_json(staging / name, redact_object(document))
+                self._write_json(
+                    staging / name,
+                    redact_object(document, known_values=scan_secrets),
+                )
 
             for name in ("robot_gui.log", "robot_debug.log"):
                 source = self.app_dir / name
@@ -196,18 +237,18 @@ class SupportBundleBuilder:
                 except OSError:
                     continue
                 (staging / name).write_text(
-                    redact_sensitive_text(text), encoding="utf-8"
+                    _redact_text(text, scan_secrets), encoding="utf-8"
                 )
 
             if self.journal_path.exists():
                 journal = EventJournal(self.journal_path)
                 events = journal.recent(
                     limit=max(1, int(recent_event_limit)),
-                    account_id=account_id,
+                    account_id=effective_account_id,
                 )
                 self._write_json(
                     staging / "recent_events.json",
-                    redact_object(events),
+                    redact_object(events, known_values=scan_secrets),
                 )
 
             hashes = {
@@ -217,7 +258,6 @@ class SupportBundleBuilder:
             }
             self._write_json(staging / "sha256_manifest.json", hashes)
 
-            scan_secrets = tuple(known_secrets) + ((str(account_id),) if account_id else ())
             findings: list[str] = []
             for path in staging.iterdir():
                 if not path.is_file():
@@ -268,6 +308,20 @@ class SupportBundleBuilder:
             secret_scan=SecretScanResult(clean=True, findings=()),
         )
 
+    def _portfolio_account_id(self) -> str | None:
+        path = self.app_dir / "portfolio_state.json"
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(document, Mapping):
+            return None
+        account = document.get("account")
+        if not isinstance(account, Mapping):
+            return None
+        account_id = str(account.get("account_id") or "").strip()
+        return account_id or None
+
     def _portfolio_observability(self) -> dict[str, Any]:
         path = self.app_dir / "portfolio_state.json"
         try:
@@ -296,8 +350,9 @@ class SupportBundleBuilder:
         }
 
     @staticmethod
-    def _write_json(path: Path, value: Any) -> None:
+    def _write_json(path: Path, value: Any, *, redact: bool = True) -> None:
+        document = redact_object(value) if redact else value
         path.write_text(
-            json.dumps(redact_object(value), ensure_ascii=False, indent=2, default=str),
+            json.dumps(document, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",
         )

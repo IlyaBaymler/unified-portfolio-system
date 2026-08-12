@@ -8,10 +8,13 @@
 ## Артефакт
 
 - `moex_trading_robot_research_v3_7_0.zip`;
-- SHA-256: `184bbd2be93e5d2b9f38c79d9fdb6bd10bf829ddb3e166712ca3fca068e63f3b`.
+- SHA-256: `aece8e64ad7306bdb2870a0d10481577cd57a16e9dee1a49034734c30feb952a`.
 
 Архив собран дважды с одинаковым SHA-256, проверен в чистой распаковке и не
 содержит runtime state, секретов, журналов или несаницированных отчётов.
+В сборку включено qualification-исправление support bundle: канонический
+Account ID автоматически определяется и удаляется также из составных строк.
+Clean extraction: `456 passed`, release hygiene PASS.
 
 ## Статус
 

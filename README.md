@@ -87,16 +87,19 @@ reads, single-writer, Risk/Execution protocol и broker lifecycle остаютс
 
 Локально подтверждено:
 
-- полный regression — `455 passed`;
-- crash/recovery, migration и backup/restore subset — `61 passed`;
+- полный regression — `456 passed`;
+- crash/recovery, migration и backup/restore subset — `62 passed`;
 - Risk Lab — `8/8 PASS`;
 - standalone build/layout, release hygiene и clean source ZIP — PASS;
 - accepted beta1 rollback artifact — `454 passed`;
 - deterministic source ZIP — два совпадающих SHA-256.
 
-Остаются ручные Windows/Sandbox gates: clean install/upgrade, фактический
-standalone-запуск без Python, rollback exercise, финальный 24–48-часовой
-burn-in, support bundle review и отдельное пользовательское acceptance.
+Clean install/upgrade, фактический standalone-запуск без Python и
+backup/verify/restore подтверждены. Qualification выявила и устранила утечку
+Account ID внутри составного `transaction_id`; пересобранный support bundle
+прошёл встроенный и независимый exact-value scan. Остаются review/merge этого
+исправления, rollback exercise, финальный 24–48-часовой burn-in и отдельное
+пользовательское acceptance.
 До этого кандидат не является опубликованным Stable.
 
 Подробности: `docs/releases/V3_7_0_STABLE_QUALIFICATION_RU.md`.

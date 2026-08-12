@@ -13,6 +13,16 @@
 - Добавлены tests, запрещающие смешивать 30 historical executions с beta1
   dataset 6 cycles / 12 orders.
 
+## Security hardening qualification
+
+- Support bundle автоматически определяет канонический Account ID из
+  `portfolio_state.json`, даже если `--account-id` не передан.
+- Известные чувствительные значения удаляются не только из отдельных полей,
+  но и из составных строк, включая `transaction_id` событий журнала.
+- Добавлен regression-тест для embedded Account ID; реальный восстановленный
+  runtime прошёл независимый exact-value scan: Account ID `0`, token `0`,
+  forbidden members `0`, checksum mismatches `0`.
+
 ## Функциональный freeze
 
 Торговая логика относительно принятой beta1 не изменена. Сохраняются:

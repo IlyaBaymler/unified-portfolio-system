@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import json
-from pathlib import Path
 import zipfile
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -18,8 +18,8 @@ from trading_robot.readiness import ProductionReadinessEvaluator, ReadinessStatu
 from trading_robot.runtime_backup import RuntimeBackupManager
 from trading_robot.secret_provider import (
     EnvFileSecretProvider,
-    probe_secret_provider,
     preferred_secret_provider,
+    probe_secret_provider,
 )
 from trading_robot.state_persistence import atomic_write_json
 from trading_robot.support_bundle import (
@@ -95,14 +95,18 @@ def test_preferred_secret_provider_falls_back_when_windows_backend_unavailable(
 
 
 def test_recursive_redaction_and_secret_scan():
+    account_id = "account-123456789"
     value = {
         "token": "very-secret",
         "nested": {"Authorization": "Bearer abcdefghijklmnopqrstuvwxyz"},
+        "transaction_id": f"external-close-{account_id}-10",
         "safe": "ok",
     }
-    redacted = redact_object(value)
+    redacted = redact_object(value, known_values=[account_id])
     assert redacted["token"] == "<REDACTED>"
     assert "abcdefghijklmnopqrstuvwxyz" not in redacted["nested"]["Authorization"]
+    assert account_id not in redacted["transaction_id"]
+    assert "<REDACTED>" in redacted["transaction_id"]
     assert scan_text_for_secrets("Bearer abcdefghijklmnop").clean is False
     assert scan_text_for_secrets("hello", known_secrets=["canary"]).clean
 
@@ -138,6 +142,55 @@ def test_support_bundle_excludes_env_and_redacts_logs_and_events(tmp_path: Path)
         manifest["portfolio_observability"]["compatibility_shadow_status"]
         == "DISABLED"
     )
+
+
+def test_support_bundle_auto_redacts_account_id_inside_transaction_id(
+    tmp_path: Path,
+):
+    account_id = "751427b0-a3ec-468d-ab28-e9801654ecb4"
+    create_runtime(tmp_path, account_id=account_id)
+    EventJournal(tmp_path / "trading_events.db").record(
+        JournalEvent(
+            category="portfolio",
+            event_type="EXTERNAL_CLOSE_ACKNOWLEDGED",
+            account_id=account_id,
+            payload={
+                "transaction_id": f"external-close-{account_id}-revision-10"
+            },
+        )
+    )
+    (tmp_path / "robot_debug.log").write_text(
+        f"reconcile-{account_id}-revision-10\n", encoding="utf-8"
+    )
+
+    result = SupportBundleBuilder(tmp_path, app_version="0.3.7").build(
+        tmp_path / "support.zip",
+        account_id=None,
+    )
+
+    assert result.secret_scan.clean
+    with zipfile.ZipFile(result.path) as archive:
+        combined = "\n".join(
+            archive.read(name).decode("utf-8", errors="replace")
+            for name in archive.namelist()
+        )
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+    assert account_id not in combined
+    assert "<REDACTED>" in combined
+    assert manifest["account_id"] == "<REDACTED_ACCOUNT:ecb4>"
+
+    explicit_account_id = "operator-selected-account"
+    explicit_result = SupportBundleBuilder(tmp_path, app_version="0.3.7").build(
+        tmp_path / "support-explicit.zip",
+        account_id=explicit_account_id,
+    )
+    with zipfile.ZipFile(explicit_result.path) as archive:
+        explicit_combined = "\n".join(
+            archive.read(name).decode("utf-8", errors="replace")
+            for name in archive.namelist()
+        )
+    assert account_id not in explicit_combined
+    assert explicit_account_id not in explicit_combined
 
 
 def test_readiness_ready_with_valid_runtime_api_and_backup(tmp_path: Path):

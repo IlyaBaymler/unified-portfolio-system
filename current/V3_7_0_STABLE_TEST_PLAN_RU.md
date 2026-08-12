@@ -31,13 +31,16 @@
 ## Локальный результат 2026-08-12
 
 - stable release contract — `9 passed`;
-- full regression — `455 passed`;
-- recovery/migration/backup/readiness — `61 passed`;
+- full regression — `456 passed`;
+- recovery/migration/backup/readiness — `62 passed`;
 - Risk Lab — `8/8 PASS`;
 - release hygiene, deterministic audit, compileall — PASS;
 - PyInstaller build и standalone layout — PASS;
 - официальный beta1 rollback artifact — SHA/manifest/safety/hygiene PASS,
   `454 passed`.
+- clean install/upgrade, standalone launch без Python и backup/restore — PASS;
+- sanitized support bundle — Account ID `0`, token `0`, forbidden members `0`,
+  checksum mismatches `0` по независимому scan.
 
 ## Windows qualification
 
