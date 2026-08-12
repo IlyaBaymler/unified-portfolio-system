@@ -1,8 +1,8 @@
 {
-  "software_version": "0.3.7b1",
-  "display_version": "v3.7-beta1",
-  "release_channel": "beta",
-  "build_date": "2026-08-11",
+  "software_version": "0.3.7",
+  "display_version": "v3.7.0",
+  "release_channel": "stable",
+  "build_date": "2026-08-12",
   "sandbox_only": true,
   "real_account_execution": false,
   "state_schema": 6,
@@ -26,10 +26,13 @@
     480,
     600
   ],
-  "release_basis": "accepted v3.7-alpha3 plus beta1 stabilization",
+  "release_basis": "accepted v3.7-beta1 qualification baseline",
   "default_max_position_lots": 1,
   "default_max_orders_per_day": 4,
   "sandbox_acceptance": {
+    "scope": "historical-v3.6.0-stable-core",
+    "evidence_date": "2026-07-30",
+    "inherited": true,
     "sessions": 2,
     "duration_seconds": 149239.686,
     "unique_executions": 30,
@@ -43,6 +46,31 @@
     "fills_without_reconciliation": 0,
     "executions_without_risk_accounting": 0,
     "risk_runtime_errors": 0
+  },
+  "beta1_sandbox_acceptance": {
+    "scope": "v3.7-beta1-portfolio-manager-stabilization",
+    "evidence_date": "2026-08-12",
+    "minimum_duration_seconds": 58140,
+    "strategy_buy_hold_sell_cycles": 6,
+    "submitted_orders": 12,
+    "accepted_orders": 12,
+    "filled_orders": 12,
+    "canonically_reconciled_orders": 12,
+    "risk_accounted_orders": 12,
+    "market_idle_entries": 2,
+    "market_idle_exits": 2,
+    "disconnect_recovery": true,
+    "restart_with_open_position": true,
+    "support_bundle_reviewed": true,
+    "duplicate_submits": 0,
+    "fills_without_reconciliation": 0,
+    "executions_without_risk_accounting": 0,
+    "unresolved_pending_or_uncertain_execution": 0
+  },
+  "stable_qualification": {
+    "status": "candidate",
+    "user_acceptance": false,
+    "final_burn_in_complete": false
   },
   "portfolio_state_schema": 2,
   "portfolio_manager_protocol": "canonical-portfolio-v2",
@@ -107,6 +135,7 @@
   "automatic_portfolio_cutover": false,
   "alpha2_user_acceptance": true,
   "alpha3_user_acceptance": true,
+  "beta1_user_acceptance": true,
   "portfolio_warning_protocol": "observation-recompute-v1",
   "credential_probe_statuses": [
     "provider_unavailable",

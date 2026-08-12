@@ -13,7 +13,7 @@
 
 ## Текущий статус
 
-### Последняя стабильная версия
+### Последняя опубликованная стабильная версия
 
 **MOEX Research Robot v3.6.0 Stable** — принятое одноинструментное ядро для T-Invest Sandbox.
 
@@ -75,13 +75,32 @@ GitHub-задачи этапа:
 - Issue #31 — beta1 scope, completed;
 - Issue #32 — implementation/acceptance matrix, completed;
 - Issue #33 — Codex → GitHub handoff, completed;
-- Issue #34 — активный следующий этап `v3.7.0 Stable` qualification.
+- PR #35 — reviewed и merged в `main`;
+- Issue #34 — активная `v3.7.0 Stable` qualification.
 
-### Следующий этап
+### Stable-кандидат
 
-После принятия beta1 разблокирована **v3.7.0 Stable release qualification** — Issue #34.
+**v3.7.0 / `0.3.7` подготовлен локально как release candidate.** Это не
+функциональное расширение: schema 2, canonical-only reads, single-writer,
+Risk/Execution protocol и broker lifecycle остаются замороженными.
 
-Это не функциональное расширение: schema 2, canonical-only reads, single-writer, Risk/Execution protocol и broker lifecycle замораживаются; выполняются full regression, clean install/upgrade, backup/restore, standalone, rollback, release hygiene и финальный Sandbox burn-in.
+Локально подтверждено:
+
+- полный regression — `455 passed`;
+- crash/recovery, migration и backup/restore subset — `61 passed`;
+- Risk Lab — `8/8 PASS`;
+- standalone build/layout, release hygiene и clean source ZIP — PASS;
+- accepted beta1 rollback artifact — `454 passed`;
+- deterministic source ZIP — два совпадающих SHA-256.
+
+Остаются ручные Windows/Sandbox gates: clean install/upgrade, фактический
+standalone-запуск без Python, rollback exercise, финальный 24–48-часовой
+burn-in, support bundle review и отдельное пользовательское acceptance.
+До этого кандидат не является опубликованным Stable.
+
+Подробности: `docs/releases/V3_7_0_STABLE_QUALIFICATION_RU.md`.
+
+### Следующий функциональный этап
 
 После `v3.7.0 Stable` следующий функциональный этап — `v3.8.0 Multi-Instrument Sandbox`.
 
@@ -127,7 +146,8 @@ multi-instrument execution disabled
 - `ROADMAP.md` — последовательность версий;
 - `SECURITY.md` — правила работы с секретами и execution boundary;
 - `v3-7-alpha3` — frozen accepted alpha baseline;
-- `v3-7-beta1` — активная beta implementation branch.
+- `v3-7-beta1` — принятая beta implementation/evidence branch;
+- `v3-7-0-stable` — ветка квалификации Stable candidate, PR #36.
 
 `develop` сохраняется как историческая ветка и не является обязательной частью текущего local-Codex workflow.
 

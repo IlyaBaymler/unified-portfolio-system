@@ -2,27 +2,37 @@
 
 Дата обновления: 2026-08-12.
 
-`v3.7-beta1 / 0.3.7b1` принята после automated gate, standalone smoke,
-16-часового burn-in и recovery acceptance. Issues #31/#32/#33 закрываются как
-completed. PR #35 готовится к review; merge в `main` остаётся отдельным
-решением.
+`v3.7-beta1 / 0.3.7b1` принята, PR #35 reviewed и merged в `main`.
+Issues #31/#32/#33 завершены. Активный этап — Issue #34 / `v3.7.0 Stable`.
 
-## Текущий этап: Issue #34 / v3.7.0 Stable
+## Что уже подготовлено локально
 
-Release qualification выполняется без новых торговых функций и без изменения
-PortfolioState schema 2, canonical-only reads, single-writer coordinator,
-Risk/Execution protocol или broker lifecycle.
+В отдельной ветке `v3-7-0-stable` от merge commit `4e4a12b` подготовлен
+Stable candidate без изменения торговой архитектуры:
 
-Первый контрольный набор:
+- версия `v3.7.0 / 0.3.7`, channel `stable`, status `candidate`;
+- историческое v3.6 evidence отделено от принятого beta1 acceptance;
+- full regression `455 passed`;
+- recovery/migration/backup subset `61 passed`;
+- Risk Lab `8/8 PASS`;
+- standalone build/layout PASS;
+- accepted beta1 rollback artifact `454 passed`;
+- clean deterministic source ZIP и release hygiene PASS.
 
-1. Зафиксировать принятую beta1 как qualification baseline.
-2. Повторить full regression, migration и crash/recovery matrix.
-3. Проверить clean install и upgrade с принятой beta1.
-4. Проверить backup/verify/restore и sanitized support bundle.
-5. Проверить standalone without Python и rollback на принятую beta1 в тестовой
-   копии.
-6. Повторить release hygiene/secret scan.
-7. Провести финальный 24–48-часовой Sandbox burn-in.
+Candidate commit опубликован в `v3-7-0-stable` и передан в PR #36 для
+review/merge. Tag `v3.7.0` и GitHub Release не создавались.
+
+## Следующий пользовательский контрольный набор
+
+1. Проверить clean install и upgrade с принятой beta1.
+2. Запустить собранный standalone на Windows без установленного Python.
+3. Проверить rollback на принятую beta1 в тестовой копии.
+4. Проверить backup/verify/restore и сформировать sanitized support bundle.
+5. Провести финальный Sandbox burn-in 24–48 часов.
+6. Просмотреть support bundle и явно принять либо отклонить Stable.
+
+После acceptance можно отдельно обновить Issue #34, создать tag `v3.7.0` и
+опубликовать GitHub Release.
 
 ## Неизменяемый safety gate
 
@@ -37,4 +47,4 @@ real account disabled
 multi-instrument execution absent
 ```
 
-Подробный план: `docs/plans/V3_7_0_STABLE_PLAN_RU.md`.
+Подробный протокол: `docs/releases/V3_7_0_STABLE_QUALIFICATION_RU.md`.

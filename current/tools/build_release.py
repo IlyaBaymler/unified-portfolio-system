@@ -28,6 +28,7 @@ EXCLUDED_DIR_NAMES = {
     "risk_audit_output",
     "risk_beta_output",
     "risk_integration_output",
+    "risk_stable_output",
     "verification_output",
     "backups",
     "logs",

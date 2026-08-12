@@ -23,6 +23,9 @@ def test_build_zip_excludes_runtime_and_cache_files(tmp_path: Path):
     cache = root / "__pycache__"
     cache.mkdir()
     (cache / "app.pyc").write_bytes(b"compiled")
+    generated_risk = root / "risk_stable_output"
+    generated_risk.mkdir()
+    (generated_risk / "risk_alpha_report.json").write_text("{}", encoding="utf-8")
     output = tmp_path / "release.zip"
 
     members = build_zip(root, output, "release-root")
@@ -35,6 +38,7 @@ def test_build_zip_excludes_runtime_and_cache_files(tmp_path: Path):
     assert not any("runtime_bootstrap" in member for member in members)
     assert not any("moex_robot_gui.lock" in member for member in members)
     assert not any("__pycache__" in member for member in members)
+    assert not any("risk_stable_output" in member for member in members)
     with zipfile.ZipFile(output) as archive:
         names = archive.namelist()
         assert names == members
