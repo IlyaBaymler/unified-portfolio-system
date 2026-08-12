@@ -125,6 +125,8 @@ Issue #34 — release qualification and final acceptance.
 - финальный Sandbox burn-in 24–48 h;
 - review evidence и отдельное пользовательское acceptance.
 
+Temporal scope `v3.7.0` заморожен: один configured `candle_interval`; per-instrument/per-strategy timeframe относится к следующим версиям.
+
 ## v3.8.0 — Multi-Instrument Sandbox
 
 Первый функциональный этап после `v3.7.0 Stable`:
@@ -135,7 +137,20 @@ Issue #34 — release qualification and final acceptance.
 - Central Order Manager;
 - cash reservation;
 - последовательная очередь заявок;
-- account-wide reconciliation.
+- account-wide reconciliation;
+- фиксированный `candle_interval` отдельно для каждого `InstrumentRuntime` — Issue #39;
+- отдельный `last_processed_candle` для каждого instrument/timeframe runtime;
+- Global Scheduler не должен связывать candle interval с Risk/reconciliation cadence.
+
+Пример допустимой конфигурации:
+
+```text
+SBER → 1h
+LKOH → 30m
+YDEX → 15m
+```
+
+Dynamic переключение timeframe и multi-timeframe strategies не входят в v3.8.
 
 ## v3.9.0 — Portfolio Risk Engine
 
@@ -159,7 +174,9 @@ Issue #34 — release qualification and final acceptance.
 - Rebalance Plan;
 - несколько инструментов и стратегий;
 - performance attribution;
-- единый audit trail.
+- единый audit trail;
+- per-strategy timeframe: один instrument может обслуживаться несколькими `StrategyRuntime` с разными timeframe — Issue #40;
+- timeframe становится частью versioned StrategyProfile/config identity, а не свойством позиции.
 
 ## v4.1.0 — Ограниченный реальный контур
 
@@ -170,6 +187,34 @@ Issue #34 — release qualification and final acceptance.
 3. Limited Autonomous с allowlist и минимальными лимитами.
 4. Расширение автономности после отдельного acceptance.
 
+## v5.x — Adaptive Strategy / Supervisor temporal layer
+
+Дальняя исследовательская ветвь после стабильного Portfolio Supervisor и Portfolio Risk:
+
+- multi-timeframe Strategy Modules — Issue #41;
+- StrategyIntent/StrategyProposal с явным timeframe/decision horizon;
+- versioned profiles для наборов timeframe;
+- rule-based Strategy Selector сначала в SHADOW/Sandbox;
+- затем statistical/ML-assisted scoring при наличии достаточных данных;
+- Supervisor выбирает проверенный StrategyProfile/module, но не переписывает произвольно timeframe работающей стратегии;
+- Policy Guard, Portfolio Risk и Execution safety остаются обязательными.
+
+Подробный план: `docs/plans/CANDLE_INTERVAL_EVOLUTION_RU.md`.
+
+## Temporal architecture rule
+
+Не смешивать:
+
+```text
+candle_interval       — размер свечи стратегии
+decision cadence      — проверка новой закрытой свечи
+scheduler cadence     — обслуживание runtime
+risk refresh cadence  — обновление Risk
+reconciliation cadence — сверка с брокером
+```
+
+Эти интервалы независимы и не должны автоматически меняться друг за другом.
+
 ## Не делать до соответствующего этапа
 
 - не разрешать real execution в v3.7/v3.8;
@@ -177,4 +222,7 @@ Issue #34 — release qualification and final acceptance.
 - не менять PortfolioState schema в beta1/Stable без отдельной архитектурной причины;
 - не совмещать observability/release fixes с новыми стратегиями;
 - не удалять recovery/audit данные ради упрощения;
-- не считать Sandbox acceptance доказательством прибыльности.
+- не считать Sandbox acceptance доказательством прибыльности;
+- не вводить dynamic timeframe switching в v3.8;
+- не считать timeframe свойством всей позиции при нескольких StrategyRuntime;
+- не позволять Supervisor/AI обходить Portfolio Risk/Policy/Execution gates.
