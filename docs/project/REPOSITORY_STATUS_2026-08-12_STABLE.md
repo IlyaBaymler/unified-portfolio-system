@@ -15,7 +15,7 @@
 worktree: unified-portfolio-system-stable
 branch: v3-7-0-stable
 base: origin/main @ 4e4a12b
-handoff: PR #36, v3-7-0-stable -> main
+handoff: PR #36 merged, main @ d696f74
 release publication: не выполнялась
 ```
 
@@ -52,6 +52,6 @@ SHA-256 184bbd2be93e5d2b9f38c79d9fdb6bd10bf829ddb3e166712ca3fca068e63f3b
 
 На пользовательском Windows/Sandbox-контуре: clean install/upgrade,
 standalone без Python, rollback exercise, backup/restore/support bundle и
-24–48-часовой burn-in. Candidate branch и PR #36 опубликованы для review/merge.
-Затем — review evidence и явное acceptance; только после него обновляются
-Issue #34, tag и GitHub Release.
+24–48-часовой burn-in. Candidate branch reviewed и merged через PR #36.
+Затем — review финального evidence и явное acceptance; только после него
+завершается Issue #34 и создаются tag/GitHub Release.

@@ -19,8 +19,9 @@ Stable candidate без изменения торговой архитектур
 - accepted beta1 rollback artifact `454 passed`;
 - clean deterministic source ZIP и release hygiene PASS.
 
-Candidate commit опубликован в `v3-7-0-stable` и передан в PR #36 для
-review/merge. Tag `v3.7.0` и GitHub Release не создавались.
+PR #36 reviewed и merged в `main` commit
+`d696f74b428929c8355e84009ca0cb442646ed37`. Tag `v3.7.0` и GitHub Release не
+создавались.
 
 ## Следующий пользовательский контрольный набор
 

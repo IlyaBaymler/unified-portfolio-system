@@ -80,9 +80,10 @@ GitHub-задачи этапа:
 
 ### Stable-кандидат
 
-**v3.7.0 / `0.3.7` подготовлен локально как release candidate.** Это не
-функциональное расширение: schema 2, canonical-only reads, single-writer,
-Risk/Execution protocol и broker lifecycle остаются замороженными.
+**v3.7.0 / `0.3.7` подготовлен как release candidate и объединён в `main`
+через PR #36.** Это не функциональное расширение: schema 2, canonical-only
+reads, single-writer, Risk/Execution protocol и broker lifecycle остаются
+замороженными.
 
 Локально подтверждено:
 
@@ -147,7 +148,7 @@ multi-instrument execution disabled
 - `SECURITY.md` — правила работы с секретами и execution boundary;
 - `v3-7-alpha3` — frozen accepted alpha baseline;
 - `v3-7-beta1` — принятая beta implementation/evidence branch;
-- `v3-7-0-stable` — ветка квалификации Stable candidate, PR #36.
+- `v3-7-0-stable` — ветка Stable candidate, merged через PR #36.
 
 `develop` сохраняется как историческая ветка и не является обязательной частью текущего local-Codex workflow.
 
