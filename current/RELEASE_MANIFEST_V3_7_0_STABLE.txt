@@ -25,8 +25,8 @@ INHERITED ACCEPTANCE
 
 LOCAL QUALIFICATION
 - stable release contract: 9 passed
-- full regression: 455 passed
-- crash/recovery, migration, backup/restore targeted: 61 passed
+- full regression: 456 passed
+- crash/recovery, migration, backup/restore targeted: 62 passed
 - release hygiene/secret scan: PASS
 - compileall and deterministic ZIP audit: PASS
 - Risk Lab: 8/8 PASS
@@ -34,8 +34,9 @@ LOCAL QUALIFICATION
 - accepted beta1 rollback artifact: SHA-256/manifest/safety PASS, 454 passed
 
 USER-HOST GATES
-- clean install and upgrade: pending
-- standalone without Python: pending
+- clean install and upgrade: PASS
+- standalone without Python: PASS
+- backup/verify/restore and sanitized support bundle: PASS
 - rollback to accepted beta1 on test copy: pending
 - final 24-48 h Sandbox burn-in: pending
 - explicit user acceptance: pending

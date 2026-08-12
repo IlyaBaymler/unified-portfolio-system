@@ -13,9 +13,11 @@
 
 ```text
 worktree: unified-portfolio-system-stable
-branch: v3-7-0-stable
-base: origin/main @ 4e4a12b
+branch: fix/v3-7-support-bundle-redaction
+base: origin/main @ 5cf717e
 handoff: PR #36 merged, main @ d696f74
+docs sync: PR #37 merged, main @ 5cf717e
+security fix: PR #38
 release publication: не выполнялась
 ```
 
@@ -27,15 +29,23 @@ Risk/Execution protocol не изменялись.
 ## Квалификация
 
 - Stable release contract: `9 passed`;
-- full pytest regression: `455 passed`;
-- recovery/migration/backup subset: `61 passed`;
+- full pytest regression: `456 passed`;
+- recovery/migration/backup subset: `62 passed`;
 - Risk Lab: `8/8 PASS`;
 - release hygiene, compileall и safety boundary: PASS;
 - Windows standalone build/layout: PASS;
 - deterministic source ZIP: PASS;
-- clean source ZIP: `455 passed`, hygiene PASS;
+- clean source ZIP: `456 passed`, hygiene PASS;
 - accepted beta1 rollback artifact: SHA-256 PASS, `454 passed`;
 - source ZIP forbidden/runtime/secret files: 0.
+- clean install/upgrade, standalone launch и backup/restore: PASS;
+- sanitized support bundle independent scan: Account ID `0`, token `0`,
+  forbidden members `0`, checksum mismatches `0`.
+
+Qualification обнаружила, что исходный support bundle сохранял канонический
+Account ID внутри составного journal `transaction_id`. Небезопасный bundle
+удалён до публикации. Локальный fix добавляет auto-discovery Account ID,
+redaction внутри строк и regression-тест.
 
 Исторические 30 execution v3.6 и принятые beta1 6 циклов/12 заявок теперь
 имеют разные manifest scopes. Stable manifest остаётся `candidate`,
@@ -45,13 +55,11 @@ Risk/Execution protocol не изменялись.
 
 ```text
 releases/v3.7.0/moex_trading_robot_research_v3_7_0.zip
-SHA-256 184bbd2be93e5d2b9f38c79d9fdb6bd10bf829ddb3e166712ca3fca068e63f3b
+SHA-256 aece8e64ad7306bdb2870a0d10481577cd57a16e9dee1a49034734c30feb952a
 ```
 
 ## Следующий контрольный пункт
 
-На пользовательском Windows/Sandbox-контуре: clean install/upgrade,
-standalone без Python, rollback exercise, backup/restore/support bundle и
-24–48-часовой burn-in. Candidate branch reviewed и merged через PR #36.
-Затем — review финального evidence и явное acceptance; только после него
+После PR #38 остаются rollback exercise и 24–48-часовой burn-in. После review
+финального evidence требуется явное acceptance; только затем
 завершается Issue #34 и создаются tag/GitHub Release.

@@ -4,10 +4,9 @@ import json
 from pathlib import Path
 
 import trading_robot
+from tools.release_cleanup import CURRENT_FILES, find_legacy_files
 from trading_robot.portfolio_model import PORTFOLIO_STATE_SCHEMA_VERSION
 from trading_robot.risk import RiskPolicy
-from tools.release_cleanup import CURRENT_FILES, find_legacy_files
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -61,6 +60,9 @@ def test_stabilization_protocols_remain_explicit():
     data = manifest()
     assert data["portfolio_warning_protocol"] == "observation-recompute-v1"
     assert data["secret_provider_probe"] == "metadata-only-v1"
+    assert data["support_bundle_redaction_protocol"] == "known-values-v2"
+    assert data["support_bundle_account_auto_discovery"] is True
+    assert data["support_bundle_embedded_value_redaction"] is True
     assert data["credential_probe_statuses"] == [
         "provider_unavailable",
         "credential_absent",

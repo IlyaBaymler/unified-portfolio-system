@@ -4,8 +4,9 @@
 
 Версия: `v3.7.0 / 0.3.7`.
 
-База: принятая `v3.7-beta1`, объединённая в `main` через PR #35,
-merge commit `4e4a12bda87bc82cd9d195e5960001646c7de6d3`.
+База: принятая `v3.7-beta1`, Stable candidate из PR #36 и синхронизация
+статуса из PR #37; актуальный `origin/main` —
+`5cf717efdaf9c8d8aee59a7e0740a958f2a0d531`.
 
 Статус: **локальная автоматическая квалификация PASS; пользовательское
 принятие Stable ещё не дано**.
@@ -23,8 +24,9 @@ merge commit `4e4a12bda87bc82cd9d195e5960001646c7de6d3`.
 - T-Invest Sandbox, один инструмент, long-only;
 - отключённые real-account и multi-instrument execution.
 
-Изменены release metadata, имена артефактов, release-документация и тесты
-контракта Stable. Историческое поле `sandbox_acceptance` сохранено для
+Изменены release metadata, имена артефактов, release-документация, тесты
+контракта Stable и security hardening support bundle. Историческое поле
+`sandbox_acceptance` сохранено для
 совместимости и явно помечено как унаследованное evidence v3.6. Принятые
 результаты beta1 — 6 BUY→HOLD→SELL и 12/12 заявок — записаны отдельно в
 `beta1_sandbox_acceptance`.
@@ -32,12 +34,12 @@ merge commit `4e4a12bda87bc82cd9d195e5960001646c7de6d3`.
 ## Локальные результаты
 
 - Stable release contract: `9 passed`;
-- полный regression suite: `455 passed`;
-- crash/recovery, migration и backup/restore subset: `61 passed`;
+- полный regression suite: `456 passed`;
+- crash/recovery, migration и backup/restore subset: `62 passed`;
 - Risk Lab: `8/8 PASS`;
 - release hygiene и compileall: PASS;
 - deterministic source build: PASS, два совпадающих SHA-256;
-- clean source ZIP: `455 passed`, hygiene PASS;
+- clean source ZIP: `456 passed`, hygiene PASS;
 - Windows standalone build: PASS;
 - standalone layout verification: PASS;
 - принятый beta1 rollback-артефакт: SHA-256 подтверждён, `454 passed`,
@@ -45,23 +47,37 @@ merge commit `4e4a12bda87bc82cd9d195e5960001646c7de6d3`.
 - generated `risk_stable_output` исключён из source ZIP и закреплён
   regression-тестом;
 - forbidden/runtime/secret files в source ZIP: 0.
+- support bundle real-runtime exact-value scan: Account ID `0`, token `0`,
+  forbidden members `0`, checksum mismatches `0`;
+- support bundle автоматически определяет канонический Account ID и удаляет
+  его также из составных строк, включая journal `transaction_id`.
 
 Source ZIP:
 `releases/v3.7.0/moex_trading_robot_research_v3_7_0.zip`.
 
 SHA-256:
-`184bbd2be93e5d2b9f38c79d9fdb6bd10bf829ddb3e166712ca3fca068e63f3b`.
+`aece8e64ad7306bdb2870a0d10481577cd57a16e9dee1a49034734c30feb952a`.
 
-## Оставшиеся ручные gates
+## Подтверждённые user-host gates
 
-На пользовательском Windows/Sandbox-контуре необходимо подтвердить:
+- clean install нового source ZIP — PASS;
+- upgrade из verified beta1 backup — PASS;
+- standalone launch без системного Python — PASS;
+- backup/verify/restore — PASS;
+- external close acknowledgement после restore — `READY/FRESH`, blocking
+  false, pending/uncertain `0/0`;
+- sanitized support bundle review и независимый scan — PASS.
 
-1. clean install и upgrade с принятой beta1;
-2. фактический запуск собранного standalone без установленного Python;
-3. rollback на принятую beta1 в тестовой копии;
-4. backup/verify/restore и sanitized support bundle на рабочем runtime;
-5. финальный Sandbox burn-in 24–48 часов без invariant violations;
-6. итоговый review support bundle и явное пользовательское acceptance.
+Qualification поймала исходную утечку Account ID до публикации. Небезопасный
+локальный bundle удалён; исправление и regression опубликованы через PR #38.
+
+## Оставшиеся gates
+
+Необходимо:
+
+1. rollback на принятую beta1 в тестовой копии;
+2. финальный Sandbox burn-in 24–48 часов без invariant violations;
+3. итоговый review evidence и явное пользовательское acceptance.
 
 До этого `stable_qualification.status=candidate`,
 `user_acceptance=false`, `final_burn_in_complete=false`. Git tag, GitHub

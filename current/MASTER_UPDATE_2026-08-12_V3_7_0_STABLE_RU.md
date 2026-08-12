@@ -18,16 +18,20 @@ PR #35 с принятой `v3.7-beta1 / 0.3.7b1` merged в `main` commit
 Локальный automated qualification подтверждён:
 
 - stable release contract — `9 passed`;
-- full regression — `455 passed`;
-- recovery/migration/backup targeted — `61 passed`;
+- full regression — `456 passed`;
+- recovery/migration/backup targeted — `62 passed`;
 - Risk Lab — `8/8 PASS`;
 - release hygiene, compileall и deterministic ZIP audit — PASS;
 - PyInstaller build и standalone layout — PASS;
 - rollback artifact принятой beta1 — SHA/manifest/safety PASS, `454 passed`.
 
-Windows clean install/upgrade, фактический запуск standalone без Python и
-финальный Sandbox burn-in подтверждаются отдельно. Rollback package локально
-проверен в изолированной копии; user-host rollback exercise остаётся gate #34.
+Clean install, upgrade из принятой beta1, standalone launch без Python и
+backup/verify/restore подтверждены на пользовательском Windows-контуре.
+Qualification также выявила и устранила утечку Account ID внутри
+`recent_events.json`/`transaction_id`: новый sanitized support bundle прошёл
+встроенный и независимый exact-value scan. Rollback exercise и финальный
+burn-in остаются открыты; rollback package до этого проверен только локально в
+изолированной копии.
 
 До explicit user acceptance `stable_qualification.user_acceptance=false` и
 релиз не публикуется как принятый.
