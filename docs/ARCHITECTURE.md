@@ -1,6 +1,6 @@
 # Architecture
 
-Дата обновления: 2026-08-11.
+Дата обновления: 2026-08-12.
 
 ## Текущая архитектура v3.7
 
@@ -42,7 +42,7 @@ Market Data
 Не входят в PortfolioState как его ответственность:
 
 - Risk counters/limits — они принадлежат `risk_state.json` / Risk Engine;
-- session/strategy runtime и last processed candle — принадлежат `robot_state.json`;
+- session/strategy runtime и last processed candle — принадлежат runtime/strategy state;
 - неизменяемая история lifecycle — принадлежит EventJournal;
 - Cash-flow Manager — ещё не реализован в v3.7.
 
@@ -78,6 +78,122 @@ Broker state
 
 Неизвестный submit не повторяется без broker lookup. После подтверждённого fill lifecycle считается завершённым только после canonical reconciliation и идемпотентного Risk accounting.
 
+## Temporal architecture
+
+### Основной принцип
+
+`candle_interval` относится к Strategy/Instrument runtime и не должен рассматриваться как глобальное свойство всего робота или как неизменное свойство позиции.
+
+Разделяются пять временных понятий:
+
+```text
+candle_interval
+    размер свечи, используемой Strategy Engine
+
+decision cadence
+    когда StrategyRuntime проверяет появление новой закрытой свечи
+
+scheduler cadence
+    как часто Global Scheduler обслуживает runtime
+
+risk refresh cadence
+    частота обновления/контроля Risk-контекста
+
+reconciliation cadence
+    частота сверки canonical PortfolioState с брокером
+```
+
+Они независимы. Например, стратегия может использовать свечи `1h`, Global Scheduler работать каждую минуту, Portfolio Risk обновляться чаще стратегии, а broker reconciliation выполняться по отдельному interval/event trigger.
+
+### v3.7
+
+Сохраняется один configured timeframe для одноинструментного Strategy/Bot runtime. `v3.7.0 Stable` не расширяет temporal model.
+
+### v3.8 — InstrumentRuntime
+
+Issue #39.
+
+Каждый `InstrumentRuntime` получает собственный фиксированный `candle_interval` и независимый `last_processed_candle`:
+
+```text
+InstrumentRuntime[SBER] → 1h
+InstrumentRuntime[LKOH] → 30m
+InstrumentRuntime[YDEX] → 15m
+```
+
+Global Scheduler не должен предполагать общий timeframe и не должен связывать появление новой свечи с Risk/reconciliation lifecycle.
+
+Timeframe должен входить в versioned config identity/hash. Его изменение не выполняется молча в середине активного strategy/execution lifecycle.
+
+### v4.x — StrategyRuntime
+
+Issue #40.
+
+После появления нескольких стратегий на один instrument timeframe переносится на уровень `StrategyRuntime`:
+
+```text
+SBER
+├── SMA / 1h
+├── Donchian / 30m
+└── MeanReversion / 5m
+```
+
+В этой архитектуре позиция SBER не имеет единственного «правильного» candle interval. Позиция является canonical фактом/target портфеля, а timeframe принадлежит конкретному StrategyProfile/StrategyProposal.
+
+Предпочтительная identity runtime:
+
+```text
+instrument_id
++ strategy_id
++ strategy_version/config_hash
++ timeframe
+```
+
+Каждый runtime имеет собственный temporal state и performance attribution.
+
+### v5.x — multi-timeframe / Supervisor
+
+Issue #41.
+
+Strategy Module может использовать несколько temporal inputs одновременно:
+
+```text
+Trend context → 1h
+Setup         → 15m
+Entry context → 5m
+```
+
+Portfolio Supervisor/Strategy Selector выбирает versioned StrategyProfile/module, прошедший validation для конкретного набора timeframe. Supervisor не должен произвольно переписывать `60m → 5m` внутри уже работающей стратегии без явной versioned transition.
+
+Rule-based selection вводится раньше ML-assisted selection. Любой адаптивный слой сначала работает в SHADOW/Sandbox.
+
+## Timeframe и ownership
+
+В v3.7 `PositionOwnership` содержит `candle_interval` как часть точной идентификации действующей конфигурации. Это допустимо для одноинструментного/одностратегийного lifecycle.
+
+При переходе к нескольким strategy contributions один `candle_interval` не должен описывать всю позицию. Canonical PortfolioState хранит состояние/target/ownership, а подробный temporal context относится к versioned StrategyRuntime/StrategyProposal и performance attribution.
+
+Изменение timeframe должно менять config identity/hash, чтобы restart/recovery не мог ошибочно считать `SMA/1h` и `SMA/15m` одной и той же стратегией.
+
+## Safety boundary для adaptive timeframe
+
+Даже если в будущем timeframe/profile выбирается Supervisor, Regime Model или ML-модуль, путь остаётся:
+
+```text
+Strategy/ML proposal
+→ Portfolio Supervisor
+→ Policy Guard
+→ Portfolio Risk
+→ canonical preflight
+→ Execution Engine
+→ Broker
+→ post-fill reconciliation
+```
+
+Никакой temporal/AI слой не получает прямой broker POST и не может отключить Risk/Policy gates.
+
+Подробный план: `docs/plans/CANDLE_INTERVAL_EVOLUTION_RU.md`.
+
 ## Текущая граница v3.7
 
 ```text
@@ -89,6 +205,7 @@ canonical-only reads
 single writer
 real account execution disabled
 multi-instrument execution disabled
+single configured strategy timeframe
 ```
 
 ## Целевая архитектура проекта
@@ -98,7 +215,9 @@ multi-instrument execution disabled
 ```text
 Unified Portfolio System
 ├── Portfolio Manager
-├── Strategy Engine(s)
+├── Strategy Engine(s) / StrategyRuntime(s)
+├── Global Scheduler
+├── Portfolio Supervisor
 ├── Portfolio Risk Engine
 ├── Cash-flow Manager
 ├── Capital Allocation / Rebalance Plan
@@ -108,4 +227,4 @@ Unified Portfolio System
 └── Autonomous Service
 ```
 
-Эта целевая схема не означает, что Cash-flow, multi-instrument или portfolio allocation уже присутствуют в v3.7. Их добавление относится к следующим версиям roadmap.
+Эта целевая схема не означает, что Supervisor, Cash-flow, multi-instrument, multi-timeframe или portfolio allocation уже присутствуют в v3.7. Их добавление относится к следующим версиям roadmap.
