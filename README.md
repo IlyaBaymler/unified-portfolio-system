@@ -147,7 +147,7 @@ multi-instrument execution disabled
 - `SECURITY.md` — правила работы с секретами и execution boundary;
 - `v3-7-alpha3` — frozen accepted alpha baseline;
 - `v3-7-beta1` — принятая beta implementation/evidence branch;
-- `v3-7-0-stable` — локальная ветка квалификации Stable candidate.
+- `v3-7-0-stable` — ветка квалификации Stable candidate, PR #36.
 
 `develop` сохраняется как историческая ветка и не является обязательной частью текущего local-Codex workflow.
 

@@ -19,7 +19,8 @@ Stable candidate без изменения торговой архитектур
 - accepted beta1 rollback artifact `454 passed`;
 - clean deterministic source ZIP и release hygiene PASS.
 
-Публикация, commit, push, tag и GitHub Release не выполнялись.
+Candidate commit опубликован в `v3-7-0-stable` и передан в PR #36 для
+review/merge. Tag `v3.7.0` и GitHub Release не создавались.
 
 ## Следующий пользовательский контрольный набор
 
@@ -30,8 +31,8 @@ Stable candidate без изменения торговой архитектур
 5. Провести финальный Sandbox burn-in 24–48 часов.
 6. Просмотреть support bundle и явно принять либо отклонить Stable.
 
-После acceptance можно отдельно разрешить commit/push, обновление Issue #34,
-tag `v3.7.0` и публикацию GitHub Release.
+После acceptance можно отдельно обновить Issue #34, создать tag `v3.7.0` и
+опубликовать GitHub Release.
 
 ## Неизменяемый safety gate
 
