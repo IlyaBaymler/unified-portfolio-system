@@ -22,7 +22,12 @@
 - portfolio allocation/rebalancing;
 - новые стратегии;
 - short positions;
-- real-account execution.
+- real-account execution;
+- per-instrument/per-strategy candle interval;
+- multi-timeframe стратегии;
+- dynamic/Supervisor-selected timeframe.
+
+Temporal model `v3.7.0` остаётся одноинструментной с одним configured strategy timeframe. Разные фиксированные candle intervals для `InstrumentRuntime` начинаются только в `v3.8` — Issue #39. Дальнейшая эволюция описана в `docs/plans/CANDLE_INTERVAL_EVOLUTION_RU.md`.
 
 Сохраняются:
 
@@ -75,3 +80,5 @@
 ## После Stable
 
 Следующий функциональный этап: `v3.8.0 Multi-Instrument Sandbox`.
+
+Temporal extension этого этапа: fixed per-instrument candle interval через `InstrumentRuntime` — Issue #39. Per-strategy timeframe — Issue #40. Multi-timeframe/Supervisor-selected horizon — Issue #41.
