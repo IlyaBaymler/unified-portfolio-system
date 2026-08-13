@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from trading_robot.central_order_manager import (
     CentralOrderCandidate,
     CentralOrderConflictError,
@@ -37,7 +36,7 @@ from trading_robot.portfolio_preflight import (
     PortfolioSnapshotLease,
 )
 from trading_robot.portfolio_repository import PortfolioRepository
-from trading_robot.risk import RiskPolicy
+from trading_robot.risk import RiskPolicy, RiskState
 from trading_robot.risk_persistence import RiskProfileStore, RiskStateStore
 from trading_robot.risk_runtime import RiskRuntimeAdapter
 from trading_robot.runtime_backup import RuntimeBackupManager
@@ -263,6 +262,7 @@ def test_authorization_factory_requires_one_preflight_risk_snapshot():
                 current_lots=0,
                 approved_target_lots=1,
             ),
+            state=RiskState(),
         ),
         portfolio_revision=lease.revision,
         portfolio_decision_checksum=lease.decision_checksum,
@@ -282,6 +282,7 @@ def test_authorization_factory_requires_one_preflight_risk_snapshot():
     assert result.authorized_target_lots == 1
     assert result.portfolio_revision == lease.revision
     assert result.available_cash_kopecks == 100_000_000
+    assert result.risk_state_guard_hash is not None
     mismatched_lease = PortfolioSnapshotLease.from_state(
         replace(state, revision=1),
         leased_at=NOW,

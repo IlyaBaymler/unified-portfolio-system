@@ -112,7 +112,9 @@ Order state. Расхождение блокирует dispatch, а не исп�
   0 provider POST; token-free backup и EventJournal integrity — PASS;
 - automated multi-lot `0->3->5->2->0`, partial fill continuation, restart без
   resubmit и multi-instrument cash contention;
-- full regression 570 и targeted v3.8 matrix 110;
+- dispatch-time Risk policy/state guard: kill switch, Risk resync, изменение
+  counters/policy и legacy authorization без guard proof блокируют POST;
+- full regression 576 и targeted v3.8 matrix 116;
 - backup/support secret scan.
 
 ## Остаётся до revised release decision

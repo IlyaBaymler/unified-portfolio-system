@@ -115,6 +115,13 @@ operator-only Sandbox multi-lot acceptance остаётся открытым rel
 Readiness дополнительно подтверждена на изолированном canonical revision 40
 runtime: SBER/LKOH/YDEX настроены с `max_order_lots=5`, три market-driven
 prepare завершились `NO_POSITION_CHANGE` без intent и Sandbox POST.
+Review draft PR #42 выявил и закрыл dispatch-time Risk freshness gap: каждый
+новый intent сохраняет guard hash значимых полей `RiskState`, а
+`dispatch-one` под lock повторно сверяет account-scoped Risk policy/state.
+Kill switch, Risk resync, смена policy, изменение counters или legacy intent
+без guard proof дают fail-closed результат до market/provider API. После
+исправления targeted v3.8 matrix — `116 passed`, full regression —
+`576 passed`.
 
 ## Рабочая связка ChatGPT + Codex
 

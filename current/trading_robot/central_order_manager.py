@@ -22,7 +22,7 @@ from .portfolio_preflight import (
     PortfolioSnapshotLease,
 )
 from .portfolio_repository import PortfolioRepository, PortfolioRepositoryError
-from .risk_runtime import RiskRuntimeOutcome
+from .risk_runtime import RiskRuntimeOutcome, risk_state_guard_hash
 from .state_persistence import (
     StatePersistenceError,
     atomic_write_json,
@@ -183,6 +183,7 @@ class ExecutionAuthorization:
     risk_policy_hash: str
     risk_order_allowed: bool
     authorized_at: str
+    risk_state_guard_hash: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -299,6 +300,15 @@ class ExecutionAuthorization:
             "authorized_at",
             _timestamp(self.authorized_at, "authorization.authorized_at"),
         )
+        state_guard = (
+            None
+            if self.risk_state_guard_hash in (None, "")
+            else _sha256_text(
+                self.risk_state_guard_hash,
+                "authorization.risk_state_guard_hash",
+            )
+        )
+        object.__setattr__(self, "risk_state_guard_hash", state_guard)
 
     @classmethod
     def from_gate_results(
@@ -367,6 +377,7 @@ class ExecutionAuthorization:
             risk_policy_hash=str(risk.policy_hash or ""),
             risk_order_allowed=bool(decision.order_allowed),
             authorized_at=authorized_at or _now(),
+            risk_state_guard_hash=risk_state_guard_hash(risk.assessment.state),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -386,6 +397,7 @@ class ExecutionAuthorization:
             "risk_policy_hash": self.risk_policy_hash,
             "risk_order_allowed": self.risk_order_allowed,
             "authorized_at": self.authorized_at,
+            "risk_state_guard_hash": self.risk_state_guard_hash,
         }
 
     @classmethod
@@ -425,6 +437,7 @@ class ExecutionAuthorization:
             risk_policy_hash=raw.get("risk_policy_hash", ""),
             risk_order_allowed=risk_order_allowed,
             authorized_at=raw.get("authorized_at", ""),
+            risk_state_guard_hash=raw.get("risk_state_guard_hash"),
         )
 
 

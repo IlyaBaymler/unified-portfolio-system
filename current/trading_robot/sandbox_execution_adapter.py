@@ -18,6 +18,7 @@ from .orders import (
     normalize_execution_status,
 )
 from .portfolio_repository import PortfolioRepository
+from .risk_runtime import RiskDispatchAuthorizationError
 from .tbank_sandbox import TBankAPIError
 
 SANDBOX_EXECUTION_CONFIRMATION = "ENABLE V3.8 SANDBOX EXECUTION"
@@ -46,6 +47,18 @@ class SandboxExecutionTransport(Protocol):
         *,
         by_request_id: bool = True,
     ) -> dict[str, Any]: ...
+
+
+class SandboxRiskAuthorizationGate(Protocol):
+    account_id: str
+    mode: str
+
+    def dispatch_authorization_guard(
+        self,
+        *,
+        expected_policy_hash: str,
+        expected_state_guard_hash: str | None,
+    ) -> Any: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,12 +129,22 @@ class SandboxExecutionAdapter:
         transport: SandboxExecutionTransport,
         manager: CentralOrderManager,
         policy: SandboxExecutionPolicy,
+        *,
+        risk_runtime: SandboxRiskAuthorizationGate | None = None,
     ) -> None:
         if policy.account_id != manager.account_id:
             raise ValueError("Sandbox execution policy account scope mismatch.")
+        if risk_runtime is not None and (
+            str(getattr(risk_runtime, "account_id", "")).strip()
+            != manager.account_id
+            or str(getattr(risk_runtime, "mode", "")).strip().upper()
+            != "SANDBOX_EXECUTION"
+        ):
+            raise ValueError("Sandbox Risk authorization scope mismatch.")
         self.transport = transport
         self.manager = manager
         self.policy = policy
+        self.risk_runtime = risk_runtime
 
     def dispatch_next(
         self,
@@ -151,6 +174,46 @@ class SandboxExecutionAdapter:
                 status="DISARMED",
                 intent_id=intent.intent_id,
             )
+
+        if self.risk_runtime is None:
+            return SandboxDispatchResult(
+                status="RISK_AUTHORIZATION_UNAVAILABLE",
+                intent_id=intent.intent_id,
+                retryable=True,
+                error="Dispatch-time Risk authorization gate is unavailable.",
+            )
+        try:
+            with self.risk_runtime.dispatch_authorization_guard(
+                expected_policy_hash=intent.authorization.risk_policy_hash,
+                expected_state_guard_hash=(
+                    intent.authorization.risk_state_guard_hash
+                ),
+            ):
+                return self._dispatch_with_current_risk(
+                    intent,
+                    portfolio_repository,
+                )
+        except RiskDispatchAuthorizationError as exc:
+            return SandboxDispatchResult(
+                status=exc.status,
+                intent_id=intent.intent_id,
+                retryable=exc.retryable,
+                error=str(exc),
+            )
+        except Exception as exc:  # noqa: BLE001 - Risk gate is fail-closed
+            return SandboxDispatchResult(
+                status="RISK_AUTHORIZATION_UNAVAILABLE",
+                intent_id=intent.intent_id,
+                retryable=True,
+                error=f"Dispatch-time Risk authorization failed: {exc}",
+            )
+
+    def _dispatch_with_current_risk(
+        self,
+        intent: CentralOrderIntent,
+        portfolio_repository: PortfolioRepository,
+    ) -> SandboxDispatchResult:
+        """Submit only while the persisted Risk authorization guard is held."""
 
         market_result = self._market_precheck(intent)
         if isinstance(market_result, SandboxDispatchResult):

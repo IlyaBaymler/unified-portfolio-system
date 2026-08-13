@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
-
 from trading_robot.bot import BotConfig
 from trading_robot.central_order_coordinator import CentralOrderCoordinator
 from trading_robot.central_order_manager import CentralOrderManager, CentralOrderStore
@@ -20,7 +19,7 @@ from trading_robot.portfolio_model import (
     SnapshotFreshness,
 )
 from trading_robot.portfolio_repository import PortfolioRepository
-from trading_robot.risk import RiskPolicy
+from trading_robot.risk import RiskPolicy, RiskState
 from trading_robot.risk_persistence import RiskProfileStore, RiskStateStore
 from trading_robot.risk_runtime import RiskRuntimeAdapter, RiskRuntimeOutcome
 from trading_robot.strategy_runtime import StrategyDecision
@@ -191,7 +190,7 @@ class FakeRiskRuntime:
             enforced=True,
             mode=self.mode,
             approved_target_lots=approved,
-            assessment=SimpleNamespace(decision=decision),
+            assessment=SimpleNamespace(decision=decision, state=RiskState()),
             decision_id=(
                 f"risk-{preflight['snapshot_revision']}-"
                 f"{kwargs['strategy_target_lots']}"

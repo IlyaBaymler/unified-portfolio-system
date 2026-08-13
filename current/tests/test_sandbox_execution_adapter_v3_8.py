@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-
 from trading_robot.central_order_manager import (
     CentralOrderCandidate,
     CentralOrderManager,
@@ -20,6 +20,12 @@ from trading_robot.portfolio_model import (
 )
 from trading_robot.portfolio_preflight import PortfolioSnapshotLease
 from trading_robot.portfolio_repository import PortfolioRepository
+from trading_robot.risk import RiskEngine, RiskPolicy, RiskState
+from trading_robot.risk_persistence import RiskProfileStore, RiskStateStore
+from trading_robot.risk_runtime import (
+    RiskRuntimeAdapter,
+    risk_state_guard_hash,
+)
 from trading_robot.sandbox_execution_adapter import (
     SANDBOX_EXECUTION_CONFIRMATION,
     SandboxExecutionAdapter,
@@ -29,6 +35,15 @@ from trading_robot.tbank_sandbox import TBankAPIError, TBankSandboxClient
 
 ACCOUNT = "sandbox-account-1"
 NOW = datetime(2026, 8, 13, 16, 0, tzinfo=timezone.utc).isoformat()
+
+
+class AllowingRiskGate:
+    account_id = ACCOUNT
+    mode = "SANDBOX_EXECUTION"
+
+    @contextmanager
+    def dispatch_authorization_guard(self, **_kwargs):
+        yield
 
 
 class FakeSandboxTransport:
@@ -143,6 +158,7 @@ def authorization(state: PortfolioState) -> ExecutionAuthorization:
         risk_policy_hash="b" * 64,
         risk_order_allowed=True,
         authorized_at=NOW,
+        risk_state_guard_hash="d" * 64,
     )
 
 
@@ -165,7 +181,11 @@ def candidate() -> CentralOrderCandidate:
     )
 
 
-def setup_runtime(tmp_path: Path):
+def setup_runtime(
+    tmp_path: Path,
+    *,
+    selected_authorization: ExecutionAuthorization | None = None,
+):
     state = portfolio_state()
     repository = PortfolioRepository(tmp_path / "portfolio_state.json")
     repository.save(state)
@@ -173,7 +193,10 @@ def setup_runtime(tmp_path: Path):
         CentralOrderStore(tmp_path / "central_order_state.json"),
         account_id=ACCOUNT,
     )
-    queued = manager.enqueue(candidate(), authorization(state)).intent
+    queued = manager.enqueue(
+        candidate(),
+        selected_authorization or authorization(state),
+    ).intent
     return state, repository, manager, queued
 
 
@@ -182,6 +205,7 @@ def adapter(
     manager: CentralOrderManager,
     *,
     armed: bool = True,
+    risk_runtime=None,
 ) -> SandboxExecutionAdapter:
     return SandboxExecutionAdapter(
         transport,
@@ -191,7 +215,50 @@ def adapter(
             enabled=armed,
             confirmation=(SANDBOX_EXECUTION_CONFIRMATION if armed else ""),
         ),
+        risk_runtime=(risk_runtime or AllowingRiskGate()),
     )
+
+
+def guarded_runtime(
+    tmp_path: Path,
+    *,
+    policy: RiskPolicy | None = None,
+    state: RiskState | None = None,
+):
+    selected_policy = policy or RiskPolicy()
+    selected_state = state or RiskState()
+    profile_store = RiskProfileStore(tmp_path / "risk_profiles.json")
+    state_store = RiskStateStore(tmp_path / "risk_state.json")
+    profile_store.save_profile(
+        "SANDBOX_EXECUTION",
+        selected_policy,
+        account_scope=ACCOUNT,
+        source="V3_8_DISPATCH_GUARD_TEST",
+    )
+    state_store.save_account(ACCOUNT, selected_state)
+    runtime = RiskRuntimeAdapter(
+        account_id=ACCOUNT,
+        mode="SANDBOX_EXECUTION",
+        profile_store=profile_store,
+        state_store=state_store,
+        auto_create_dry_run_profile=False,
+    )
+    return runtime, selected_policy, selected_state, state_store
+
+
+def setup_guarded_dispatch(tmp_path: Path):
+    risk_runtime, policy, risk_state, state_store = guarded_runtime(tmp_path)
+    portfolio = portfolio_state()
+    selected_authorization = replace(
+        authorization(portfolio),
+        risk_policy_hash=policy.policy_hash,
+        risk_state_guard_hash=risk_state_guard_hash(risk_state),
+    )
+    _state, repository, manager, queued = setup_runtime(
+        tmp_path,
+        selected_authorization=selected_authorization,
+    )
+    return risk_runtime, policy, state_store, repository, manager, queued
 
 
 def test_policy_requires_exact_explicit_arming_confirmation():
@@ -201,6 +268,168 @@ def test_policy_requires_exact_explicit_arming_confirmation():
             enabled=True,
             confirmation="YES",
         )
+
+
+def test_armed_adapter_requires_dispatch_time_risk_gate(tmp_path: Path):
+    _state, repository, manager, queued = setup_runtime(tmp_path)
+    transport = FakeSandboxTransport()
+    execution = SandboxExecutionAdapter(
+        transport,
+        manager,
+        SandboxExecutionPolicy(
+            account_id=ACCOUNT,
+            enabled=True,
+            confirmation=SANDBOX_EXECUTION_CONFIRMATION,
+        ),
+    )
+
+    result = execution.dispatch_next(repository)
+
+    assert result.status == "RISK_AUTHORIZATION_UNAVAILABLE"
+    assert result.intent_id == queued.intent_id
+    assert result.retryable
+    assert transport.status_calls == 0
+    assert transport.post_calls == 0
+    assert manager.state().queued[0].status == "QUEUED"
+
+
+def test_kill_switch_after_queue_blocks_dispatch_without_provider_call(
+    tmp_path: Path,
+):
+    risk_runtime, policy, state_store, repository, manager, queued = (
+        setup_guarded_dispatch(tmp_path)
+    )
+    current = state_store.load_account(ACCOUNT)
+    halted, _event = RiskEngine(policy).engage_kill_switch(
+        current,
+        now=datetime.fromisoformat(NOW),
+        reason="operator stop",
+    )
+    state_store.save_account(ACCOUNT, halted)
+    transport = FakeSandboxTransport()
+
+    result = adapter(
+        transport,
+        manager,
+        risk_runtime=risk_runtime,
+    ).dispatch_next(repository)
+
+    assert result.status == "RISK_KILL_SWITCH_ACTIVE"
+    assert result.intent_id == queued.intent_id
+    assert transport.status_calls == 0
+    assert transport.post_calls == 0
+    assert manager.state().queued[0].status == "QUEUED"
+
+
+def test_risk_resync_after_queue_blocks_dispatch_without_provider_call(
+    tmp_path: Path,
+):
+    risk_runtime, policy, state_store, repository, manager, queued = (
+        setup_guarded_dispatch(tmp_path)
+    )
+    current = state_store.load_account(ACCOUNT)
+    blocked, _event = RiskEngine(policy).mark_external_activity(
+        current,
+        now=datetime.fromisoformat(NOW),
+        reason="external position drift",
+        source="BROKER",
+    )
+    state_store.save_account(ACCOUNT, blocked)
+    transport = FakeSandboxTransport()
+
+    result = adapter(
+        transport,
+        manager,
+        risk_runtime=risk_runtime,
+    ).dispatch_next(repository)
+
+    assert result.status == "RISK_RESYNC_REQUIRED"
+    assert result.intent_id == queued.intent_id
+    assert transport.status_calls == 0
+    assert transport.post_calls == 0
+    assert manager.state().queued[0].status == "QUEUED"
+
+
+def test_risk_policy_change_after_queue_requires_reauthorization(
+    tmp_path: Path,
+):
+    risk_runtime, policy, _state_store, repository, manager, queued = (
+        setup_guarded_dispatch(tmp_path)
+    )
+    risk_runtime.profile_store.save_profile(
+        "SANDBOX_EXECUTION",
+        replace(policy, max_position_lots=policy.max_position_lots + 1),
+        account_scope=ACCOUNT,
+        source="V3_8_DISPATCH_GUARD_TEST_CHANGED",
+    )
+    transport = FakeSandboxTransport()
+
+    result = adapter(
+        transport,
+        manager,
+        risk_runtime=risk_runtime,
+    ).dispatch_next(repository)
+
+    assert result.status == "RISK_POLICY_CHANGED"
+    assert result.intent_id == queued.intent_id
+    assert transport.status_calls == 0
+    assert transport.post_calls == 0
+    assert manager.state().queued[0].status == "QUEUED"
+
+
+def test_risk_counter_change_after_queue_requires_reauthorization(
+    tmp_path: Path,
+):
+    risk_runtime, _policy, state_store, repository, manager, queued = (
+        setup_guarded_dispatch(tmp_path)
+    )
+    current = state_store.load_account(ACCOUNT)
+    state_store.save_account(
+        ACCOUNT,
+        replace(current, daily_order_count=current.daily_order_count + 1),
+    )
+    transport = FakeSandboxTransport()
+
+    result = adapter(
+        transport,
+        manager,
+        risk_runtime=risk_runtime,
+    ).dispatch_next(repository)
+
+    assert result.status == "RISK_STATE_CHANGED"
+    assert result.intent_id == queued.intent_id
+    assert transport.status_calls == 0
+    assert transport.post_calls == 0
+    assert manager.state().queued[0].status == "QUEUED"
+
+
+def test_legacy_queue_without_risk_guard_requires_reauthorization(
+    tmp_path: Path,
+):
+    risk_runtime, policy, _risk_state, _state_store = guarded_runtime(tmp_path)
+    portfolio = portfolio_state()
+    selected_authorization = replace(
+        authorization(portfolio),
+        risk_policy_hash=policy.policy_hash,
+        risk_state_guard_hash=None,
+    )
+    _state, repository, manager, queued = setup_runtime(
+        tmp_path,
+        selected_authorization=selected_authorization,
+    )
+    transport = FakeSandboxTransport()
+
+    result = adapter(
+        transport,
+        manager,
+        risk_runtime=risk_runtime,
+    ).dispatch_next(repository)
+
+    assert result.status == "RISK_REAUTHORIZATION_REQUIRED"
+    assert result.intent_id == queued.intent_id
+    assert transport.status_calls == 0
+    assert transport.post_calls == 0
+    assert manager.state().queued[0].status == "QUEUED"
 
 
 def test_disarmed_adapter_never_calls_provider(tmp_path: Path):
@@ -469,6 +698,7 @@ def test_real_tbank_client_matches_adapter_payload_and_retry_contract(
                 enabled=True,
                 confirmation=SANDBOX_EXECUTION_CONFIRMATION,
             ),
+            risk_runtime=AllowingRiskGate(),
         ).dispatch_next(
             repository,
             expected_intent_id=queued.intent_id,

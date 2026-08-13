@@ -145,6 +145,12 @@ Sandbox execution adapter и operator-only acceptance workflow реализов�
   в Central Order Manager отсутствуют.
 - отдельный `SandboxExecutionAdapter` является единственной новой границей с
   `post_order` и требует точного arming confirmation;
+- каждый новый `ExecutionAuthorization` сохраняет guard hash значимых для
+  исполнения полей `RiskState`; перед market/provider API adapter требует
+  account-scoped `SANDBOX_EXECUTION` Risk runtime;
+- финальный dispatch удерживает Risk profile/state locks, повторно сверяет
+  policy hash и state guard и fail-closed блокирует kill switch, Risk resync,
+  изменение counters/baselines/execution history и legacy intent без guard;
 - market availability проверяется до атомарной подготовки именно ожидаемого
   queue head;
 - disconnect до подготовки оставляет intent в `QUEUED`, а timeout/lost response
@@ -216,7 +222,7 @@ Sandbox execution adapter и operator-only acceptance workflow реализов�
 
 ## Gate перед публикацией ветки
 
-- M1–M3 targeted runtime/coordinator/adapter/operator matrix — PASS: 110;
+- M1–M3 targeted runtime/coordinator/adapter/operator matrix — PASS: 116;
 - explicit static multi-lot bootstrap и end-to-end
   `0->3->5->2->0` — AUTOMATED PASS;
 - provider partial fill continuation, restart/inspection без resubmit и
@@ -248,7 +254,7 @@ Sandbox execution adapter и operator-only acceptance workflow реализов�
   RECONCILED/FILLED, Risk order count 2/turnover 4835.67 RUB, queue/blocker/
   pending IDs очищены — PASS;
 - final verified backup и redacted support bundle secret scan — PASS;
-- full regression — PASS: 570;
+- full regression — PASS: 576;
 - scoped Ruff для новых M1–M3 модулей, CLI и тестов — PASS;
 - compileall — PASS;
 - `git diff --check` для tracked diff — PASS;
@@ -286,8 +292,10 @@ Sandbox execution adapter и operator-only acceptance workflow реализов�
   и нулевые Risk turnover/order/execution counters; EventJournal
   `integrity=ok`, order/execution events 0. Pre-intent backup
   `runtime_backup_20260813T130139Z.zip` повторно проверен и не содержит токен;
-- final local review — PASS без P0/P1 findings; после multi-lot qualification:
-  full regression 570, targeted matrix 110 и scoped Ruff PASS;
+- draft PR #42 review выявил один P1 Risk freshness gap; исправление добавило
+  dispatch-time policy/state guard и шесть zero-POST regression scenarios;
+- повторный final local review — PASS без открытых P0/P1 findings: full
+  regression 576, targeted matrix 116 и scoped Ruff PASS;
 - final three-instrument support bundle secret scan — PASS; v3.8 state stores,
   canonical portfolio и EventJournal валидны, токен не включён;
 - ветка синхронизирована с GitHub `main` на `026e70b`; локальный v3.8 diff

@@ -183,7 +183,7 @@ Sandbox-сценарии были single-lot. Multi-lot flow автоматиз�
   runtime `ACTIVE`, Central `READY` revision 0, Risk turnover/order/execution
   counters равны нулю. EventJournal SQLite `integrity=ok`: 9 служебных событий
   и 0 order/execution events; все sidecar checksums совпадают.
-- актуальные gates: targeted v3.8 matrix 110 PASS, full regression 570 PASS,
+- актуальные gates: targeted v3.8 matrix 116 PASS, full regression 576 PASS,
   scoped Ruff, compileall и `git diff --check` PASS. Реальный multi-lot broker
   flow `0→3→5→2→0` ещё не выполнялся: readiness с лимитом 5 подтверждена, но
   естественный Strategy signal в этом snapshot отсутствовал.
@@ -407,6 +407,10 @@ Sandbox заявку.
 - `MARKET_STATUS_UNAVAILABLE`, `MARKET_STATUS_UNCERTAIN`,
   `CANONICAL_PREFLIGHT_BLOCKED` — POST не доказан, сначала устранить причину и
   снова проверить `status`.
+- `RISK_KILL_SWITCH_ACTIVE`, `RISK_RESYNC_REQUIRED`, `RISK_POLICY_CHANGED`,
+  `RISK_STATE_CHANGED`, `RISK_REAUTHORIZATION_REQUIRED` или
+  `RISK_AUTHORIZATION_UNAVAILABLE` — provider API не вызывается; выполнить
+  Risk recovery/review и заново `prepare-one`, не обходя guard.
 
 ## V38-A07 — disconnect/restart recovery
 

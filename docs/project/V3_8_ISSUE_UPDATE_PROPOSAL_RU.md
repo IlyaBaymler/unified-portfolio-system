@@ -31,6 +31,12 @@ restart/inspection, Risk/canonical accounting и cash contention. GitHub Issue
 preflight/Risk `PASS`, intent и provider POST отсутствуют. Это подтверждает
 готовность контура, но не закрывает реальный multi-lot execution gate.
 
+Draft PR #42 review дополнительно закрыл dispatch-time Risk freshness: intent
+сохраняет guard hash значимых полей RiskState, а operator adapter под lock
+сверяет актуальные policy/state перед POST. Kill switch, resync, изменение
+counters/policy и legacy authorization без proof дают zero-POST. Актуальные
+automated gates: targeted 116, full regression 576.
+
 ## v4.0 StrategyRuntime / Supervisor foundation
 
 - identity: instrument + strategy + config + timeframe;

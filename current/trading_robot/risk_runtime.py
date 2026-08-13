@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 import pandas as pd
 
+from .locking import InterProcessFileLock
 from .risk import (
     ExecutionRecord,
     ExecutionRegistration,
@@ -15,6 +20,7 @@ from .risk import (
     RiskEngine,
     RiskPolicy,
     RiskSnapshot,
+    RiskState,
     average_true_range,
     portfolio_risk_inputs,
 )
@@ -25,11 +31,63 @@ from .risk_persistence import (
     normalize_risk_mode,
 )
 
-
 # A portfolio snapshot is captured after API work, while the cycle timestamp is
 # recorded before it.  Normal request latency must not look like clock skew.
 # Larger offsets remain fail-closed in RiskEngine as SNAPSHOT_FROM_FUTURE.
 _LOCAL_SNAPSHOT_CAPTURE_TOLERANCE_SECONDS = 60.0
+
+_RISK_DISPATCH_STATE_FIELDS = (
+    "version",
+    "daily_date",
+    "weekly_key",
+    "daily_start_equity_rub",
+    "weekly_start_equity_rub",
+    "high_watermark_equity_rub",
+    "daily_turnover_rub",
+    "daily_order_count",
+    "kill_switch_active",
+    "kill_switch_reason",
+    "kill_switch_set_at",
+    "risk_resync_required",
+    "risk_resync_reason",
+    "risk_resync_set_at",
+    "last_execution_at",
+    "recorded_execution_ids",
+)
+
+
+class RiskDispatchAuthorizationError(RuntimeError):
+    """Fail-closed reason why a saved Risk authorization is no longer current."""
+
+    def __init__(
+        self,
+        status: str,
+        message: str,
+        *,
+        retryable: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.status = str(status).strip().upper()
+        self.retryable = bool(retryable)
+
+
+def risk_state_guard_hash(state: RiskState) -> str:
+    """Hash only RiskState fields that can change order authorization."""
+
+    if not isinstance(state, RiskState):
+        raise TypeError("risk dispatch guard requires RiskState.")
+    payload = {
+        field: getattr(state, field)
+        for field in _RISK_DISPATCH_STATE_FIELDS
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,7 +226,7 @@ class RiskRuntimeAdapter:
         account_id: str,
         mode: str = "DRY_RUN",
         auto_create_dry_run_profile: bool = True,
-    ) -> "RiskRuntimeAdapter":
+    ) -> RiskRuntimeAdapter:
         root = Path(directory)
         return cls(
             account_id=account_id,
@@ -209,6 +267,71 @@ class RiskRuntimeAdapter:
     def current_policy_hash(self) -> str:
         policy, _auto_created = self._load_policy()
         return policy.policy_hash
+
+    @contextmanager
+    def dispatch_authorization_guard(
+        self,
+        *,
+        expected_policy_hash: str,
+        expected_state_guard_hash: str | None,
+    ) -> Iterator[None]:
+        """Hold Risk policy/state stable across the final Sandbox handoff."""
+
+        if self.mode != "SANDBOX_EXECUTION":
+            raise RiskDispatchAuthorizationError(
+                "RISK_MODE_MISMATCH",
+                "Dispatch authorization requires SANDBOX_EXECUTION Risk.",
+                retryable=False,
+            )
+        expected_policy = str(expected_policy_hash or "").strip().lower()
+        expected_state = str(expected_state_guard_hash or "").strip().lower()
+        if not expected_state:
+            raise RiskDispatchAuthorizationError(
+                "RISK_REAUTHORIZATION_REQUIRED",
+                "Queued intent predates the dispatch-time RiskState guard.",
+            )
+        verified = False
+        try:
+            with InterProcessFileLock(
+                self.profile_store.lock_path,
+                timeout_seconds=5.0,
+            ), InterProcessFileLock(
+                self.state_store.lock_path,
+                timeout_seconds=5.0,
+            ):
+                policy, _auto_created = self._load_policy()
+                state = self.state_store.load_account(self.account_id)
+                if policy.policy_hash != expected_policy:
+                    raise RiskDispatchAuthorizationError(
+                        "RISK_POLICY_CHANGED",
+                        "Risk policy changed after intent authorization.",
+                    )
+                if state.kill_switch_active:
+                    raise RiskDispatchAuthorizationError(
+                        "RISK_KILL_SWITCH_ACTIVE",
+                        "Risk kill switch is active; Sandbox POST is blocked.",
+                    )
+                if state.risk_resync_required:
+                    raise RiskDispatchAuthorizationError(
+                        "RISK_RESYNC_REQUIRED",
+                        "Risk resynchronization is required; Sandbox POST is blocked.",
+                    )
+                if risk_state_guard_hash(state) != expected_state:
+                    raise RiskDispatchAuthorizationError(
+                        "RISK_STATE_CHANGED",
+                        "RiskState changed after intent authorization.",
+                    )
+                verified = True
+                yield
+        except RiskDispatchAuthorizationError:
+            raise
+        except Exception as exc:
+            if verified:
+                raise
+            raise RiskDispatchAuthorizationError(
+                "RISK_AUTHORIZATION_UNAVAILABLE",
+                f"Dispatch-time Risk verification failed: {exc}",
+            ) from exc
 
     def _decision_id(
         self,

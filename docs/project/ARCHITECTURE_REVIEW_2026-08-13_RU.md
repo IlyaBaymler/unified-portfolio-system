@@ -7,6 +7,14 @@
 
 Статус: `ADOPTED WITH IMPLEMENTATION-COMPATIBLE CLARIFICATION`.
 
+Дополнение по draft PR #42: первоначальный review обнаружил P1 — сохранённый
+intent мог пройти canonical recheck после изменения отдельного RiskState или
+Risk policy. Finding закрыт dispatch-time guard hash и удержанием Risk
+profile/state locks на финальном Sandbox handoff. Kill switch, resync, смена
+policy/counters и legacy intent без guard proof проверены как zero-POST.
+Повторные gates: targeted `116 passed`, full regression `576 passed`, открытых
+P0/P1 findings нет.
+
 ## Решение
 
 Функциональная цель v3.8 остаётся узкой: несколько заранее настроенных

@@ -165,6 +165,14 @@ single-lot. Дополнительный isolated readiness-прогон на ca
 `NO_POSITION_CHANGE`, пустую Central очередь и 0 Sandbox POST; этот результат
 не заменяет реальный execution-сценарий `0 → 3 → 5 → 2 → 0`.
 
+Перед operator dispatch дополнительно действует persisted Risk authorization
+guard: совпадение `SANDBOX_EXECUTION` policy hash и dispatch-relevant
+`RiskState` обязательно удерживается под profile/state locks до завершения
+единственного POST handoff. Kill switch, Risk resync, изменение counters/policy
+и legacy authorization без state proof блокируют отправку до явной
+reauthorization. Regression после закрытия PR #42 review finding:
+targeted `116 passed`, full `576 passed`.
+
 Подробно: `docs/plans/V3_8_REVISED_SCOPE_RU.md`.
 
 ## v3.9.0 — Portfolio Risk Engine

@@ -4,7 +4,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from tools import v3_8_sandbox_acceptance as acceptance
 from trading_robot.sandbox_execution_adapter import (
     SandboxDispatchResult,
@@ -266,8 +265,9 @@ def test_fully_armed_dispatch_passes_exact_intent_without_exposing_token(
             return None
 
     class FakeAdapter:
-        def __init__(self, client, manager, policy):
+        def __init__(self, client, manager, policy, *, risk_runtime=None):
             captured["policy"] = policy
+            captured["risk_runtime"] = risk_runtime
 
         def dispatch_next(self, repository, *, expected_intent_id=None):
             captured["intent_id"] = expected_intent_id
@@ -297,6 +297,7 @@ def test_fully_armed_dispatch_passes_exact_intent_without_exposing_token(
     assert result["status"] == "SUBMITTED"
     assert captured["intent_id"] == INTENT
     assert captured["policy"].armed
+    assert captured["risk_runtime"].mode == "SANDBOX_EXECUTION"
     assert captured["token"] == "secret-canary"
     assert "secret-canary" not in str(result)
 

@@ -314,10 +314,17 @@ def run(
                 enabled=True,
                 confirmation=args.confirm,
             )
+            risk_runtime = RiskRuntimeAdapter.from_directory(
+                runtime_dir,
+                account_id=account_id,
+                mode="SANDBOX_EXECUTION",
+                auto_create_dry_run_profile=False,
+            )
             result = SandboxExecutionAdapter(
                 client,
                 central_manager,
                 policy,
+                risk_runtime=risk_runtime,
             ).dispatch_next(
                 repository,
                 expected_intent_id=args.intent_id,
