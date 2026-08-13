@@ -1,6 +1,6 @@
 # Architecture
 
-Дата обновления: 2026-08-12.
+Дата обновления: 2026-08-13.
 
 ## Текущая архитектура v3.7
 
@@ -222,9 +222,71 @@ Unified Portfolio System
 ├── Cash-flow Manager
 ├── Capital Allocation / Rebalance Plan
 ├── Central Order Manager / Execution Engine
-├── Broker Adapter(s)
+├── Execution Venue Adapter(s)
 ├── Monitoring & Audit
 └── Autonomous Service
 ```
 
-Эта целевая схема не означает, что Supervisor, Cash-flow, multi-instrument, multi-timeframe или portfolio allocation уже присутствуют в v3.7. Их добавление относится к следующим версиям roadmap.
+На текущем этапе `TInvestAdapter/Broker Adapter` остаётся единственной реально используемой execution boundary. Обобщение до `ExecutionVenueAdapter` является будущей архитектурной точкой расширения и не требует refactor стабильного v3.7 core заранее.
+
+## Боковая multi-venue ветка: Crypto / Digital Assets
+
+Crypto integration рассматривается как необязательная боковая ветка после появления устойчивого multi-instrument Portfolio Manager, Portfolio Risk, Cash-flow и Target Portfolio/Rebalance layers.
+
+Главный принцип — общий экономический портфель и отдельные execution domains:
+
+```text
+Portfolio Supervisor
+        ↓
+Target Portfolio
+        ↓
+Portfolio Risk / Policy
+        ↓
+Rebalance Planner
+        ↓
+Execution Plan
+   ┌────┴─────────────┐
+   ▼                  ▼
+Securities venue   Crypto venue
+   ↓                  ↓
+TInvestAdapter     CryptoVenueAdapter
+```
+
+Portfolio layer должен постепенно становиться asset-agnostic. Он не должен предполагать, что каждый актив:
+
+- торгуется целыми биржевыми лотами;
+- имеет MOEX-like торговую сессию;
+- принадлежит broker account одного типа;
+- имеет одинаковые precision/minimum-order правила.
+
+В общем domain contract предпочтительно поддерживать `asset_class`, `venue`, `quantity`, `quantity_step`, optional `lot_size`, `min_quantity`, `min_notional`, price/quantity precision и valuation currency.
+
+Для crypto-domain отдельно учитываются:
+
+- fractional quantity;
+- рынок 24/7;
+- venue-specific health/maintenance/rate limits;
+- stablecoin как отдельный asset class subtype, а не fiat cash;
+- venue/custody concentration;
+- отдельные ограничения на trading/deposit/withdrawal availability.
+
+Первый scope боковой ветки — Spot only и read-only/paper-first. Leverage, margin, perpetuals, options, staking, lending, DeFi, bridges и autonomous withdrawals не входят в первоначальную интеграцию.
+
+Safety boundary остаётся общей:
+
+```text
+Strategy / Supervisor proposal
+→ Portfolio Policy
+→ Portfolio Risk
+→ Rebalance / Execution Plan
+→ venue-specific preflight
+→ ExecutionVenueAdapter
+→ reconciliation
+→ EventJournal / accounting
+```
+
+Выбор конкретного crypto venue и переход к real execution требуют отдельной актуальной проверки законодательства, юрисдикции, KYC/AML, доступности API и security-модели непосредственно перед реализацией.
+
+Подробный план: `docs/plans/CRYPTO_INTEGRATION_BRANCH_RU.md`.
+
+Эта целевая схема не означает, что Supervisor, Cash-flow, multi-instrument, multi-timeframe, multi-venue, crypto execution или portfolio allocation уже присутствуют в v3.7. Их добавление относится к следующим версиям и отдельным веткам roadmap.
