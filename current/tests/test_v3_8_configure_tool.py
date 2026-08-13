@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
-
 from tools import v3_8_configure as configure
 from trading_robot.bot import BotConfig
 from trading_robot.central_order_manager import CentralOrderStore

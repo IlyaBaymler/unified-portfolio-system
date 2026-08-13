@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-
 from trading_robot.global_scheduler import GlobalScheduler
 from trading_robot.instrument_runtime import (
     InstrumentRuntime,

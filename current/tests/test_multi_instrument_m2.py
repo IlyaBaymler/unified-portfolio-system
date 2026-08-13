@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-
 from trading_robot.bot import BotConfig
 from trading_robot.candle_policy import (
     candle_interval_policy,

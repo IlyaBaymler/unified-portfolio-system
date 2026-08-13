@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from tools import v3_8_prepare_runtime as prepare
 from trading_robot.bot import BotConfig
 from trading_robot.central_order_manager import CentralOrderStore
