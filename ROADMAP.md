@@ -1,6 +1,6 @@
 # Roadmap
 
-Дата обновления: 2026-08-12.
+Дата обновления: 2026-08-13.
 
 ## v3.6.0 — Stable Sandbox Core — завершено
 
@@ -201,6 +201,46 @@ Dynamic переключение timeframe и multi-timeframe strategies не в
 
 Подробный план: `docs/plans/CANDLE_INTERVAL_EVOLUTION_RU.md`.
 
+## Боковая ветка — Crypto / Digital Assets Integration
+
+Необязательная ветка дальнейшего развития. Она не блокирует и не изменяет последовательность основной линии `v3.8 → v3.9 → v3.10 → v4.x`.
+
+Начинать активную реализацию предполагается только после появления устойчивой multi-instrument/portfolio architecture и asset-agnostic границ.
+
+Предпочтительная последовательность:
+
+```text
+основная portfolio architecture
+        ↓
+multi-account / multi-venue abstraction
+        ↓
+Crypto Market Data + Read-only Portfolio
+        ↓
+Crypto Spot Paper / Shadow
+        ↓
+Crypto Spot Sandbox / Test Environment
+        ↓
+Cross-Asset Portfolio: securities + crypto
+        ↓
+отдельное решение о Limited Live Crypto
+```
+
+Архитектурные правила ветки:
+
+- crypto не добавляется как «ещё один MOEX ticker»;
+- общий Portfolio Manager/Supervisor остаётся asset-agnostic;
+- venue-specific execution изолируется за `ExecutionVenueAdapter` или эквивалентной абстракцией;
+- lot-based securities и fractional crypto quantity поддерживаются через общий quantity contract;
+- 24/7 market/venue health не связывается с MOEX `MARKET_IDLE` semantics;
+- stablecoin считается отдельным crypto asset, а не обычным fiat cash;
+- Portfolio Risk получает asset-class, venue и stablecoin concentration limits;
+- первая реализация — Spot only: без leverage, margin, derivatives, staking, lending, DeFi и autonomous withdrawals;
+- Strategy/Supervisor/AI не получают прямого venue POST в обход Policy/Risk/Execution/reconciliation.
+
+Перед выбором реального crypto venue требуется отдельная актуальная проверка законодательства, доступности API, KYC/AML и условий площадки для юрисдикции пользователя.
+
+Подробный план: `docs/plans/CRYPTO_INTEGRATION_BRANCH_RU.md`.
+
 ## Temporal architecture rule
 
 Не смешивать:
@@ -225,4 +265,5 @@ reconciliation cadence — сверка с брокером
 - не считать Sandbox acceptance доказательством прибыльности;
 - не вводить dynamic timeframe switching в v3.8;
 - не считать timeframe свойством всей позиции при нескольких StrategyRuntime;
-- не позволять Supervisor/AI обходить Portfolio Risk/Policy/Execution gates.
+- не позволять Supervisor/AI обходить Portfolio Risk/Policy/Execution gates;
+- не внедрять crypto execution в основной core до появления отдельной multi-venue/asset-agnostic границы.
