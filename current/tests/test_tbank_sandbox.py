@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import ClassVar
 
 import pandas as pd
 import pytest
@@ -176,6 +177,34 @@ def test_get_candles_splits_long_ten_minute_range(monkeypatch):
         client.close()
 
 
+@pytest.mark.parametrize(
+    "interval",
+    ["CANDLE_INTERVAL_15_MIN", "CANDLE_INTERVAL_30_MIN"],
+)
+def test_get_candles_splits_v3_8_three_week_intervals(monkeypatch, interval):
+    payloads = []
+
+    def fake_post(self, service, method, payload=None, *, retry_safe=True):
+        payloads.append(dict(payload or {}))
+        return _sample_candle_response()
+
+    monkeypatch.setattr(TBankSandboxClient, "_post", fake_post)
+    client = TBankSandboxClient("dummy-token", max_retries=0)
+    try:
+        client.get_candles(
+            "instrument-uid",
+            pd.Timestamp("2026-05-01", tz="UTC").to_pydatetime(),
+            pd.Timestamp("2026-07-01", tz="UTC").to_pydatetime(),
+            interval=interval,
+            limit=None,
+        )
+        assert len(payloads) == 3
+        assert all(payload["interval"] == interval for payload in payloads)
+        assert all("limit" not in payload for payload in payloads)
+    finally:
+        client.close()
+
+
 def test_find_instrument_uses_process_cache(monkeypatch):
     TBankSandboxClient._INSTRUMENT_CACHE.clear()
     calls = 0
@@ -215,7 +244,9 @@ def test_client_uses_separate_connect_and_read_timeouts(monkeypatch):
     class Response:
         ok = True
         status_code = 200
-        headers = {"x-tracking-id": "tracking-123"}
+        headers: ClassVar[dict[str, str]] = {
+            "x-tracking-id": "tracking-123"
+        }
 
         @staticmethod
         def json():
@@ -265,7 +296,9 @@ def test_retry_telemetry_reports_recovery(monkeypatch):
     class Response:
         ok = True
         status_code = 200
-        headers = {"x-tracking-id": "tracking-recovered"}
+        headers: ClassVar[dict[str, str]] = {
+            "x-tracking-id": "tracking-recovered"
+        }
 
         @staticmethod
         def json():
@@ -307,7 +340,7 @@ def test_retry_telemetry_reports_recovery_and_precise_timing(monkeypatch):
     class Response:
         ok = True
         status_code = 200
-        headers = {
+        headers: ClassVar[dict[str, str]] = {
             "x-tracking-id": "retry-tracking-id",
             "x-ratelimit-limit": "100",
             "x-ratelimit-remaining": "99",

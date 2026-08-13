@@ -1,6 +1,6 @@
 # Candle interval / timeframe — план эволюции
 
-Дата: 2026-08-12.
+Дата: 2026-08-12. Архитектурное уточнение: 2026-08-13.
 
 ## Основной принцип
 
@@ -10,10 +10,10 @@
 
 ```text
 candle_interval
-    = размер свечи, используемой конкретным StrategyRuntime
+    = размер свечи execution slot (v3.8) или StrategyRuntime (v4+)
 
 decision cadence
-    = когда StrategyRuntime проверяет появление новой закрытой свечи
+    = когда execution slot/StrategyRuntime проверяет закрытую свечу
 
 scheduler cadence
     = как часто Global Scheduler обслуживает runtime
@@ -33,11 +33,14 @@ reconciliation cadence
 
 В `v3.7.0 Stable` temporal model не расширяется: задача версии — заморозить и квалифицировать существующее ядро.
 
-## v3.8 — per-instrument fixed candle interval
+## v3.8 — per-configured-slot fixed candle interval
 
 Issue #39.
 
-Каждый `InstrumentRuntime` получает собственный фиксированный `candle_interval`.
+Каждый contour в `ConfiguredExecutionSet` получает собственный фиксированный
+`candle_interval`. Текущая реализация хранит его в persisted
+`InstrumentRuntime`, который рассматривается как transitional ExecutionSlot, а
+не долгосрочный public domain aggregate.
 
 Пример:
 
@@ -50,7 +53,7 @@ YDEX → 15m
 Требования:
 
 - Global Scheduler не предполагает один общий timeframe;
-- `last_processed_candle` хранится отдельно для каждого runtime;
+- `last_processed_candle` хранится отдельно для каждого execution slot;
 - config identity/hash включает timeframe;
 - restart/recovery восстанавливает исходный timeframe;
 - MARKET_IDLE, Risk и reconciliation продолжают работать независимо от появления новой свечи;
@@ -133,13 +136,17 @@ Portfolio Policy
 
 Supervisor/ML формирует предложение или выбирает StrategyProfile; broker POST остаётся только в Execution Engine после обязательных safety gates.
 
+InstrumentUniverse и selection cadence являются отдельным слоем v5.x и не
+определяют candle interval исполняемой стратегии. См.
+`docs/plans/INSTRUMENT_SELECTION_EVOLUTION_RU.md`.
+
 ## Acceptance strategy
 
 Постоянный core regression сохраняется для duplicate submit, reconciliation, Risk accounting, restart/recovery и corrupt/external-state scenarios.
 
 Новые temporal tests добавляются по мере расширения:
 
-- v3.8: несколько instruments с разными fixed timeframe;
+- v3.8: несколько configured execution slots с разными fixed timeframe;
 - v4.x: несколько StrategyRuntime одного instrument с разными timeframe;
 - v5.x: synchronization нескольких temporal inputs и deterministic profile selection;
 - adaptive/ML: сначала SHADOW/Sandbox, затем отдельный acceptance.

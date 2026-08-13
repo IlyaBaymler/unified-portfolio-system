@@ -5,6 +5,7 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from trading_robot.bot import BotConfig, SandboxTradingBot
 from trading_robot.journal import EventJournal
@@ -288,6 +289,38 @@ def test_ten_minute_interval_clamps_lookback_to_safe_api_span(tmp_path: Path):
     assert requested_span.days == 6
     assert kwargs["limit"] is None
     assert result["effective_lookback_days"] == 6
+
+
+@pytest.mark.parametrize(
+    "interval",
+    ["CANDLE_INTERVAL_15_MIN", "CANDLE_INTERVAL_30_MIN"],
+)
+def test_v3_8_intraday_intervals_use_safe_three_week_lookback(
+    tmp_path: Path,
+    interval: str,
+):
+    api = FakeSandboxAPI()
+    config = BotConfig(
+        ticker="SBER",
+        class_code="TQBR",
+        candle_interval=interval,
+        fast_window=5,
+        slow_window=20,
+        lookback_days=30,
+        max_order_lots=1,
+        dry_run=True,
+        state_file=str(tmp_path / f"{interval}.json"),
+    )
+    bot = SandboxTradingBot(api, "account-1", config, allow_execution=False)
+
+    result = bot.run_once()
+    args, kwargs = api.candle_calls[0]
+    requested_span = args[2] - args[1]
+
+    assert requested_span.days == 20
+    assert kwargs["interval"] == interval
+    assert kwargs["limit"] is None
+    assert result["effective_lookback_days"] == 20
 
 
 def test_transient_errors_open_persistent_circuit_breaker(tmp_path: Path):

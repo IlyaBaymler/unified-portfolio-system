@@ -160,6 +160,8 @@ class TBankSandboxClient:
     # Long ranges are split into several valid requests and de-duplicated.
     CANDLE_MAX_SPAN: ClassVar[dict[str, timedelta]] = {
         "CANDLE_INTERVAL_10_MIN": timedelta(days=7),
+        "CANDLE_INTERVAL_15_MIN": timedelta(days=21),
+        "CANDLE_INTERVAL_30_MIN": timedelta(days=21),
         "CANDLE_INTERVAL_HOUR": timedelta(days=90),
         "CANDLE_INTERVAL_DAY": timedelta(days=365 * 6),
     }

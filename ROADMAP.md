@@ -127,20 +127,25 @@ Issue #34 — release qualification and final acceptance.
 
 Temporal scope `v3.7.0` заморожен: один configured `candle_interval`; per-instrument/per-strategy timeframe относится к следующим версиям.
 
-## v3.8.0 — Multi-Instrument Sandbox
+## v3.8.0 — Static Configured Multi-Position Sandbox
 
 Первый функциональный этап после `v3.7.0 Stable`:
 
-- до трёх инструментов;
-- `InstrumentRuntime`;
-- Global Scheduler;
-- Central Order Manager;
-- cash reservation;
-- последовательная очередь заявок;
+- 2–3 заранее настроенных инструмента через checksummed
+  `ConfiguredExecutionSet`;
+- несколько canonical positions;
+- multi-lot target transitions и частичное уменьшение позиции как revised
+  acceptance scope;
+- последовательная account-wide очередь заявок и минимальный cash reservation;
 - account-wide reconciliation;
-- фиксированный `candle_interval` отдельно для каждого `InstrumentRuntime` — Issue #39;
-- отдельный `last_processed_candle` для каждого instrument/timeframe runtime;
-- Global Scheduler не должен связывать candle interval с Risk/reconciliation cadence.
+- фиксированный `candle_interval` и отдельный `last_processed_candle` каждого
+  configured execution slot — Issue #39;
+- Global Scheduler не связывает candle interval с Risk/reconciliation cadence;
+- текущий persisted `InstrumentRuntime` используется только как внутренний
+  transitional ExecutionSlot, не как canonical position owner или обязательный
+  публичный контракт следующих версий;
+- без `InstrumentUniverse`, автоматического выбора инструментов и Portfolio
+  Supervisor.
 
 Пример допустимой конфигурации:
 
@@ -151,6 +156,16 @@ YDEX → 15m
 ```
 
 Dynamic переключение timeframe и multi-timeframe strategies не входят в v3.8.
+Автоматическая qualification `0 → 3 → 5 → 2 → 0`, включая Risk-adjusted
+entry, volatility-target partial reduction, restart/inspection, canonical/Risk
+reconciliation и cash contention, пройдена. Реальная Sandbox acceptance
+multi-lot остаётся отдельным release gate; выполненные реальные заявки были
+single-lot. Дополнительный isolated readiness-прогон на canonical revision 40
+подтвердил SBER/LKOH/YDEX с `max_order_lots=5`, три Strategy/Risk
+`NO_POSITION_CHANGE`, пустую Central очередь и 0 Sandbox POST; этот результат
+не заменяет реальный execution-сценарий `0 → 3 → 5 → 2 → 0`.
+
+Подробно: `docs/plans/V3_8_REVISED_SCOPE_RU.md`.
 
 ## v3.9.0 — Portfolio Risk Engine
 
@@ -167,16 +182,17 @@ Dynamic переключение timeframe и multi-timeframe strategies не в
 - отделение доходности от внешних потоков;
 - бюджет ребалансировки.
 
-## v4.0.0 — Unified Portfolio System Sandbox
+## v4.0.0 — Portfolio Supervisor Foundation
 
-- целевые веса;
+- формальный `StrategyRuntime` с identity
+  `instrument + strategy + config + timeframe`;
+- `StrategyProposal` / `StrategyIntent`;
+- deterministic `ConfiguredCandidateSet`;
+- TargetPortfolio и RebalancePlan;
+- несколько стратегий/timeframe на instrument;
 - Capital Allocation;
-- Rebalance Plan;
-- несколько инструментов и стратегий;
 - performance attribution;
-- единый audit trail;
-- per-strategy timeframe: один instrument может обслуживаться несколькими `StrategyRuntime` с разными timeframe — Issue #40;
-- timeframe становится частью versioned StrategyProfile/config identity, а не свойством позиции.
+- единый audit trail — Issue #40.
 
 ## v4.1.0 — Ограниченный реальный контур
 
@@ -187,19 +203,25 @@ Dynamic переключение timeframe и multi-timeframe strategies не в
 3. Limited Autonomous с allowlist и минимальными лимитами.
 4. Расширение автономности после отдельного acceptance.
 
-## v5.x — Adaptive Strategy / Supervisor temporal layer
+## v5.x — InstrumentUniverse / adaptive selection
 
-Дальняя исследовательская ветвь после стабильного Portfolio Supervisor и Portfolio Risk:
+Дальняя исследовательская ветвь после стабильного Portfolio Supervisor и
+Portfolio Risk:
 
+- `InstrumentCatalog` и point-in-time Universe Manager;
+- eligibility по liquidity, spread, history, listing, asset class и venue health;
+- rule-based universe сначала в SHADOW/Sandbox;
 - multi-timeframe Strategy Modules — Issue #41;
 - StrategyIntent/StrategyProposal с явным timeframe/decision horizon;
 - versioned profiles для наборов timeframe;
 - rule-based Strategy Selector сначала в SHADOW/Sandbox;
 - затем statistical/ML-assisted scoring при наличии достаточных данных;
 - Supervisor выбирает проверенный StrategyProfile/module, но не переписывает произвольно timeframe работающей стратегии;
+- Universe не отправляет заявки и не обходит Supervisor/Risk/Execution;
 - Policy Guard, Portfolio Risk и Execution safety остаются обязательными.
 
-Подробный план: `docs/plans/CANDLE_INTERVAL_EVOLUTION_RU.md`.
+Подробные планы: `docs/plans/CANDLE_INTERVAL_EVOLUTION_RU.md` и
+`docs/plans/INSTRUMENT_SELECTION_EVOLUTION_RU.md`.
 
 ## Боковая ветка — Crypto / Digital Assets Integration
 
@@ -264,6 +286,7 @@ reconciliation cadence — сверка с брокером
 - не удалять recovery/audit данные ради упрощения;
 - не считать Sandbox acceptance доказательством прибыльности;
 - не вводить dynamic timeframe switching в v3.8;
+- не вводить InstrumentUniverse или market-wide scanning в v3.8;
 - не считать timeframe свойством всей позиции при нескольких StrategyRuntime;
 - не позволять Supervisor/AI обходить Portfolio Risk/Policy/Execution gates;
 - не внедрять crypto execution в основной core до появления отдельной multi-venue/asset-agnostic границы.

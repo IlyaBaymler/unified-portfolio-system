@@ -32,7 +32,11 @@ from trading_robot.config_persistence import (
 )
 from trading_robot.diagnostics import DiagnosticConfig, SandboxOrderDiagnostics
 from trading_robot.diagnostic_feedback import build_diagnostic_feedback
-from trading_robot.dashboard_view import build_kill_switch_banner, full_account_id
+from trading_robot.dashboard_view import (
+    build_kill_switch_banner,
+    full_account_id,
+    load_multi_instrument_dashboard,
+)
 from trading_robot.gui_clipboard import normalize_pasted_text, resolve_clipboard_action
 from trading_robot.journal import EventJournal, JournalEvent
 from trading_robot.locking import InterProcessFileLock, LockUnavailableError
@@ -111,6 +115,8 @@ DIAGNOSTIC_STATE_PATH = RUNTIME_DIR / "sandbox_diagnostic_state.json"
 ROBOT_STATE_PATH = RUNTIME_DIR / "robot_state.json"
 PORTFOLIO_STATE_PATH = RUNTIME_DIR / "portfolio_state.json"
 STRATEGY_PROFILE_PATH = RUNTIME_DIR / "strategy_profiles.json"
+MULTI_INSTRUMENT_PROFILE_PATH = RUNTIME_DIR / "multi_instrument_profiles.json"
+INSTRUMENT_RUNTIME_PATH = RUNTIME_DIR / "instrument_runtimes.json"
 RISK_PROFILE_PATH = RUNTIME_DIR / "risk_profiles.json"
 RISK_STATE_PATH = RUNTIME_DIR / "risk_state.json"
 GUI_LOCK_PATH = RUNTIME_DIR / "moex_robot_gui.lock"
@@ -242,6 +248,8 @@ class TradingRobotGUI(tk.Tk):
         self._risk_dashboard_event_rows: dict[str, dict[str, Any]] = {}
         self._risk_dashboard_poll_after_id: str | None = None
         self._risk_dashboard_watch_signature: tuple[Any, ...] | None = None
+        self._multi_instrument_poll_after_id: str | None = None
+        self._multi_instrument_watch_signature: tuple[Any, ...] | None = None
         self._hover_tooltips: list[HoverTooltip] = []
         self.runtime_backup_manager = RuntimeBackupManager(
             RUNTIME_DIR,
@@ -556,6 +564,9 @@ class TradingRobotGUI(tk.Tk):
         self.sb_profile_mode = tk.StringVar(value="DRY_RUN")
         self.sb_profile_status = tk.StringVar(value="Профиль не загружен")
         self.sb_profile_hash = tk.StringVar(value="—")
+        self.multi_instrument_status = tk.StringVar(
+            value="v3.8 runtime ещё не загружен"
+        )
 
         self.portfolio_status = tk.StringVar(value="Портфель не загружен")
         self.portfolio_auto_refresh = tk.BooleanVar(value=False)
@@ -692,7 +703,12 @@ class TradingRobotGUI(tk.Tk):
         self._build_logs_tab()
         self._build_help_tab()
         self._refresh_events()
+        self._refresh_multi_instrument_dashboard()
         self.after(600, self._refresh_readiness)
+        self._multi_instrument_poll_after_id = self.after(
+            700,
+            self._poll_multi_instrument_files,
+        )
 
         status = ttk.Frame(self, padding=(12, 4, 12, 8))
         status.pack(fill="x")
@@ -1110,7 +1126,7 @@ class TradingRobotGUI(tk.Tk):
         info = ttk.Frame(self.sandbox_tab, padding=(0, 12, 12, 12))
         info.grid(row=0, column=1, sticky="nsew")
         info.columnconfigure(0, weight=1)
-        info.rowconfigure(3, weight=1)
+        info.rowconfigure(4, weight=1)
 
         auth_box = ttk.LabelFrame(controls, text="Подключение", padding=10)
         auth_box.pack(fill="x", pady=(0, 8))
@@ -1557,8 +1573,93 @@ class TradingRobotGUI(tk.Tk):
                 dashboard, textvariable=self.sb_dashboard_vars[key]
             ).grid(row=row, column=column + 1, sticky="w", pady=2)
 
+        multi_box = ttk.LabelFrame(
+            info,
+            text="v3.8 Multi-Instrument runtime — только чтение",
+            padding=8,
+        )
+        multi_box.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        multi_box.columnconfigure(0, weight=1)
+        multi_toolbar = ttk.Frame(multi_box)
+        multi_toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        ttk.Label(
+            multi_toolbar,
+            textvariable=self.multi_instrument_status,
+        ).pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            multi_toolbar,
+            text="Обновить",
+            command=self._refresh_multi_instrument_dashboard,
+        ).pack(side="right")
+        multi_columns = (
+            "ticker",
+            "instrument",
+            "timeframe",
+            "strategy",
+            "runtime",
+            "identity",
+            "lots",
+            "pending",
+            "last_candle",
+            "detail",
+        )
+        self.multi_instrument_tree = ttk.Treeview(
+            multi_box,
+            columns=multi_columns,
+            show="headings",
+            height=4,
+            selectmode="browse",
+        )
+        multi_headings = {
+            "ticker": "Тикер",
+            "instrument": "Instrument ID",
+            "timeframe": "Свеча",
+            "strategy": "PRIMARY",
+            "runtime": "Runtime",
+            "identity": "Identity",
+            "lots": "Лоты",
+            "pending": "Pending",
+            "last_candle": "Последняя свеча UTC",
+            "detail": "Пояснение",
+        }
+        multi_widths = {
+            "ticker": 60,
+            "instrument": 105,
+            "timeframe": 145,
+            "strategy": 80,
+            "runtime": 95,
+            "identity": 105,
+            "lots": 55,
+            "pending": 60,
+            "last_candle": 175,
+            "detail": 250,
+        }
+        for column in multi_columns:
+            self.multi_instrument_tree.heading(
+                column,
+                text=multi_headings[column],
+            )
+            self.multi_instrument_tree.column(
+                column,
+                width=multi_widths[column],
+                minwidth=50,
+                stretch=(column == "detail"),
+            )
+        self.multi_instrument_tree.tag_configure(
+            "ATTENTION",
+            background="#fff1cc",
+        )
+        multi_scroll = ttk.Scrollbar(
+            multi_box,
+            orient="horizontal",
+            command=self.multi_instrument_tree.xview,
+        )
+        self.multi_instrument_tree.configure(xscrollcommand=multi_scroll.set)
+        self.multi_instrument_tree.grid(row=1, column=0, sticky="ew")
+        multi_scroll.grid(row=2, column=0, sticky="ew")
+
         warning = ttk.LabelFrame(info, text="Важно", padding=12)
-        warning.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        warning.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         ttk.Label(
             warning,
             text=(
@@ -1578,7 +1679,7 @@ class TradingRobotGUI(tk.Tk):
         strategy_box = ttk.LabelFrame(
             info, text="PRIMARY / SHADOW — последнее сравнение", padding=8
         )
-        strategy_box.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        strategy_box.grid(row=3, column=0, sticky="ew", pady=(0, 8))
         strategy_columns = ("role", "strategy", "signal", "weight", "lots", "reason")
         self.strategy_tree = ttk.Treeview(
             strategy_box,
@@ -1617,7 +1718,7 @@ class TradingRobotGUI(tk.Tk):
         strategy_scroll.pack(side="right", fill="y")
 
         result_box = ttk.LabelFrame(info, text="Последний результат", padding=8)
-        result_box.grid(row=3, column=0, sticky="nsew")
+        result_box.grid(row=4, column=0, sticky="nsew")
         result_box.rowconfigure(0, weight=1)
         result_box.columnconfigure(0, weight=1)
         self.sandbox_result_text = tk.Text(
@@ -1635,6 +1736,86 @@ class TradingRobotGUI(tk.Tk):
         self.sandbox_result_text.grid(row=0, column=0, sticky="nsew")
         sb_scroll.grid(row=0, column=1, sticky="ns")
         self._sync_strategy_roles()
+
+    def _refresh_multi_instrument_dashboard(self) -> None:
+        """Refresh the v3.8 profile/runtime projection without changing state."""
+
+        if not hasattr(self, "multi_instrument_tree"):
+            return
+        mode = self.sb_profile_mode.get().strip().upper() or "DRY_RUN"
+        if mode not in PROFILE_MODES:
+            mode = "DRY_RUN"
+        self.multi_instrument_tree.delete(
+            *self.multi_instrument_tree.get_children()
+        )
+        try:
+            snapshot = load_multi_instrument_dashboard(
+                MULTI_INSTRUMENT_PROFILE_PATH,
+                INSTRUMENT_RUNTIME_PATH,
+                mode=mode,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.multi_instrument_status.set(
+                f"ERROR: checksum/identity validation failed — {exc}"
+            )
+            self.logger.warning(
+                "Multi-instrument dashboard validation failed: %s",
+                exc,
+            )
+            return
+
+        account = f" | Account ID: {snapshot.account_id}" if snapshot.account_id else ""
+        self.multi_instrument_status.set(
+            f"{snapshot.mode}: {snapshot.state} — {snapshot.detail}{account}"
+        )
+        for row in snapshot.rows:
+            tag = "" if row.identity_status == "MATCHED" else "ATTENTION"
+            self.multi_instrument_tree.insert(
+                "",
+                "end",
+                tags=(tag,) if tag else (),
+                values=(
+                    row.ticker,
+                    row.instrument_id,
+                    row.candle_interval,
+                    row.strategy_id,
+                    row.runtime_status,
+                    row.identity_status,
+                    row.current_lots,
+                    row.pending_orders,
+                    row.last_processed_candle or "—",
+                    row.detail,
+                ),
+            )
+
+    def _poll_multi_instrument_files(self) -> None:
+        try:
+            signature = (
+                self.sb_profile_mode.get().strip().upper(),
+                _safe_file_mtime_ns(MULTI_INSTRUMENT_PROFILE_PATH),
+                _safe_file_mtime_ns(
+                    MULTI_INSTRUMENT_PROFILE_PATH.with_name(
+                        MULTI_INSTRUMENT_PROFILE_PATH.name + ".sha256"
+                    )
+                ),
+                _safe_file_mtime_ns(INSTRUMENT_RUNTIME_PATH),
+                _safe_file_mtime_ns(
+                    INSTRUMENT_RUNTIME_PATH.with_name(
+                        INSTRUMENT_RUNTIME_PATH.name + ".sha256"
+                    )
+                ),
+            )
+            if signature != self._multi_instrument_watch_signature:
+                self._multi_instrument_watch_signature = signature
+                self._refresh_multi_instrument_dashboard()
+        except tk.TclError:
+            pass
+        finally:
+            if self.winfo_exists():
+                self._multi_instrument_poll_after_id = self.after(
+                    1000,
+                    self._poll_multi_instrument_files,
+                )
 
     def _register_sb_config_widget(
         self,
@@ -3126,6 +3307,7 @@ class TradingRobotGUI(tk.Tk):
         if isinstance(result, dict):
             self._update_sandbox_dashboard(result)
             self._update_strategy_tree(result)
+        self._refresh_multi_instrument_dashboard()
         self._refresh_events()
         self._refresh_risk_dashboard()
 
@@ -5731,6 +5913,7 @@ class TradingRobotGUI(tk.Tk):
                 "performance", "strategy", "strategy_comparison",
                 "strategy_config", "state", "incident", "diagnostic",
                 "diagnostic_order", "risk", "risk_control",
+                "scheduler", "runtime", "central_order",
             ],
             state="readonly",
             width=20,
@@ -6317,6 +6500,12 @@ OWNERSHIP И ВИРТУАЛЬНЫЙ ПОРТФЕЛЬ
             except tk.TclError:
                 pass
             self._risk_dashboard_poll_after_id = None
+        if self._multi_instrument_poll_after_id:
+            try:
+                self.after_cancel(self._multi_instrument_poll_after_id)
+            except tk.TclError:
+                pass
+            self._multi_instrument_poll_after_id = None
         self.destroy()
 
 

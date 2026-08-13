@@ -106,6 +106,12 @@ def _validate_profile_payload(config: Mapping[str, Any]) -> dict[str, Any]:
     return clean
 
 
+def validate_strategy_profile(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a validated copy of a secret-free strategy profile."""
+
+    return _validate_profile_payload(config)
+
+
 def normalize_profile_mode(value: str) -> ProfileMode:
     normalized = str(value).strip().upper()
     if normalized not in PROFILE_MODES:
