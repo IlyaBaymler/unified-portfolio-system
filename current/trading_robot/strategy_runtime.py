@@ -306,6 +306,31 @@ class StrategyDecision:
         return asdict(self)
 
 
+def strategy_suite_from_bot_config(config: Any) -> StrategySuiteConfig:
+    """Build the shared Strategy Engine contract from a BotConfig-like value."""
+
+    return StrategySuiteConfig(
+        primary_strategy=config.primary_strategy,
+        shadow_strategies=tuple(config.shadow_strategies),
+        sma_fast_window=config.fast_window,
+        sma_slow_window=config.slow_window,
+        sma_hysteresis_percent=config.sma_hysteresis_percent,
+        donchian_entry_window=config.donchian_entry_window,
+        donchian_exit_window=config.donchian_exit_window,
+        donchian_atr_window=config.donchian_atr_window,
+        donchian_trailing_stop_atr=config.donchian_trailing_stop_atr,
+        ensemble_sma_fast=config.ensemble_sma_fast,
+        ensemble_sma_slow=config.ensemble_sma_slow,
+        ensemble_momentum_window=config.ensemble_momentum_window,
+        ensemble_breakout_window=config.ensemble_breakout_window,
+        ensemble_vote_threshold=config.ensemble_vote_threshold,
+        annual_target_volatility=config.annual_target_volatility,
+        volatility_window=config.volatility_window,
+        max_weight=config.max_strategy_weight,
+        position_limit_lots=config.max_order_lots,
+    )
+
+
 def _json_value(value: Any) -> Any:
     if value is None:
         return None

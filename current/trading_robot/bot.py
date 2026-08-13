@@ -14,6 +14,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 import pandas as pd
 
 from . import __version__
+from .candle_policy import candle_interval_policy, strategy_lookback_days
 from .journal import EventJournal, JournalEvent
 from .locking import InterProcessFileLock, LockUnavailableError
 from .market_idle import classify_market_status, seconds_since
@@ -59,40 +60,12 @@ from .strategy_runtime import (
     compare_strategy_decisions,
     evaluate_strategy_suite,
     normalize_strategy_name,
+    strategy_suite_from_bot_config,
 )
 from .tbank_sandbox import TBankAPIError, TBankSandboxClient
 
 
 logger = logging.getLogger(__name__)
-
-
-_MAX_LOOKBACK_DAYS = {
-    "CANDLE_INTERVAL_10_MIN": 6,
-    "CANDLE_INTERVAL_HOUR": 89,
-    "CANDLE_INTERVAL_DAY": 2180,
-}
-
-_ESTIMATED_BARS_PER_CALENDAR_DAY = {
-    "CANDLE_INTERVAL_10_MIN": 30.0,
-    "CANDLE_INTERVAL_HOUR": 6.0,
-    "CANDLE_INTERVAL_DAY": 0.55,
-}
-
-_INTERVAL_DURATION = {
-    "CANDLE_INTERVAL_10_MIN": timedelta(minutes=10),
-    "CANDLE_INTERVAL_HOUR": timedelta(hours=1),
-    "CANDLE_INTERVAL_DAY": timedelta(days=1),
-}
-
-_AUTO_MAX_SIGNAL_AGE_SECONDS = {
-    # Intraday decisions should not be executed long after their next bar.
-    "CANDLE_INTERVAL_10_MIN": 30 * 60,
-    # Allows an end-of-session hourly signal to be executed next morning, but
-    # rejects a signal that survived a long outage or a weekend.
-    "CANDLE_INTERVAL_HOUR": 20 * 60 * 60,
-    # A daily signal remains valid across a normal weekend.
-    "CANDLE_INTERVAL_DAY": 4 * 24 * 60 * 60,
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,26 +272,7 @@ class SandboxTradingBot:
             raise ValueError(
                 "Sandbox execution requires a RiskRuntimeAdapter in v3.7.0."
             )
-        self.strategy_suite = StrategySuiteConfig(
-            primary_strategy=config.primary_strategy,
-            shadow_strategies=tuple(config.shadow_strategies),
-            sma_fast_window=config.fast_window,
-            sma_slow_window=config.slow_window,
-            sma_hysteresis_percent=config.sma_hysteresis_percent,
-            donchian_entry_window=config.donchian_entry_window,
-            donchian_exit_window=config.donchian_exit_window,
-            donchian_atr_window=config.donchian_atr_window,
-            donchian_trailing_stop_atr=config.donchian_trailing_stop_atr,
-            ensemble_sma_fast=config.ensemble_sma_fast,
-            ensemble_sma_slow=config.ensemble_sma_slow,
-            ensemble_momentum_window=config.ensemble_momentum_window,
-            ensemble_breakout_window=config.ensemble_breakout_window,
-            ensemble_vote_threshold=config.ensemble_vote_threshold,
-            annual_target_volatility=config.annual_target_volatility,
-            volatility_window=config.volatility_window,
-            max_weight=config.max_strategy_weight,
-            position_limit_lots=config.max_order_lots,
-        )
+        self.strategy_suite = strategy_suite_from_bot_config(config)
         self.primary_strategy: StrategyName = self.strategy_suite.primary_strategy
         self.primary_config_hash = self.strategy_suite.config_hash(
             self.primary_strategy
@@ -1019,9 +973,10 @@ class SandboxTradingBot:
         else:
             candle_timestamp = candle_timestamp.tz_convert("UTC")
         candle_time = candle_timestamp.isoformat()
-        candle_end = candle_timestamp.to_pydatetime() + _INTERVAL_DURATION[
-            self.config.candle_interval
-        ]
+        candle_end = (
+            candle_timestamp.to_pydatetime()
+            + candle_interval_policy(self.config.candle_interval).duration
+        )
         data_age_seconds = max(0.0, (now - candle_end).total_seconds())
         signal = primary_decision.signal
         strategy_target_lots = primary_decision.target_lots
@@ -2152,19 +2107,14 @@ class SandboxTradingBot:
     ) -> tuple[pd.DataFrame, int]:
         assert self.instrument_id is not None
         interval = self.config.candle_interval
-        if interval not in _MAX_LOOKBACK_DAYS:
-            raise ValueError(
-                "Unsupported Sandbox candle interval: "
-                f"{interval}. Choose 10 minutes, 1 hour, or 1 day."
-            )
+        policy = candle_interval_policy(interval)
 
         required_bars = self.strategy_suite.required_bars_for_suite()
-        bars_per_day = _ESTIMATED_BARS_PER_CALENDAR_DAY[interval]
-        estimated_days = max(1, ceil((required_bars / bars_per_day) * 1.25))
-        max_days = _MAX_LOOKBACK_DAYS[interval]
-        lookback_days = min(
-            max(self.config.lookback_days, estimated_days),
-            max_days,
+        max_days = policy.maximum_lookback_days
+        lookback_days = strategy_lookback_days(
+            interval,
+            required_bars=required_bars,
+            requested_days=self.config.lookback_days,
         )
 
         notice = (interval, self.config.lookback_days, lookback_days, required_bars)
@@ -2215,9 +2165,10 @@ class SandboxTradingBot:
                     "короткий интервал или проверьте историю инструмента."
                 )
 
+            expanded_lookback = ceil(lookback_days * 1.8)
             next_lookback = min(
                 max_days,
-                max(lookback_days + 1, ceil(lookback_days * 1.8)),
+                max(lookback_days + 1, expanded_lookback),
             )
             logger.warning(
                 "Only %s completed candles were returned; expanding lookback "
@@ -3877,7 +3828,9 @@ class SandboxTradingBot:
     def _max_signal_age_seconds(self) -> int:
         if self.config.max_signal_age_seconds > 0:
             return self.config.max_signal_age_seconds
-        return _AUTO_MAX_SIGNAL_AGE_SECONDS[self.config.candle_interval]
+        return candle_interval_policy(
+            self.config.candle_interval
+        ).automatic_max_signal_age_seconds
 
     def _deterministic_order_id(
         self,

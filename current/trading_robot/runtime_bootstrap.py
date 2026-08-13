@@ -11,6 +11,7 @@ from uuid import uuid4
 from dotenv import dotenv_values
 
 from .bot import BotConfig
+from .central_order_manager import CentralOrderStateError, CentralOrderStore
 from .config_persistence import (
     PROFILE_MODES,
     StrategyProfileError,
@@ -19,6 +20,11 @@ from .config_persistence import (
 )
 from .journal import EventJournal
 from .locking import InterProcessFileLock, LockUnavailableError
+from .instrument_runtime import InstrumentRuntimeStateError, InstrumentRuntimeStore
+from .multi_instrument_config import (
+    MultiInstrumentConfigError,
+    MultiInstrumentProfileStore,
+)
 from .risk import RiskPolicy
 from .risk_persistence import (
     RISK_MODES,
@@ -470,6 +476,41 @@ def bootstrap_runtime_files(
             errors.append(
                 "strategy_profiles.json не был перезаписан: " + str(exc)
             )
+
+        multi_profile_path = root / "multi_instrument_profiles.json"
+        instrument_runtime_path = root / "instrument_runtimes.json"
+        try:
+            if multi_profile_path.exists():
+                multi_store = MultiInstrumentProfileStore(multi_profile_path)
+                for mode in PROFILE_MODES:
+                    multi_store.load_mode(mode)
+                items.append(RuntimeSetupItem(multi_profile_path.name, "VALIDATED"))
+            if instrument_runtime_path.exists():
+                InstrumentRuntimeStore(instrument_runtime_path).load()
+                items.append(
+                    RuntimeSetupItem(instrument_runtime_path.name, "VALIDATED")
+                )
+            if multi_profile_path.exists() != instrument_runtime_path.exists():
+                warnings.append(
+                    "v3.8 multi-instrument profile/runtime pair is incomplete; "
+                    "execution integration remains disabled."
+                )
+        except (
+            InstrumentRuntimeStateError,
+            MultiInstrumentConfigError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            errors.append("v3.8 runtime registry validation failed: " + str(exc))
+
+        central_order_path = root / "central_order_state.json"
+        try:
+            if central_order_path.exists():
+                CentralOrderStore(central_order_path).load()
+                items.append(RuntimeSetupItem(central_order_path.name, "VALIDATED"))
+        except (CentralOrderStateError, OSError, TypeError, ValueError) as exc:
+            errors.append("v3.8 central order state validation failed: " + str(exc))
 
         risk_path = _migrate_legacy_risk_profile(root, items, warnings, errors)
         risk_store = RiskProfileStore(risk_path)

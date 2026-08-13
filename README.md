@@ -106,7 +106,22 @@ Account ID внутри составного `transaction_id`; пересобр�
 
 ### Следующий функциональный этап
 
-После `v3.7.0 Stable` следующий функциональный этап — `v3.8.0 Multi-Instrument Sandbox`.
+После `v3.7.0 Stable` следующий функциональный этап — `v3.8.0 Static
+Configured Multi-Position Sandbox`. Revised scope и граница переходного runtime:
+`docs/plans/V3_8_REVISED_SCOPE_RU.md`.
+
+Автоматическая multi-lot qualification `0→3→5→2→0` пройдена; реальный
+operator-only Sandbox multi-lot acceptance остаётся открытым release gate.
+Readiness дополнительно подтверждена на изолированном canonical revision 40
+runtime: SBER/LKOH/YDEX настроены с `max_order_lots=5`, три market-driven
+prepare завершились `NO_POSITION_CHANGE` без intent и Sandbox POST.
+Review draft PR #42 выявил и закрыл dispatch-time Risk freshness gap: каждый
+новый intent сохраняет guard hash значимых полей `RiskState`, а
+`dispatch-one` под lock повторно сверяет account-scoped Risk policy/state.
+Kill switch, Risk resync, смена policy, изменение counters или legacy intent
+без guard proof дают fail-closed результат до market/provider API. После
+исправления targeted v3.8 matrix — `116 passed`, full regression —
+`576 passed`.
 
 ## Рабочая связка ChatGPT + Codex
 

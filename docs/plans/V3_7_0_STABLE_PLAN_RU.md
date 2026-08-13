@@ -27,7 +27,11 @@
 - multi-timeframe стратегии;
 - dynamic/Supervisor-selected timeframe.
 
-Temporal model `v3.7.0` остаётся одноинструментной с одним configured strategy timeframe. Разные фиксированные candle intervals для `InstrumentRuntime` начинаются только в `v3.8` — Issue #39. Дальнейшая эволюция описана в `docs/plans/CANDLE_INTERVAL_EVOLUTION_RU.md`.
+Temporal model `v3.7.0` остаётся одноинструментной с одним configured strategy
+timeframe. Разные фиксированные candle intervals для configured execution slots
+начинаются только в `v3.8` — Issue #39. Текущий `InstrumentRuntime` является
+переходной внутренней реализацией такого slot. Дальнейшая эволюция описана в
+`docs/plans/CANDLE_INTERVAL_EVOLUTION_RU.md`.
 
 Сохраняются:
 
@@ -79,6 +83,8 @@ Temporal model `v3.7.0` остаётся одноинструментной с �
 
 ## После Stable
 
-Следующий функциональный этап: `v3.8.0 Multi-Instrument Sandbox`.
+Следующий функциональный этап: `v3.8.0 Static Configured Multi-Position Sandbox`.
 
-Temporal extension этого этапа: fixed per-instrument candle interval через `InstrumentRuntime` — Issue #39. Per-strategy timeframe — Issue #40. Multi-timeframe/Supervisor-selected horizon — Issue #41.
+Temporal extension этого этапа: fixed per-configured-slot candle interval —
+Issue #39. Per-strategy `StrategyRuntime` и timeframe — Issue #40.
+Multi-timeframe/Supervisor-selected horizon — Issue #41.

@@ -28,7 +28,11 @@ from .runtime_integrity import (
 
 
 DEFAULT_RUNTIME_FILES: tuple[str, ...] = (
+    "v3_8_runtime_seed_manifest.json",
     "strategy_profiles.json",
+    "multi_instrument_profiles.json",
+    "instrument_runtimes.json",
+    "central_order_state.json",
     "risk_profiles.json",
     "risk_state.json",
     "robot_state.json",
@@ -44,6 +48,13 @@ _FORBIDDEN_BACKUP_NAMES = {
     "runtime_bootstrap_report.json",
     "robot_gui.log",
     "robot_debug.log",
+}
+
+_CHECKSUM_MANAGED_JSON_NAMES = {
+    "portfolio_state.json",
+    "multi_instrument_profiles.json",
+    "instrument_runtimes.json",
+    "central_order_state.json",
 }
 
 
@@ -481,7 +492,10 @@ class RuntimeBackupManager:
         """Keep checksum-managed JSON consistent after transactional restore."""
 
         sidecar = destination.with_name(destination.name + ".sha256")
-        if destination.name != "portfolio_state.json" and not sidecar.exists():
+        if (
+            destination.name not in _CHECKSUM_MANAGED_JSON_NAMES
+            and not sidecar.exists()
+        ):
             return
         temporary = sidecar.with_name(sidecar.name + f".{uuid4().hex}.tmp")
         try:

@@ -190,6 +190,9 @@ class SupportBundleBuilder:
             integrity: dict[str, Any] = {}
             for name in (
                 "strategy_profiles.json",
+                "multi_instrument_profiles.json",
+                "instrument_runtimes.json",
+                "central_order_state.json",
                 "risk_profiles.json",
                 "risk_state.json",
                 "robot_state.json",

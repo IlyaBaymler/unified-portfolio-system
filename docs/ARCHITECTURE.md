@@ -82,7 +82,9 @@ Broker state
 
 ### Основной принцип
 
-`candle_interval` относится к Strategy/Instrument runtime и не должен рассматриваться как глобальное свойство всего робота или как неизменное свойство позиции.
+`candle_interval` относится к configured execution slot в v3.8 и к
+`StrategyRuntime` начиная с v4.0. Он не является глобальным свойством всего
+робота или неизменным свойством позиции.
 
 Разделяются пять временных понятий:
 
@@ -91,7 +93,7 @@ candle_interval
     размер свечи, используемой Strategy Engine
 
 decision cadence
-    когда StrategyRuntime проверяет появление новой закрытой свечи
+    когда execution slot/StrategyRuntime проверяет новую закрытую свечу
 
 scheduler cadence
     как часто Global Scheduler обслуживает runtime
@@ -109,17 +111,24 @@ reconciliation cadence
 
 Сохраняется один configured timeframe для одноинструментного Strategy/Bot runtime. `v3.7.0 Stable` не расширяет temporal model.
 
-### v3.8 — InstrumentRuntime
+### v3.8 — configured ExecutionSlot
 
 Issue #39.
 
-Каждый `InstrumentRuntime` получает собственный фиксированный `candle_interval` и независимый `last_processed_candle`:
+Каждый заранее настроенный contour получает собственный фиксированный
+`candle_interval` и независимый `last_processed_candle`:
 
 ```text
-InstrumentRuntime[SBER] → 1h
-InstrumentRuntime[LKOH] → 30m
-InstrumentRuntime[YDEX] → 15m
+ExecutionSlot[SBER] → 1h
+ExecutionSlot[LKOH] → 30m
+ExecutionSlot[YDEX] → 15m
 ```
+
+В реализованной ветке эта переходная внутренняя роль называется и сохраняется
+как checksummed `InstrumentRuntime`. Он содержит temporal/lifecycle projection,
+но не является владельцем canonical position/target: источником истины остаётся
+`PortfolioState`. Имя/schema `InstrumentRuntime` не объявляется обязательным
+публичным доменным контрактом v4+.
 
 Global Scheduler не должен предполагать общий timeframe и не должен связывать появление новой свечи с Risk/reconciliation lifecycle.
 
@@ -151,7 +160,7 @@ instrument_id
 
 Каждый runtime имеет собственный temporal state и performance attribution.
 
-### v5.x — multi-timeframe / Supervisor
+### v5.x — multi-timeframe / Universe / Supervisor
 
 Issue #41.
 
@@ -166,6 +175,34 @@ Entry context → 5m
 Portfolio Supervisor/Strategy Selector выбирает versioned StrategyProfile/module, прошедший validation для конкретного набора timeframe. Supervisor не должен произвольно переписывать `60m → 5m` внутри уже работающей стратегии без явной versioned transition.
 
 Rule-based selection вводится раньше ML-assisted selection. Любой адаптивный слой сначала работает в SHADOW/Sandbox.
+
+## Instrument selection и runtime domains
+
+```text
+InstrumentCatalog
+    справочник известных инструментов, без выбора target
+
+ConfiguredExecutionSet
+    operator allowlist v3.8
+
+ExecutionSlot
+    переходный temporal/lifecycle contour v3.8
+
+StrategyRuntime
+    формальная вычислительная identity v4.0
+
+InstrumentUniverse
+    point-in-time candidate set v5.x
+```
+
+Текущие `MultiInstrumentProfile` реализуют ConfiguredExecutionSet, а текущий
+persisted `InstrumentRuntime` — ExecutionSlot. Ни одна из этих моделей не
+заменяет canonical `PositionState`. `InstrumentUniverse` не имеет прямого
+маршрута к broker POST.
+
+Подробно:
+`docs/project/ARCHITECTURE_REVIEW_2026-08-13_RU.md` и
+`docs/plans/INSTRUMENT_SELECTION_EVOLUTION_RU.md`.
 
 ## Timeframe и ownership
 
@@ -215,6 +252,7 @@ single configured strategy timeframe
 ```text
 Unified Portfolio System
 ├── Portfolio Manager
+├── Instrument Catalog / Universe Manager (v5.x)
 ├── Strategy Engine(s) / StrategyRuntime(s)
 ├── Global Scheduler
 ├── Portfolio Supervisor
