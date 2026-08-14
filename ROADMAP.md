@@ -191,8 +191,8 @@ account-wide Central admission, dispatch-time proof, recovery/observability и
 ledger.
 
 M1 pure-domain, M2 read-only migration, M3 prospective SHADOW и M4
-authoritative enforcement реализованы в накопительной ветке `v3.9`/draft PR
-`#43`. Immutable model,
+authoritative enforcement squash-merged через PR #43 в `main` (`d589f345`).
+Immutable model,
 evaluator и sizing не читают runtime-файлы и не вызывают broker API.
 `PortfolioRiskInputAdapter` строит вход только из canonical `PortfolioState`,
 Central reservation projection, существующего `RiskState` и явной instrument
@@ -320,8 +320,9 @@ scope.
 dispatch-time reproduction и revalidation, restart/recovery и post-fill
 recalculation. Изолированный Sandbox acceptance и финальный review завершены без
 искусственного создания заявки; live dispatch/fill намеренно оставлен за
-границей этого gate. Накопительный draft PR `#43` содержит M1–M4 и Windows/Python
-3.12 GitHub Actions CI.
+границей этого gate. PR #43 снят с draft и squash-merged; post-merge
+Windows/Python 3.12 CI дал `721 passed`, pip check, critical/strict Ruff,
+compileall PASS и annotations 0.
 
 Повторный review PR `#43` устранил fail-open подстановку `RUB`: checksummed
 sandbox metadata теперь переносит только проверенную валюту источника либо
@@ -330,12 +331,24 @@ Central/Risk mutation. Configure/start также не активируют runt
 валютой. ROADMAP синхронизирован с фактическим M4 scope. Локальный correction
 gate: targeted `77 passed`, оба уровня Ruff, `pip check`, compileall и
 diff-check — PASS; полный Windows regression повторяется обязательным PR CI.
-Следующий этап после повторного CI/review — отдельное решение о готовности draft
-PR, без автоматического разрешения live execution.
+M5 `beta1` начат отдельно в `agent/v3-9-beta1-recovery-ux`. Первый срез M5.1
+добавляет единый operator CLI `tools/v3_9_risk_control.py`: read-only
+inspect/explain/policy review и exact-confirmation global/instrument kill-switch
+transitions. Account ID в выводе маскируется; mutation ограничена существующим
+checksummed `risk_state.json` и не создаёт proposal, Central intent, arming или
+provider POST. Corrupt policy проверяется до mutation, поэтому ошибка не может
+маскировать уже выполненную запись. Финальный review дополнительно закрыл
+canonical uppercase instrument ID, блокирующий статус `OBSERVE_ONLY` и
+обязательный Sandbox account scope. Targeted `7 passed`, full regression
+`728 passed`, pip check, critical/strict Ruff и compileall PASS. M5.1 опубликован
+в draft PR #44; замечания финального review исправлены. Merge остаётся отдельным gate.
+External cash resync/recovery matrix остаётся отдельным M5.2 gate, а
+EventJournal/support bundle/standalone — M5.3.
 
 Подробности:
 
 - `docs/plans/V3_9_PORTFOLIO_RISK_ENGINE_PLAN_RU.md`;
+- `docs/plans/V3_9_M5_1_OPERATOR_CONTROL_RUNBOOK_RU.md`;
 - `docs/project/V3_9_INTERFACE_FREEZE_RU.md`;
 - `docs/project/V3_9_ISSUE_PROPOSAL_RU.md`.
 

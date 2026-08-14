@@ -1,8 +1,8 @@
 # План разработки v3.9.0 — Portfolio Risk Engine
 
 Дата: 2026-08-14
-Статус: `IN DEVELOPMENT / M3 FINAL REVIEW PASS / M4 FINAL REVIEW PASS / READY FOR COMMIT`
-Базовый commit: `7525d7e` — merge PR #42 (`v3.8 Multi-Instrument Sandbox`)
+Статус: `IN DEVELOPMENT / M5.1 FINAL REVIEW PASS / READY FOR COMMIT`
+Базовый commit: `d589f345` — squash merge PR #43 (`v3.9 M1–M4`)
 
 План сверен с пакетом обновления
 `v3_9_portfolio_risk_codex_plan_2026-08-13.zip`, SHA-256
@@ -779,23 +779,32 @@ proof. Central revision 2, queue/reservation/blocker 0, canonical `FRESH/READY`,
 activation `ACTIVE`, проверенные checksums PASS. Dispatch arms отсутствовали,
 provider POST/order submit/resubmit 0.
 
-M4 final review — PASS в принятой no-artificial-order границе. Полная регрессия
-`718 passed`, весь изменённый M4 Python scope Ruff PASS, diff-check PASS.
-Финальный runtime audit: 13/13 checksum-пар PASS, Central queue/blocker/
+M4 final review — PASS в принятой no-artificial-order границе. После исправления
+финальных P1/P2 замечаний PR #43 squash-merged в `main`
+(`d589f34527499b31afc5d19736ec1ccb9cc1e465`). Post-merge CI: `721 passed`,
+pip check, critical/strict Ruff и compileall PASS, annotations 0. Финальный
+runtime audit до публикации: 13/13 checksum-пар PASS, Central queue/blocker/
 reservation 0, pending 0, canonical `FRESH/READY`, activation `ACTIVE`;
 pre-activation backup `VALID`, errors/warnings 0, 11 entries. Live dispatch/fill
-не требовался для этого gate; M4 готов к отдельной фиксации ветки.
+не требовался для этого gate.
 
 ### M5 — Persistence/recovery/UX hardening (`beta1`)
 
-- read-only Portfolio Risk dashboard projection;
-- inspect/explain CLI;
-- configure/review policy CLI;
-- engage/clear global и instrument kill switches с exact confirmation;
-- EventJournal, backup и sanitized support-bundle coverage.
-- external cash baseline resync workflow;
-- restart с active reservation, partial fill и pending/uncertain recovery;
-- standalone bootstrap/layout и rollback к принятому v3.8 runtime.
+M5 использует уже merged foundation M1–M4 и делится на три проверяемых среза:
+
+1. **M5.1 — operator control plane**
+   - единая read-only Portfolio Risk dashboard projection;
+   - inspect/explain CLI и configure/review policy CLI;
+   - engage/clear global и instrument kill switches с exact confirmation;
+   - mutation-команды не вызываются GUI неявно и не выполняют dispatch.
+2. **M5.2 — recovery и external cash resync**
+   - подтверждаемый external cash baseline resync workflow;
+   - restart с active reservation и partial fill;
+   - pending/uncertain recovery без duplicate dispatch/resubmit.
+3. **M5.3 — persistence и standalone qualification**
+   - EventJournal, backup/restore и sanitized support-bundle coverage;
+   - standalone bootstrap/layout;
+   - isolated rollback к принятому v3.8 runtime.
 
 Gate: GUI не рассчитывает risk самостоятельно и не изменяет execution state
 без явной operator command.
@@ -918,12 +927,26 @@ gate и не зависеть от ручного broker сценария для
 
 ## 13. Первый следующий шаг
 
-Начать с M0/M1 в новой ветке от `main`:
+Начать M5.1 в ветке `agent/v3-9-beta1-recovery-ux` от merged `main`:
 
-1. создать umbrella Issue `v3.9.0 — Portfolio Risk Engine`;
-2. утвердить policy fields, valuation formula, metadata taxonomy и lock order;
-3. реализовать только pure model/evaluator/sizing modules и synthetic tests;
-4. провести review модели до изменения persistence или execution path.
+1. переиспользовать существующие `RiskProfileStore`, `RiskStateStore`,
+   `RiskEngine` и read-only reporting service без нового competing store;
+2. добавить единый inspect/explain и policy review CLI;
+3. добавить отдельные exact-confirmation команды engage/clear для global и
+   instrument kill switches;
+4. доказать targeted tests, что read-only команды не изменяют runtime, а
+   mutation-команды атомарны, fail-closed и не выполняют dispatch;
+5. провести отдельный M5.1 review до external cash resync и recovery matrix.
 
-Такой порядок позволяет проверить математику и fail-closed semantics отдельно
-от наиболее рискованной части — конкурентного admission и Sandbox dispatch.
+Локальная реализация M5.1 добавлена в `agent/v3-9-beta1-recovery-ux`:
+`tools/v3_9_risk_control.py` объединяет read-only inspect/explain/policy review
+и exact-confirmation global/instrument kill-switch transitions. Account ID в
+JSON маскируется; неправильная фраза, corrupt policy и corrupt state не приводят
+к записи; proposal/intent/dispatch/provider POST отсутствуют. Targeted
+`7 passed`, full regression `728 passed`, pip check, critical/strict Ruff и
+compileall PASS. Финальный review исправил uppercase-нормализацию instrument ID,
+исключил `READY` для Sandbox `OBSERVE_ONLY` и требует непустой совпадающий
+account scope. Блокирующих замечаний не осталось; локальный M5.1 review — PASS.
+Operator runbook: `docs/plans/V3_9_M5_1_OPERATOR_CONTROL_RUNBOOK_RU.md`.
+M5.1 опубликован в draft PR #44; замечания финального review исправлены.
+Merge остаётся отдельным gate.

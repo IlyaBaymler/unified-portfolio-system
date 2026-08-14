@@ -489,10 +489,24 @@ Windows временные пути CI привязаны к `RUNNER_TEMP`; Even
 закрывает соединения, а checkpointed read-only journal не создаёт SQLite
 `-wal`/`-shm` sidecar-файлы.
 
+M1–M4 squash-merged через PR #43 в `main` (`d589f345`); post-merge CI завершён
+результатом `721 passed`, pip check, critical/strict Ruff и compileall PASS,
+annotations 0. M5 beta1 ведётся отдельно в
+`agent/v3-9-beta1-recovery-ux`. Первый локальный срез M5.1 добавляет единый
+`tools/v3_9_risk_control.py`: `inspect`, `explain` и `review-policy` строго
+read-only, а global/instrument kill-switch transitions требуют отдельных точных
+confirmation-фраз и меняют только checksummed Risk state без proposal, intent
+или dispatch. Финальный review исправил canonical uppercase instrument ID,
+запрет admission-status для `OBSERVE_ONLY` и обязательность Sandbox account
+scope. Targeted gate: `7 passed`; full regression: `728 passed`; pip check,
+critical/strict Ruff и compileall PASS. M5.1 опубликован в draft PR #44;
+замечания финального review исправлены. Merge остаётся отдельным gate.
+
 Основные документы:
 
 - `docs/plans/V3_9_PORTFOLIO_RISK_ENGINE_PLAN_RU.md`;
 - `docs/plans/V3_9_M4_SANDBOX_ACCEPTANCE_RUNBOOK_RU.md`;
+- `docs/plans/V3_9_M5_1_OPERATOR_CONTROL_RUNBOOK_RU.md`;
 - `docs/project/V3_9_INTERFACE_FREEZE_RU.md`;
 - `docs/project/V3_9_ISSUE_PROPOSAL_RU.md`.
 

@@ -202,27 +202,40 @@ blocker 0, canonical `FRESH/READY`, activation `ACTIVE`, checksums PASS. SBER
 runtime `ACTIVE` с pending 0, LKOH `STOPPED`; dispatch arming/provider POST/order
 submit/resubmit — 0.
 
-M4 закрыт локальным `FINAL REVIEW PASS` без искусственной заявки. Evidence:
-`718 passed`, изменённый Python scope Ruff PASS, diff-check PASS, 13/13 runtime
-checksum-пар, Central queue/blocker/reservation 0, pending 0 и `VALID`
-pre-activation backup (11 entries, errors/warnings 0). Live dispatch/fill не
-выполнялся по принятой acceptance boundary; safety-path покрыт автоматическими
-dispatch/fill/uncertain/no-resubmit tests. Commit/Push и GitHub delivery остаются
-отдельным явным gate.
+M4 закрыт `FINAL REVIEW PASS` без искусственной заявки и squash-merged через
+PR #43 в `main` (`d589f34527499b31afc5d19736ec1ccb9cc1e465`). Post-merge CI:
+`721 passed`, pip check, critical/strict Ruff и compileall PASS, annotations 0.
+Финальный runtime audit до публикации: 13/13 checksum-пар PASS, Central
+queue/blocker/reservation 0, pending 0 и `VALID` pre-activation backup
+(11 entries, errors/warnings 0). Live dispatch/fill не выполнялся по принятой
+acceptance boundary; safety-path покрыт автоматическими
+dispatch/fill/uncertain/no-resubmit tests.
 
 ## 7. Persistence/recovery foundation и `v3.9-beta1` hardening
 
 Цель: versioned migration существующих Risk stores, kill-switch recovery,
 external cash resync, backup/restore, standalone, dashboard/support bundle.
-Задача имеет два обязательных чекпоинта:
+Задача имеет завершённый foundation и три отдельных beta1-чекпоинта:
 
-- foundation до Issue 6 enforcement: schema migration, explicit Sandbox policy
-  configuration, durable kill switches, restart/rollback tests;
-- beta1 hardening после enforcement: operator UX, standalone, support bundle и
-  полная recovery matrix.
+- foundation M1–M4: schema migration, explicit Sandbox policy configuration,
+  durable kill switches, Central enforcement и restart/rollback tests — merged;
+- M5.1 operator control plane: read-only inspect/explain и policy review,
+  отдельные exact-confirmation команды для global/instrument kill switches;
+- M5.2 recovery: external cash baseline resync и restart matrix для active
+  reservation, partial fill и pending/uncertain;
+- M5.3 packaging: EventJournal, backup/restore, sanitized support bundle,
+  standalone bootstrap/layout и rollback к принятому v3.8 runtime.
 
 Gate: migration idempotent, corrupt state fail-closed, isolated rollback к
 принятому v3.8 проходит.
+
+M5.1 operator control plane реализован и прошёл локальный финальный review.
+Исправлены canonical uppercase instrument ID, блокирующий Sandbox status для
+`OBSERVE_ONLY` и обязательный account scope. Targeted `7 passed`, full
+regression `728 passed`, pip check, critical/strict Ruff, compileall и
+diff-check PASS. Proposal/intent/dispatch/provider POST отсутствуют;
+M5.1 опубликован в draft PR #44, замечания финального review исправлены.
+Merge остаётся отдельным gate.
 
 ## 8. `v3.9.0` — acceptance и release qualification
 
