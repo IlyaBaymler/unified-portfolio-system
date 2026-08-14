@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
-import json
 
 import pandas as pd
 import pytest
@@ -22,7 +22,6 @@ from trading_robot.risk_persistence import (
     RiskProfileStore,
     RiskStateStore,
 )
-
 
 NOW = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
 
@@ -63,31 +62,31 @@ def snapshot(
 
 
 def permissive_policy(**overrides) -> RiskPolicy:
-    values = dict(
-        max_position_lots=100,
-        max_position_value_rub=1_000_000.0,
-        max_position_share_of_equity=1.0,
-        max_order_value_rub=1_000_000.0,
-        cash_reserve_rub=0.0,
-        commission_buffer_fraction=0.0,
-        risk_per_trade_rub=None,
-        risk_per_trade_fraction=None,
-        daily_loss_limit_rub=None,
-        daily_loss_limit_fraction=None,
-        weekly_loss_limit_rub=None,
-        weekly_loss_limit_fraction=None,
-        max_drawdown_fraction=None,
-        max_daily_turnover_rub=None,
-        max_orders_per_day=None,
-        max_snapshot_age_seconds=300,
-    )
+    values = {
+        "max_position_lots": 100,
+        "max_position_value_rub": 1_000_000.0,
+        "max_position_share_of_equity": 1.0,
+        "max_order_value_rub": 1_000_000.0,
+        "cash_reserve_rub": 0.0,
+        "commission_buffer_fraction": 0.0,
+        "risk_per_trade_rub": None,
+        "risk_per_trade_fraction": None,
+        "daily_loss_limit_rub": None,
+        "daily_loss_limit_fraction": None,
+        "weekly_loss_limit_rub": None,
+        "weekly_loss_limit_fraction": None,
+        "max_drawdown_fraction": None,
+        "max_daily_turnover_rub": None,
+        "max_orders_per_day": None,
+        "max_snapshot_age_seconds": 300,
+    }
     values.update(overrides)
     return RiskPolicy(**values)
 
 
 def q(value: float) -> dict[str, int]:
     units = int(value)
-    nano = int(round((value - units) * 1_000_000_000))
+    nano = round((value - units) * 1_000_000_000)
     return {"units": units, "nano": nano}
 
 
@@ -418,7 +417,7 @@ def test_hold_above_cap_does_not_force_liquidation():
 
 def test_engine_never_increases_strategy_target():
     policy = permissive_policy(max_position_lots=100)
-    for target in range(0, 5):
+    for target in range(5):
         result = RiskEngine(policy).evaluate(
             snapshot(target=target, current=min(target, 2))
         )
@@ -500,6 +499,38 @@ def test_baseline_reset_requires_confirmation():
     assert events[0].event_type == "RISK_BASELINES_RESET"
 
 
+def test_pristine_baseline_initialization_uses_fresh_equity_and_cash():
+    initialized, event = RiskEngine(permissive_policy()).initialize_pristine_baselines(
+        RiskState(),
+        now=NOW,
+        equity_rub=50_000,
+        cash_rub=15_000,
+        snapshot_at=NOW,
+    )
+
+    assert initialized.daily_date == "2026-07-22"
+    assert initialized.daily_start_equity_rub == pytest.approx(50_000)
+    assert initialized.weekly_start_equity_rub == pytest.approx(50_000)
+    assert initialized.high_watermark_equity_rub == pytest.approx(50_000)
+    assert initialized.last_cash_rub == pytest.approx(15_000)
+    assert initialized.daily_turnover_rub == 0
+    assert initialized.daily_order_count == 0
+    assert event.event_type == "RISK_BASELINES_INITIALIZED"
+
+
+def test_pristine_baseline_initialization_refuses_prior_state():
+    engine = RiskEngine(permissive_policy())
+
+    with pytest.raises(RiskInputError, match="pristine state"):
+        engine.initialize_pristine_baselines(
+            RiskState(daily_turnover_rub=1),
+            now=NOW,
+            equity_rub=50_000,
+            cash_rub=15_000,
+            snapshot_at=NOW,
+        )
+
+
 def test_profile_store_separates_modes_and_checks_checksum(tmp_path):
     store = RiskProfileStore(tmp_path / "risk_profiles.json")
     dry = RiskPolicy(max_position_lots=1)
@@ -565,7 +596,7 @@ def test_state_store_migrates_alpha3_v1_document(tmp_path):
     )
     store = RiskStateStore(path)
     state = store.load_account("A")
-    assert state.version == 2
+    assert state.version == 3
     assert state.daily_order_count == 2
     assert state.recorded_execution_ids == ("legacy-exec",)
     assert state.risk_resync_required is False
@@ -573,7 +604,7 @@ def test_state_store_migrates_alpha3_v1_document(tmp_path):
     store.save_account("A", state)
     migrated = json.loads(path.read_text(encoding="utf-8"))
     assert migrated["version"] == RiskStateStore.SCHEMA_VERSION
-    assert migrated["accounts"]["A"]["version"] == 2
+    assert migrated["accounts"]["A"]["version"] == 3
     assert migrated["accounts"]["A"]["risk_resync_required"] is False
 
 

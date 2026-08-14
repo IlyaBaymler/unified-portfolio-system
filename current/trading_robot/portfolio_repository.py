@@ -2,11 +2,13 @@ from __future__ import annotations
 
 """Atomic single-writer persistence for canonical v3.7-alpha3 state."""
 
-from dataclasses import dataclass
 import hashlib
 import json
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from .locking import InterProcessFileLock, LockUnavailableError
 from .portfolio_model import (
@@ -118,6 +120,34 @@ class PortfolioRepository:
             raise PortfolioRepositoryError(str(exc)) from exc
         self._check_account_scope(state, expected_account_id)
         return state
+
+    @contextmanager
+    def locked_snapshot(
+        self,
+        *,
+        expected_account_id: str | None = None,
+    ) -> Iterator[PortfolioState]:
+        """Hold the canonical snapshot stable across M4 authorization work.
+
+        The global M4 lock order is canonical portfolio, Risk profile, Risk
+        state, then Central orders.  Callers must not attempt to save through
+        this repository while the read lease is held.
+        """
+
+        lock = InterProcessFileLock(
+            self.lock_path,
+            timeout_seconds=self.lock_timeout_seconds,
+        )
+        try:
+            lock.acquire()
+        except LockUnavailableError as exc:
+            raise PortfolioRepositoryError(
+                f"Portfolio state is locked by another process: {self.path}"
+            ) from exc
+        try:
+            yield self.load(expected_account_id=expected_account_id)
+        finally:
+            lock.release()
 
     def load_optional(
         self,

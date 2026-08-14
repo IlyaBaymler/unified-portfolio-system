@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+
 from tools import v3_8_sandbox_acceptance as acceptance
 from trading_robot.bot import BotConfig
 from trading_robot.central_order_manager import CentralOrderManager, CentralOrderStore
@@ -13,7 +15,7 @@ from trading_robot.multi_instrument_config import (
     MultiInstrumentProfile,
     MultiInstrumentProfileStore,
 )
-from trading_robot.portfolio_model import PortfolioState
+from trading_robot.portfolio_model import PortfolioState, SnapshotFreshness
 from trading_robot.portfolio_repository import PortfolioRepository
 from trading_robot.risk import RiskPolicy
 from trading_robot.risk_persistence import RiskProfileStore, RiskStateStore
@@ -287,6 +289,58 @@ def cli_args(root: Path, action: str, *extra: str):
             *extra,
         ]
     )
+
+
+def test_natural_signal_preview_is_read_only_and_never_submits(tmp_path: Path):
+    prepare_runtime(tmp_path)
+    repository = PortfolioRepository(tmp_path / "portfolio_state.json")
+    repository.save(
+        replace(
+            repository.load(expected_account_id=ACCOUNT),
+            freshness=SnapshotFreshness.FRESH,
+            state_status="READY",
+            blocking=False,
+        )
+    )
+    client = FakeSandboxClient()
+    before = {
+        item.name: item.read_bytes()
+        for item in tmp_path.iterdir()
+        if item.is_file()
+    }
+
+    result = acceptance.run(
+        cli_args(tmp_path, "preview-natural"),
+        environ={acceptance.TOKEN_KEY: "secret-canary"},
+        client_factory=lambda *args, **kwargs: client,
+    )
+
+    after = {
+        item.name: item.read_bytes()
+        for item in tmp_path.iterdir()
+        if item.is_file()
+    }
+    assert result["status"] == "SIGNAL"
+    assert result["natural_proposals"] == [
+        {
+            "ticker": "SBER",
+            "runtime_status": "STOPPED",
+            "candle_time": result["natural_proposals"][0]["candle_time"],
+            "signal": 1,
+            "current_lots": 0,
+            "requested_target_lots": 1,
+            "position_change_requested": True,
+            "candidate_price_at": None,
+            "candidate_price_source": None,
+            "execution_authorized": False,
+            "persisted": False,
+        }
+    ]
+    assert result["writes_performed"] is False
+    assert result["intent_preparation_authorized"] is False
+    assert result["broker_order_submit_called"] is False
+    assert client.post_count == 0
+    assert before == after
 
 
 def test_operator_prepare_dispatch_reconcile_flow_is_single_submit_and_accounted(

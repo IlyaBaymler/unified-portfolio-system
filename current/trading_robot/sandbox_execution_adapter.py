@@ -17,7 +17,11 @@ from .orders import (
     is_terminal_order_status,
     normalize_execution_status,
 )
-from .portfolio_repository import PortfolioRepository
+from .portfolio_repository import PortfolioRepository, PortfolioRepositoryError
+from .portfolio_risk_runtime import (
+    PortfolioRiskAuthorizationError,
+    PortfolioRiskRuntime,
+)
 from .risk_runtime import RiskDispatchAuthorizationError
 from .tbank_sandbox import TBankAPIError
 
@@ -58,6 +62,7 @@ class SandboxRiskAuthorizationGate(Protocol):
         *,
         expected_policy_hash: str,
         expected_state_guard_hash: str | None,
+        instrument_id: str | None = None,
     ) -> Any: ...
 
 
@@ -131,12 +136,12 @@ class SandboxExecutionAdapter:
         policy: SandboxExecutionPolicy,
         *,
         risk_runtime: SandboxRiskAuthorizationGate | None = None,
+        portfolio_risk_runtime: PortfolioRiskRuntime | None = None,
     ) -> None:
         if policy.account_id != manager.account_id:
             raise ValueError("Sandbox execution policy account scope mismatch.")
         if risk_runtime is not None and (
-            str(getattr(risk_runtime, "account_id", "")).strip()
-            != manager.account_id
+            str(getattr(risk_runtime, "account_id", "")).strip() != manager.account_id
             or str(getattr(risk_runtime, "mode", "")).strip().upper()
             != "SANDBOX_EXECUTION"
         ):
@@ -145,6 +150,11 @@ class SandboxExecutionAdapter:
         self.manager = manager
         self.policy = policy
         self.risk_runtime = risk_runtime
+        self.portfolio_risk_runtime = portfolio_risk_runtime
+        if self.portfolio_risk_runtime is not None and (
+            self.portfolio_risk_runtime.account_id != manager.account_id
+        ):
+            raise ValueError("Sandbox Portfolio Risk authorization scope mismatch.")
 
     def dispatch_next(
         self,
@@ -182,12 +192,68 @@ class SandboxExecutionAdapter:
                 retryable=True,
                 error="Dispatch-time Risk authorization gate is unavailable.",
             )
+        if (
+            intent.authorization.portfolio_risk is not None
+            and self.portfolio_risk_runtime is None
+        ):
+            return SandboxDispatchResult(
+                status="PORTFOLIO_RISK_AUTHORIZATION_UNAVAILABLE",
+                intent_id=intent.intent_id,
+                retryable=True,
+                error="Dispatch-time Portfolio Risk authorization gate is unavailable.",
+            )
+        if self.portfolio_risk_runtime is not None:
+            try:
+                with (
+                    portfolio_repository.locked_snapshot(
+                        expected_account_id=self.policy.account_id
+                    ) as locked_portfolio,
+                    self.risk_runtime.dispatch_authorization_guard(
+                        expected_policy_hash=intent.authorization.risk_policy_hash,
+                        expected_state_guard_hash=(
+                            intent.authorization.risk_state_guard_hash
+                        ),
+                        instrument_id=intent.candidate.instrument_id,
+                    ),
+                ):
+                    return self._dispatch_with_current_risk(
+                        intent,
+                        portfolio_repository,
+                        locked_portfolio_state=locked_portfolio,
+                    )
+            except PortfolioRiskAuthorizationError as exc:
+                return SandboxDispatchResult(
+                    status=exc.status,
+                    intent_id=intent.intent_id,
+                    retryable=exc.retryable,
+                    error=str(exc),
+                )
+            except PortfolioRepositoryError as exc:
+                return SandboxDispatchResult(
+                    status="CANONICAL_AUTHORIZATION_UNAVAILABLE",
+                    intent_id=intent.intent_id,
+                    retryable=True,
+                    error=str(exc),
+                )
+            except RiskDispatchAuthorizationError as exc:
+                return SandboxDispatchResult(
+                    status=exc.status,
+                    intent_id=intent.intent_id,
+                    retryable=exc.retryable,
+                    error=str(exc),
+                )
+            except Exception as exc:  # noqa: BLE001 - all M4 gates fail closed
+                return SandboxDispatchResult(
+                    status="PORTFOLIO_RISK_AUTHORIZATION_UNAVAILABLE",
+                    intent_id=intent.intent_id,
+                    retryable=True,
+                    error=f"Dispatch-time Portfolio Risk authorization failed: {exc}",
+                )
         try:
             with self.risk_runtime.dispatch_authorization_guard(
                 expected_policy_hash=intent.authorization.risk_policy_hash,
-                expected_state_guard_hash=(
-                    intent.authorization.risk_state_guard_hash
-                ),
+                expected_state_guard_hash=(intent.authorization.risk_state_guard_hash),
+                instrument_id=intent.candidate.instrument_id,
             ):
                 return self._dispatch_with_current_risk(
                     intent,
@@ -212,6 +278,8 @@ class SandboxExecutionAdapter:
         self,
         intent: CentralOrderIntent,
         portfolio_repository: PortfolioRepository,
+        *,
+        locked_portfolio_state: Any | None = None,
     ) -> SandboxDispatchResult:
         """Submit only while the persisted Risk authorization guard is held."""
 
@@ -224,6 +292,28 @@ class SandboxExecutionAdapter:
             preparation = self.manager.prepare_next(
                 portfolio_repository,
                 expected_intent_id=intent.intent_id,
+                locked_portfolio_state=locked_portfolio_state,
+                portfolio_risk_validator=(
+                    (
+                        lambda portfolio, central, queued: (
+                            self.portfolio_risk_runtime.validate_dispatch(
+                                portfolio=portfolio,
+                                central_orders=central,
+                                intent=queued,
+                            )
+                        )
+                    )
+                    if self.portfolio_risk_runtime is not None
+                    else None
+                ),
+            )
+        except PortfolioRiskAuthorizationError as exc:
+            return SandboxDispatchResult(
+                status=exc.status,
+                intent_id=intent.intent_id,
+                retryable=exc.retryable,
+                market=market,
+                error=str(exc),
             )
         except CentralOrderConflictError as exc:
             return SandboxDispatchResult(
@@ -289,9 +379,7 @@ class SandboxExecutionAdapter:
                 RuntimeError("Sandbox response request ID does not match intent ID."),
                 market=market,
             )
-        broker_order_id = str(
-            payload.get("orderId") or request_id or ""
-        ).strip()
+        broker_order_id = str(payload.get("orderId") or request_id or "").strip()
         if not broker_order_id:
             return self._submission_uncertain(
                 prepared,

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import csv
 import json
-from pathlib import Path
 import sqlite3
 import threading
-from typing import Any, Iterable, Literal
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, ClassVar, Literal
 
 from .runtime_integrity import FileIntegrityReport, inspect_sqlite_file
 
@@ -52,7 +54,7 @@ class EventJournal:
 
     SCHEMA_VERSION = 2
 
-    _EVENT_COLUMNS: dict[str, str] = {
+    _EVENT_COLUMNS: ClassVar[dict[str, str]] = {
         "session_id": "TEXT",
         "mode": "TEXT",
         "status": "TEXT",
@@ -63,23 +65,58 @@ class EventJournal:
         "api_attempts": "INTEGER",
     }
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, read_only: bool = False) -> None:
         self.path = Path(path)
+        self.read_only = bool(read_only)
+        if self.read_only:
+            if not self.path.is_file():
+                raise FileNotFoundError(f"EventJournal does not exist: {self.path}")
+            self._init_lock = threading.Lock()
+            self._initialised = True
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_lock = threading.Lock()
         self._initialised = False
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            self.path,
-            timeout=10.0,
-            isolation_level=None,
+        read_only_uri = self.path.resolve().as_uri() + "?mode=ro"
+        wal_path = self.path.with_name(self.path.name + "-wal")
+        if self.read_only and not wal_path.exists():
+            # A stopped, fully checkpointed journal can be opened as immutable.
+            # This prevents SQLite from creating -wal/-shm sidecars on a
+            # strictly read-only reporting path. If a WAL exists we retain the
+            # normal read-only URI so committed WAL frames remain visible.
+            read_only_uri += "&immutable=1"
+        connection = (
+            sqlite3.connect(
+                read_only_uri,
+                timeout=10.0,
+                isolation_level=None,
+                uri=True,
+            )
+            if self.read_only
+            else sqlite3.connect(
+                self.path,
+                timeout=10.0,
+                isolation_level=None,
+            )
         )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 10000")
         return connection
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """Yield one transaction-scoped connection and always close it."""
+
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _ensure_schema(self) -> None:
         if self._initialised:
@@ -87,7 +124,7 @@ class EventJournal:
         with self._init_lock:
             if self._initialised:
                 return
-            with self._connect() as connection:
+            with self._connection() as connection:
                 connection.execute("PRAGMA journal_mode = WAL")
                 connection.execute(
                     """
@@ -136,24 +173,46 @@ class EventJournal:
                         )
 
                 index_statements = (
-                    "CREATE INDEX IF NOT EXISTS idx_events_ts "
-                    "ON events(timestamp_utc DESC)",
-                    "CREATE INDEX IF NOT EXISTS idx_events_order "
-                    "ON events(order_id, id)",
-                    "CREATE INDEX IF NOT EXISTS idx_events_category "
-                    "ON events(category, id DESC)",
-                    "CREATE INDEX IF NOT EXISTS idx_events_session "
-                    "ON events(session_id, id DESC)",
-                    "CREATE INDEX IF NOT EXISTS idx_events_run "
-                    "ON events(run_id, id DESC)",
-                    "CREATE INDEX IF NOT EXISTS idx_events_severity "
-                    "ON events(severity, id DESC)",
-                    "CREATE INDEX IF NOT EXISTS idx_events_strategy "
-                    "ON events(strategy_id, candle_time)",
+                    (
+                        "CREATE INDEX IF NOT EXISTS idx_events_ts "
+                        "ON events(timestamp_utc DESC)"
+                    ),
+                    (
+                        "CREATE INDEX IF NOT EXISTS idx_events_order "
+                        "ON events(order_id, id)"
+                    ),
+                    (
+                        "CREATE INDEX IF NOT EXISTS idx_events_category "
+                        "ON events(category, id DESC)"
+                    ),
+                    (
+                        "CREATE INDEX IF NOT EXISTS idx_events_session "
+                        "ON events(session_id, id DESC)"
+                    ),
+                    (
+                        "CREATE INDEX IF NOT EXISTS idx_events_run "
+                        "ON events(run_id, id DESC)"
+                    ),
+                    (
+                        "CREATE INDEX IF NOT EXISTS idx_events_severity "
+                        "ON events(severity, id DESC)"
+                    ),
+                    (
+                        "CREATE INDEX IF NOT EXISTS idx_events_strategy "
+                        "ON events(strategy_id, candle_time)"
+                    ),
                 )
                 for statement in index_statements:
                     connection.execute(statement)
-
+                connection.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_events_portfolio_risk_shadow_run
+                    ON events(category, run_id)
+                    WHERE category = 'portfolio_risk_shadow'
+                      AND run_id IS NOT NULL
+                    """
+                )
                 connection.execute(
                     """
                     INSERT INTO metadata(key, value)
@@ -165,6 +224,8 @@ class EventJournal:
             self._initialised = True
 
     def record(self, event: JournalEvent) -> int:
+        if self.read_only:
+            raise RuntimeError("Read-only EventJournal cannot record events.")
         self._ensure_schema()
         timestamp = event.timestamp_utc or datetime.now(timezone.utc).isoformat()
         payload_json = json.dumps(
@@ -173,7 +234,7 @@ class EventJournal:
             separators=(",", ":"),
             default=str,
         )
-        with self._connect() as connection:
+        with self._connection() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO events(
@@ -222,6 +283,35 @@ class EventJournal:
             )
             return int(cursor.lastrowid)
 
+    def record_portfolio_risk_shadow(
+        self,
+        event: JournalEvent,
+    ) -> tuple[int, bool]:
+        """Record one M3 shadow event per run_id across restart and retries."""
+
+        if self.read_only:
+            raise RuntimeError("Read-only EventJournal cannot record events.")
+        if event.category != "portfolio_risk_shadow":
+            raise ValueError(
+                "Shadow-idempotent journal writes require "
+                "category='portfolio_risk_shadow'."
+            )
+        run_id = str(event.run_id or "").strip()
+        if not run_id:
+            raise ValueError("Idempotent shadow events require run_id.")
+        try:
+            return self.record(event), True
+        except sqlite3.IntegrityError:
+            with self._connection() as connection:
+                row = connection.execute(
+                    "SELECT id FROM events WHERE category = ? AND run_id = ? "
+                    "ORDER BY id LIMIT 1",
+                    (event.category, run_id),
+                ).fetchone()
+            if row is None:
+                raise
+            return int(row[0]), False
+
     def record_cycle(self, **kwargs: Any) -> int:
         return self.record(JournalEvent(category="cycle", **kwargs))
 
@@ -257,7 +347,7 @@ class EventJournal:
         if normalized not in {"PASSIVE", "FULL", "RESTART", "TRUNCATE"}:
             raise ValueError("Unsupported WAL checkpoint mode.")
         self._ensure_schema()
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 f"PRAGMA wal_checkpoint({normalized})"
             ).fetchone()
@@ -339,7 +429,7 @@ class EventJournal:
             params.extend([token, token, token, token, token])
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         params.append(limit)
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 f"""
                 SELECT id, timestamp_utc, category, event_type, severity,
@@ -444,7 +534,7 @@ class EventJournal:
             where.append("session_id = ?")
             params.append(session_id)
         clause = f" WHERE {' AND '.join(where)}" if where else ""
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 "SELECT COUNT(*) FROM events" + clause,
                 params,
@@ -462,7 +552,7 @@ class EventJournal:
         self._ensure_schema()
         where = "WHERE session_id = ?" if session_id else ""
         params: Iterable[Any] = (session_id,) if session_id else ()
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 f"SELECT {field}, COUNT(*) AS n FROM events "
                 f"{where} GROUP BY {field} ORDER BY n DESC",
@@ -472,7 +562,7 @@ class EventJournal:
 
     def session_ids(self, limit: int = 50) -> list[str]:
         self._ensure_schema()
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 """
                 SELECT session_id, MAX(id) AS last_id

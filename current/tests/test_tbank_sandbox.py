@@ -124,6 +124,41 @@ def test_get_candles_never_combines_limit_and_candle_source(monkeypatch):
         client.close()
 
 
+def test_get_last_prices_requests_exchange_quotes_with_timestamps(monkeypatch):
+    captured = {}
+
+    def fake_post(self, service, method, payload=None, *, retry_safe=True):
+        captured["service"] = service
+        captured["method"] = method
+        captured["payload"] = dict(payload or {})
+        return {
+            "lastPrices": [
+                {
+                    "instrumentUid": "uid-sber",
+                    "price": {"units": "321", "nano": 500_000_000},
+                    "time": "2026-08-13T12:00:00Z",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(TBankSandboxClient, "_post", fake_post)
+    client = TBankSandboxClient("dummy-token", max_retries=0)
+    try:
+        prices = client.get_last_prices(["uid-sber", "uid-sber"])
+    finally:
+        client.close()
+
+    assert prices[0]["instrumentUid"] == "uid-sber"
+    assert captured == {
+        "service": "MarketDataService",
+        "method": "GetLastPrices",
+        "payload": {
+            "instrumentId": ["uid-sber"],
+            "lastPriceType": "LAST_PRICE_EXCHANGE",
+        },
+    }
+
+
 def test_get_candles_uses_exchange_source_without_limit(monkeypatch):
     captured = {}
 

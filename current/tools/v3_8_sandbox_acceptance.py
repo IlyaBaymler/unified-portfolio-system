@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import sys
+from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,8 +22,15 @@ from trading_robot.multi_instrument_strategy import (
     StrategyCandleLoader,
     build_strategy_proposal,
 )
+from trading_robot.portfolio_adapters import BrokerPortfolioAdapter
 from trading_robot.portfolio_manager import CanonicalPortfolioManager
+from trading_robot.portfolio_model import SnapshotFreshness
 from trading_robot.portfolio_repository import PortfolioRepository
+from trading_robot.portfolio_risk_read_service import load_portfolio_risk_metadata
+from trading_robot.portfolio_risk_runtime import (
+    portfolio_risk_runtime_from_risk_adapter,
+)
+from trading_robot.portfolio_risk_shadow import PortfolioRiskCandidateQuote
 from trading_robot.risk_runtime import RiskRuntimeAdapter
 from trading_robot.sandbox_execution_adapter import (
     SANDBOX_EXECUTION_CONFIRMATION,
@@ -30,12 +38,18 @@ from trading_robot.sandbox_execution_adapter import (
     SandboxExecutionPolicy,
 )
 from trading_robot.secret_provider import preferred_secret_provider
-from trading_robot.tbank_sandbox import TBankSandboxClient
+from trading_robot.state_persistence import read_json_verified
+from trading_robot.tbank_sandbox import TBankSandboxClient, quotation_to_float
 
 ARM_ENV_NAME = "ARM_V3_8_SANDBOX_EXECUTION"
+M4_ARM_ENV_NAME = "ARM_V3_9_ENFORCED_EXECUTION"
 TOKEN_KEY = "TBANK_SANDBOX_TOKEN"
 RECONCILIATION_CONFIRMATION = "CONFIRM V3.8 CANONICAL RECONCILIATION"
 PREPARE_CONFIRMATION = "PREPARE V3.8 SANDBOX INTENT"
+M4_PREPARE_CONFIRMATION = "PREPARE V3.9 ENFORCED INTENT"
+M4_REAUTHORIZE_CONFIRMATION = "REAUTHORIZE V3.9 ENFORCED INTENT"
+M4_DISPATCH_CONFIRMATION = "ENABLE V3.9 ENFORCED EXECUTION"
+M4_ACTIVATION_MANIFEST_NAME = "v3_9_enforced_runtime_manifest.json"
 
 
 def _fingerprint(value: str) -> str:
@@ -45,15 +59,19 @@ def _fingerprint(value: str) -> str:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Operator-only v3.8 Sandbox intent preparation, queue inspection, "
-            "one-intent dispatch and canonical reconciliation."
+            "Operator-only v3.8/v3.9 Sandbox natural-signal preview, intent "
+            "preparation, queue inspection, one-intent dispatch and canonical "
+            "reconciliation."
         )
     )
     parser.add_argument(
         "action",
         choices=(
             "status",
+            "preview-natural",
             "prepare-one",
+            "reauthorize-one",
+            "preflight-dispatch",
             "inspect",
             "dispatch-one",
             "reconcile",
@@ -95,17 +113,32 @@ def run(
                 f"Checksummed runtime prerequisite is missing: {path.name}"
             )
 
-    central_manager = CentralOrderManager(
-        CentralOrderStore(central_path),
-        account_id=account_id,
-    )
-    central_manager.recover_after_restart()
     repository = PortfolioRepository(portfolio_path)
     portfolio_state = repository.load(expected_account_id=account_id)
-    state = central_manager.state()
 
     if args.action == "status":
+        state = CentralOrderStore(central_path).load(
+            expected_account_id=account_id,
+        )
         return _status_payload(state)
+
+    if args.action == "preview-natural":
+        central_manager = None
+        state = CentralOrderStore(central_path).load(
+            expected_account_id=account_id,
+        )
+        if state.intents or state.blocking_intent is not None:
+            raise RuntimeError("Natural preview requires empty Central history.")
+        if state.reserved_cash_kopecks:
+            raise RuntimeError("Natural preview refuses Central reservations.")
+    else:
+        central_manager = CentralOrderManager(
+            CentralOrderStore(central_path),
+            account_id=account_id,
+        )
+        central_manager.recover_after_restart()
+        portfolio_state = repository.load(expected_account_id=account_id)
+        state = central_manager.state()
 
     if args.action == "inspect" and state.blocking_intent is None:
         return {"action": "inspect", "status": "IDLE"}
@@ -131,12 +164,51 @@ def run(
             )
         if not str(args.instrument_id or "").strip():
             raise RuntimeError("prepare-one requires --instrument-id.")
-        if str(args.confirm or "").strip() != PREPARE_CONFIRMATION:
+        if str(args.confirm or "").strip() != _prepare_confirmation(runtime_dir):
             raise RuntimeError(
                 "prepare-one requires the exact intent preparation confirmation."
             )
 
-    if args.action in {"prepare-one", "dispatch-one", "reconcile"}:
+    if args.action == "reauthorize-one":
+        if not _is_m4_runtime(runtime_dir):
+            raise RuntimeError("reauthorize-one is restricted to an active M4 runtime.")
+        if state.blocking_intent is not None:
+            raise RuntimeError(
+                "Account-wide blocker must be reconciled before reauthorization."
+            )
+        selected = str(args.intent_id or "").strip()
+        queue_head = state.queued[0] if state.queued else None
+        if not selected or queue_head is None or selected != queue_head.intent_id:
+            raise RuntimeError(
+                "reauthorize-one requires --intent-id matching the queue head."
+            )
+        if str(args.confirm or "").strip() != M4_REAUTHORIZE_CONFIRMATION:
+            raise RuntimeError(
+                "reauthorize-one requires the exact v3.9 confirmation."
+            )
+        if any(
+            str(environment.get(name) or "").strip().upper() == "YES"
+            for name in (ARM_ENV_NAME, M4_ARM_ENV_NAME)
+        ):
+            raise RuntimeError(
+                "Remove dispatch arming before reauthorizing an M4 intent."
+            )
+        _assert_runtime_ready_for_dispatch(
+            runtime_dir,
+            account_id=account_id,
+            queue_head=queue_head,
+            portfolio_state=portfolio_state,
+            central_state=state,
+        )
+
+    if args.action in {
+        "preview-natural",
+        "prepare-one",
+        "reauthorize-one",
+        "preflight-dispatch",
+        "dispatch-one",
+        "reconcile",
+    }:
         for name in (
             "multi_instrument_profiles.json",
             "instrument_runtimes.json",
@@ -149,14 +221,14 @@ def run(
                     f"Checksummed v3.8 runtime prerequisite is missing: {name}"
                 )
 
-    if args.action == "dispatch-one":
+    if args.action in {"preflight-dispatch", "dispatch-one"}:
         if state.blocking_intent is not None:
             raise RuntimeError(
-                "Account-wide blocker must be reconciled before dispatch-one."
+                "Account-wide blocker must be reconciled before dispatch preflight."
             )
         selected = str(args.intent_id or "").strip()
         if not selected:
-            raise RuntimeError("dispatch-one requires --intent-id.")
+            raise RuntimeError("dispatch preflight requires --intent-id.")
         queue_head = state.queued[0] if state.queued else None
         if queue_head is None:
             raise RuntimeError("Central order queue is empty.")
@@ -171,9 +243,18 @@ def run(
             portfolio_state=portfolio_state,
             central_state=state,
         )
-        if str(environment.get(ARM_ENV_NAME) or "").strip().upper() != "YES":
-            raise RuntimeError(f"Set {ARM_ENV_NAME}=YES for dispatch-one.")
-        if str(args.confirm or "").strip() != SANDBOX_EXECUTION_CONFIRMATION:
+        if args.action == "preflight-dispatch":
+            return _preflight_dispatch(
+                runtime_dir=runtime_dir,
+                account_id=account_id,
+                central_manager=central_manager,
+                portfolio_repository=repository,
+                expected_intent_id=selected,
+            )
+        arm_env_name = _dispatch_arm_env(runtime_dir)
+        if str(environment.get(arm_env_name) or "").strip().upper() != "YES":
+            raise RuntimeError(f"Set {arm_env_name}=YES for dispatch-one.")
+        if str(args.confirm or "").strip() != _dispatch_confirmation(runtime_dir):
             raise RuntimeError(
                 "dispatch-one requires the exact Sandbox execution confirmation."
             )
@@ -198,11 +279,28 @@ def run(
         max_retries=int(args.max_retries),
         ca_bundle_path=ca_bundle,
     ) as client:
+        if args.action == "preview-natural":
+            return _preview_natural(
+                runtime_dir=runtime_dir,
+                account_id=account_id,
+                client=client,
+                portfolio_state=portfolio_state,
+                central_state=state,
+            )
         if args.action == "prepare-one":
             return _prepare_one(
                 runtime_dir=runtime_dir,
                 account_id=account_id,
                 instrument_id=str(args.instrument_id).strip(),
+                client=client,
+                central_manager=central_manager,
+                portfolio_repository=repository,
+            )
+        if args.action == "reauthorize-one":
+            return _reauthorize_one(
+                runtime_dir=runtime_dir,
+                account_id=account_id,
+                expected_intent_id=str(args.intent_id).strip(),
                 client=client,
                 central_manager=central_manager,
                 portfolio_repository=repository,
@@ -280,6 +378,26 @@ def run(
                     execution_price_rub=inspection.execution_price_rub,
                     execution_price_source=inspection.execution_price_source,
                 )
+                post_fill_portfolio_risk = None
+                post_fill_risk_runtime = risk_runtime
+                if post_fill_risk_runtime is None:
+                    post_fill_risk_runtime = RiskRuntimeAdapter.from_directory(
+                        runtime_dir,
+                        account_id=account_id,
+                        mode="SANDBOX_EXECUTION",
+                        auto_create_dry_run_profile=False,
+                    )
+                portfolio_risk_runtime = _portfolio_risk_runtime(
+                    runtime_dir,
+                    post_fill_risk_runtime,
+                )
+                if portfolio_risk_runtime is not None:
+                    post_fill_portfolio_risk = (
+                        portfolio_risk_runtime.recalculate_current(
+                            central_manager,
+                            repository,
+                        ).to_dict()
+                    )
                 runtime_sync_warning = None
                 try:
                     _sync_runtime_execution_state(
@@ -305,6 +423,7 @@ def run(
                     ),
                     "risk_execution_status": reconciled.risk_execution_status,
                     "risk_execution_id": reconciled.risk_execution_id,
+                    "post_fill_portfolio_risk": post_fill_portfolio_risk,
                     "canonical_state_status": canonical_state.state_status,
                     "runtime_sync_warning": runtime_sync_warning,
                 }
@@ -312,7 +431,11 @@ def run(
             policy = SandboxExecutionPolicy(
                 account_id=account_id,
                 enabled=True,
-                confirmation=args.confirm,
+                confirmation=(
+                    SANDBOX_EXECUTION_CONFIRMATION
+                    if _is_m4_runtime(runtime_dir)
+                    else args.confirm
+                ),
             )
             risk_runtime = RiskRuntimeAdapter.from_directory(
                 runtime_dir,
@@ -320,16 +443,367 @@ def run(
                 mode="SANDBOX_EXECUTION",
                 auto_create_dry_run_profile=False,
             )
+            portfolio_risk_runtime = _portfolio_risk_runtime(
+                runtime_dir,
+                risk_runtime,
+            )
+            adapter_kwargs = {"risk_runtime": risk_runtime}
+            if portfolio_risk_runtime is not None:
+                adapter_kwargs["portfolio_risk_runtime"] = portfolio_risk_runtime
             result = SandboxExecutionAdapter(
                 client,
                 central_manager,
                 policy,
-                risk_runtime=risk_runtime,
+                **adapter_kwargs,
             ).dispatch_next(
                 repository,
                 expected_intent_id=args.intent_id,
             )
     return {"action": args.action, **asdict(result)}
+
+
+def _prepare_confirmation(runtime_dir: Path) -> str:
+    if _is_m4_runtime(runtime_dir):
+        return M4_PREPARE_CONFIRMATION
+    return PREPARE_CONFIRMATION
+
+
+def _is_m4_runtime(runtime_dir: Path) -> bool:
+    return (runtime_dir / M4_ACTIVATION_MANIFEST_NAME).is_file()
+
+
+def _dispatch_arm_env(runtime_dir: Path) -> str:
+    return M4_ARM_ENV_NAME if _is_m4_runtime(runtime_dir) else ARM_ENV_NAME
+
+
+def _dispatch_confirmation(runtime_dir: Path) -> str:
+    if _is_m4_runtime(runtime_dir):
+        return M4_DISPATCH_CONFIRMATION
+    return SANDBOX_EXECUTION_CONFIRMATION
+
+
+def _preflight_dispatch(
+    *,
+    runtime_dir: Path,
+    account_id: str,
+    central_manager: CentralOrderManager,
+    portfolio_repository: PortfolioRepository,
+    expected_intent_id: str,
+) -> dict[str, Any]:
+    risk_runtime = RiskRuntimeAdapter.from_directory(
+        runtime_dir,
+        account_id=account_id,
+        mode="SANDBOX_EXECUTION",
+        auto_create_dry_run_profile=False,
+    )
+    portfolio_risk_runtime = _portfolio_risk_runtime(runtime_dir, risk_runtime)
+    if portfolio_risk_runtime is None:
+        raise RuntimeError(
+            "M4 dispatch preflight requires authoritative Portfolio Risk runtime."
+        )
+    initial = central_manager.state()
+    initial_queue_head = initial.queued[0] if initial.queued else None
+    if (
+        initial_queue_head is None
+        or initial_queue_head.intent_id != expected_intent_id
+    ):
+        raise RuntimeError("Dispatch queue head changed before preflight.")
+    with (
+        portfolio_repository.locked_snapshot(
+            expected_account_id=account_id
+        ) as portfolio,
+        risk_runtime.dispatch_authorization_guard(
+            expected_policy_hash=initial_queue_head.authorization.risk_policy_hash,
+            expected_state_guard_hash=(
+                initial_queue_head.authorization.risk_state_guard_hash
+            ),
+            instrument_id=initial_queue_head.candidate.instrument_id,
+        ),
+    ):
+        def validate(central: Any) -> tuple[Any, Any]:
+            queue_head = central.queued[0] if central.queued else None
+            if queue_head is None or queue_head.intent_id != expected_intent_id:
+                raise RuntimeError(
+                    "Dispatch queue head changed during preflight revalidation."
+                )
+            decision = portfolio_risk_runtime.validate_dispatch(
+                portfolio=portfolio,
+                central_orders=central,
+                intent=queue_head,
+                evaluated_at=datetime.now(timezone.utc),
+            )
+            return queue_head, decision
+
+        queue_head, decision = central_manager.inspect_locked(validate)
+    return {
+        "action": "preflight-dispatch",
+        "status": "PASS",
+        "ticker": queue_head.candidate.ticker,
+        "direction": queue_head.candidate.direction,
+        "requested_lots": queue_head.candidate.requested_lots,
+        "approved_target_lots": decision.approved_target_lots,
+        "portfolio_risk_status": decision.status,
+        "proof_reproduced": True,
+        "current_policy_revalidated": True,
+        "current_risk_state_revalidated": True,
+        "current_canonical_revalidated": True,
+        "current_queue_revalidated": True,
+        "dispatch_armed": False,
+        "execution_authorized": False,
+        "broker_api_called": False,
+        "broker_order_submit_called": False,
+        "material_writes_performed": False,
+        "lock_metadata_touched": True,
+        "next_arm_env": M4_ARM_ENV_NAME,
+        "next_confirmation": M4_DISPATCH_CONFIRMATION,
+    }
+
+
+def _reauthorize_one(
+    *,
+    runtime_dir: Path,
+    account_id: str,
+    expected_intent_id: str,
+    client: Any,
+    central_manager: CentralOrderManager,
+    portfolio_repository: PortfolioRepository,
+) -> dict[str, Any]:
+    before = central_manager.state()
+    previous = before.queued[0] if before.queued else None
+    if previous is None or previous.intent_id != expected_intent_id:
+        raise RuntimeError("Queue head changed before v3.9 reauthorization.")
+    prepared = _prepare_one(
+        runtime_dir=runtime_dir,
+        account_id=account_id,
+        instrument_id=previous.candidate.instrument_id,
+        client=client,
+        central_manager=central_manager,
+        portfolio_repository=portfolio_repository,
+    )
+    after = central_manager.state()
+    status = str(prepared.get("status") or "").strip().upper()
+    current_intent_id = str(prepared.get("intent_id") or "").strip() or None
+    proof_refreshed = status in {"REAUTHORIZED", "REPLACED"}
+    current = next(
+        (
+            item
+            for item in after.queued
+            if item.intent_id == current_intent_id
+        ),
+        None,
+    )
+    if proof_refreshed:
+        if current is None:
+            raise RuntimeError("Reauthorized intent is not the current Central queue.")
+        proof = current.authorization.portfolio_risk
+        if proof is None or not proof.finalized:
+            raise RuntimeError("Reauthorization did not persist a finalized proof.")
+        if status == "REAUTHORIZED" and current.intent_id != expected_intent_id:
+            raise RuntimeError("Reauthorization unexpectedly changed intent identity.")
+        if status == "REPLACED" and (
+            prepared.get("cancelled_intent_id") != expected_intent_id
+            or current.intent_id == expected_intent_id
+        ):
+            raise RuntimeError("Reprepare did not atomically replace the stale intent.")
+    else:
+        proof = None
+    return {
+        **prepared,
+        "action": "reauthorize-one",
+        "previous_intent_id": expected_intent_id,
+        "current_intent_id": current.intent_id if current is not None else None,
+        "central_revision": after.revision,
+        "reserved_cash_kopecks": after.reserved_cash_kopecks,
+        "proof_refreshed": proof_refreshed,
+        "candidate_price_at": (
+            proof.candidate_price_at if proof is not None else None
+        ),
+        "candidate_price_source": (
+            proof.candidate_price_source if proof is not None else None
+        ),
+        "dispatch_armed": False,
+        "execution_authorized": False,
+        "broker_mutation_authorized": False,
+        "broker_order_submit_called": False,
+    }
+
+
+def _preview_natural(
+    *,
+    runtime_dir: Path,
+    account_id: str,
+    client: Any,
+    portfolio_state: Any,
+    central_state: Any,
+) -> dict[str, Any]:
+    if portfolio_state.freshness is not SnapshotFreshness.FRESH:
+        raise RuntimeError("Natural preview requires a FRESH canonical portfolio.")
+    if portfolio_state.blocking:
+        raise RuntimeError("Natural preview refuses a blocking canonical portfolio.")
+    if central_state.intents or central_state.reserved_cash_kopecks:
+        raise RuntimeError("Natural preview requires pristine Central state.")
+
+    profiles = MultiInstrumentProfileStore(
+        runtime_dir / "multi_instrument_profiles.json"
+    ).load_mode("SANDBOX_EXECUTION")
+    runtimes = InstrumentRuntimeStore(
+        runtime_dir / "instrument_runtimes.json"
+    ).load(expected_account_id=account_id)
+    runtime_by_instrument = {item.config.instrument_id: item for item in runtimes}
+    if not profiles or len(runtime_by_instrument) != len(profiles):
+        raise RuntimeError("Natural preview profile/runtime scopes differ.")
+    if set(runtime_by_instrument) != {item.instrument_id for item in profiles}:
+        raise RuntimeError("Natural preview profile/runtime identities differ.")
+    if any(item.status == "BLOCKED" for item in runtimes):
+        raise RuntimeError("Natural preview refuses a BLOCKED runtime.")
+    if any(item.pending_order_ids for item in runtimes):
+        raise RuntimeError("Natural preview refuses pending runtime orders.")
+
+    risk_runtime = RiskRuntimeAdapter.from_directory(
+        runtime_dir,
+        account_id=account_id,
+        mode="SANDBOX_EXECUTION",
+        auto_create_dry_run_profile=False,
+    )
+    portfolio_risk_runtime = _portfolio_risk_runtime(runtime_dir, risk_runtime)
+
+    raw_portfolio = client.get_portfolio(account_id)
+    raw_orders = client.get_orders(account_id)
+    broker = BrokerPortfolioAdapter.from_api_portfolio(
+        raw_portfolio,
+        account_id=account_id,
+        broker_orders=raw_orders,
+        snapshot_at=datetime.now(timezone.utc).isoformat(),
+    )
+    pending_orders = tuple(
+        order for position in broker.positions for order in position.pending_orders
+    )
+    if any(order.active or order.uncertain for order in pending_orders):
+        raise RuntimeError("Natural preview refuses active or uncertain broker orders.")
+    expected_ids = set(runtime_by_instrument)
+    unexpected_positions = {
+        item.instrument_id
+        for item in broker.positions
+        if item.instrument_id not in expected_ids and int(item.actual_lots) != 0
+    }
+    if unexpected_positions:
+        raise RuntimeError("Provider portfolio contains an unconfigured position.")
+    broker_by_instrument = {item.instrument_id: item for item in broker.positions}
+
+    raw_prices: list[Mapping[str, Any]] = []
+    if portfolio_risk_runtime is not None:
+        raw_prices = [
+            item
+            for item in client.get_last_prices(sorted(expected_ids))
+            if isinstance(item, Mapping)
+        ]
+    prices_by_instrument: dict[str, list[Mapping[str, Any]]] = {}
+    for raw in raw_prices:
+        instrument_id = str(
+            raw.get("instrumentUid") or raw.get("instrumentId") or ""
+        ).strip()
+        if instrument_id:
+            prices_by_instrument.setdefault(instrument_id, []).append(raw)
+
+    now = datetime.now(timezone.utc)
+    proposals: list[dict[str, Any]] = []
+    for profile in sorted(profiles, key=lambda item: item.ticker):
+        runtime = runtime_by_instrument[profile.instrument_id]
+        if runtime.config.to_dict() != profile.to_runtime_config(account_id).to_dict():
+            raise RuntimeError(f"Runtime configuration drift: {profile.ticker}.")
+        instrument = client.find_instrument(profile.ticker, profile.class_code)
+        if str(client.instrument_id(instrument)).strip() != profile.instrument_id:
+            raise RuntimeError(f"Provider UID changed for {profile.ticker}.")
+        try:
+            lot_size = int(instrument.get("lot") or 0)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Provider lot size is invalid: {profile.ticker}."
+            ) from exc
+        if lot_size < 1:
+            raise RuntimeError(f"Provider lot size is invalid: {profile.ticker}.")
+        if portfolio_risk_runtime is not None:
+            metadata = portfolio_risk_runtime.instrument_metadata.get(
+                profile.instrument_id
+            )
+            if metadata is None or metadata.lot_size != lot_size:
+                raise RuntimeError(
+                    f"Portfolio Risk lot metadata changed: {profile.ticker}."
+                )
+
+        provider_position = broker_by_instrument.get(profile.instrument_id)
+        provider_lots = (
+            int(provider_position.actual_lots) if provider_position is not None else 0
+        )
+        canonical_position = portfolio_state.position(profile.instrument_id)
+        canonical_lots = (
+            int(canonical_position.actual_lots)
+            if canonical_position is not None
+            else 0
+        )
+        if provider_lots != canonical_lots or runtime.current_lots != canonical_lots:
+            raise RuntimeError(
+                f"Provider/canonical/runtime lots differ: {profile.ticker}."
+            )
+
+        complete = StrategyCandleLoader(client).load(runtime, profile, now=now)
+        proposal = build_strategy_proposal(
+            runtime,
+            profile,
+            complete,
+            now=now,
+        )
+        primary = proposal.decisions[proposal.primary_strategy]
+        quote = None
+        if portfolio_risk_runtime is not None:
+            matches = prices_by_instrument.get(profile.instrument_id, [])
+            if len(matches) != 1:
+                raise RuntimeError(
+                    f"Authoritative preview requires one last price: {profile.ticker}."
+                )
+            raw_quote = matches[0]
+            quote = PortfolioRiskCandidateQuote(
+                unit_price_rub=quotation_to_float(raw_quote.get("price")),
+                price_at=str(raw_quote.get("time") or ""),
+                source="TBANK_LAST_PRICE_EXCHANGE",
+            )
+        proposals.append(
+            {
+                "ticker": proposal.ticker,
+                "runtime_status": runtime.status,
+                "candle_time": proposal.candle_time,
+                "signal": int(primary.signal),
+                "current_lots": canonical_lots,
+                "requested_target_lots": int(proposal.primary_target_lots),
+                "position_change_requested": (
+                    int(proposal.primary_target_lots) != canonical_lots
+                ),
+                "candidate_price_at": (
+                    quote.price_at.isoformat() if quote is not None else None
+                ),
+                "candidate_price_source": (
+                    quote.source if quote is not None else None
+                ),
+                "execution_authorized": False,
+                "persisted": False,
+            }
+        )
+
+    return {
+        "action": "preview-natural",
+        "status": (
+            "SIGNAL"
+            if any(item["position_change_requested"] for item in proposals)
+            else "NO_SIGNAL"
+        ),
+        "account_fingerprint": _fingerprint(account_id),
+        "natural_proposals": proposals,
+        "central_mutation_authorized": False,
+        "intent_preparation_authorized": False,
+        "execution_authorized": False,
+        "broker_order_submit_called": False,
+        "writes_performed": False,
+    }
 
 
 def _prepare_one(
@@ -414,17 +888,40 @@ def _prepare_one(
         mode="SANDBOX_EXECUTION",
         auto_create_dry_run_profile=False,
     )
+    portfolio_risk_runtime = _portfolio_risk_runtime(runtime_dir, risk_runtime)
+    candidate_quote = None
+    coordination_now = now
+    if portfolio_risk_runtime is not None:
+        matches = [
+            item
+            for item in client.get_last_prices([instrument_id])
+            if str(item.get("instrumentUid") or item.get("instrumentId") or "").strip()
+            == instrument_id
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                "Authoritative Portfolio Risk requires exactly one last price."
+            )
+        raw_quote = matches[0]
+        candidate_quote = PortfolioRiskCandidateQuote(
+            unit_price_rub=quotation_to_float(raw_quote.get("price")),
+            price_at=str(raw_quote.get("time") or ""),
+            source="TBANK_LAST_PRICE_EXCHANGE",
+        )
+        coordination_now = datetime.now(timezone.utc)
     result = CentralOrderCoordinator(
         central_manager,
         portfolio_repository,
         risk_runtime,
+        portfolio_risk_runtime=portfolio_risk_runtime,
     ).coordinate(
         proposal,
         runtime,
         profile,
         candles=complete,
         lot_size=lot_size,
-        now=now,
+        now=coordination_now,
+        portfolio_risk_candidate_quote=candidate_quote,
     )
     position = canonical_state.position(instrument_id)
     runtime_sync_warning = None
@@ -443,6 +940,39 @@ def _prepare_one(
         **result.to_dict(),
         "runtime_sync_warning": runtime_sync_warning,
     }
+
+
+def _portfolio_risk_runtime(runtime_dir: Path, risk_runtime: Any):
+    metadata_path = runtime_dir / "portfolio_risk_metadata.json"
+    metadata = (
+        load_portfolio_risk_metadata(metadata_path)
+        if metadata_path.is_file()
+        else None
+    )
+    runtime = portfolio_risk_runtime_from_risk_adapter(
+        risk_runtime,
+        instrument_metadata=metadata,
+    )
+    if runtime is None:
+        return None
+    manifest_path = runtime_dir / M4_ACTIVATION_MANIFEST_NAME
+    if not manifest_path.is_file():
+        raise RuntimeError(
+            "ENFORCED Portfolio Risk requires a checksummed M4 activation manifest."
+        )
+    manifest = read_json_verified(manifest_path, supported_versions={1})
+    if Path(str(manifest.get("runtime_dir") or "")).resolve() != runtime_dir.resolve():
+        raise RuntimeError("M4 activation manifest belongs to another runtime.")
+    if manifest.get("activation_status") != "ACTIVE":
+        raise RuntimeError("M4 activation manifest is not ACTIVE.")
+    if manifest.get("account_fingerprint") != _fingerprint(runtime.account_id):
+        raise RuntimeError("M4 activation manifest account scope mismatch.")
+    loaded = runtime.profile_store.require_portfolio_policy("SANDBOX_EXECUTION")
+    if manifest.get("policy_hash") != loaded["policy_hash"]:
+        raise RuntimeError("M4 activation manifest policy hash mismatch.")
+    if manifest.get("portfolio_policy_mode") != "ENFORCED":
+        raise RuntimeError("M4 activation manifest mode is not ENFORCED.")
+    return runtime
 
 
 def _sync_runtime_execution_state(

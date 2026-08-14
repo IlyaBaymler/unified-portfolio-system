@@ -15,6 +15,7 @@ if "%~1"=="" (
     echo   run_risk_profile_tool.bat preset permissive
     echo   run_risk_profile_tool.bat preset sandbox-beta1 --mode SANDBOX_EXECUTION
     echo   run_risk_profile_tool.bat show --mode SANDBOX_EXECUTION
+    echo   run_risk_profile_tool.bat confirm-portfolio-shadow --mode SANDBOX_EXECUTION --account-id ACCOUNT --confirmation "CONFIRM PORTFOLIO RISK POLICY"
     echo   run_risk_profile_tool.bat reset --mode SANDBOX_EXECUTION
     pause
     exit /b 1

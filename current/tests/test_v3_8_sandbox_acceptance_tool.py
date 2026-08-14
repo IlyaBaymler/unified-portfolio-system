@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+
 from tools import v3_8_sandbox_acceptance as acceptance
 from trading_robot.sandbox_execution_adapter import (
     SandboxDispatchResult,
@@ -14,33 +15,46 @@ ACCOUNT = "sandbox-account-1"
 INTENT = "11111111-1111-1111-1111-111111111111"
 
 
+def fake_state(account_id: str):
+    return SimpleNamespace(
+        account_id=account_id,
+        revision=3,
+        reserved_cash_kopecks=101_000,
+        blocking_intent=None,
+        queued=(
+            SimpleNamespace(
+                intent_id=INTENT,
+                queue_sequence=1,
+                candidate=SimpleNamespace(
+                    ticker="SBER",
+                    instrument_id="uid-sber",
+                    direction="BUY",
+                    requested_lots=1,
+                    current_lots=0,
+                    strategy_id="sma",
+                    strategy_profile_hash="c" * 64,
+                    candle_interval="CANDLE_INTERVAL_HOUR",
+                    candle_time="2026-08-13T12:00:00+00:00",
+                ),
+            ),
+        ),
+    )
+
+
+class FakeStore:
+    def __init__(self, _path) -> None:
+        pass
+
+    def load(self, *, expected_account_id: str):
+        assert expected_account_id == ACCOUNT
+        return fake_state(expected_account_id)
+
+
 class FakeManager:
     def __init__(self, _store, *, account_id: str) -> None:
         assert account_id == ACCOUNT
         self.account_id = account_id
-        self._state = SimpleNamespace(
-            account_id=account_id,
-            revision=3,
-            reserved_cash_kopecks=101_000,
-            blocking_intent=None,
-            queued=(
-                SimpleNamespace(
-                    intent_id=INTENT,
-                    queue_sequence=1,
-                    candidate=SimpleNamespace(
-                        ticker="SBER",
-                        instrument_id="uid-sber",
-                        direction="BUY",
-                        requested_lots=1,
-                        current_lots=0,
-                        strategy_id="sma",
-                        strategy_profile_hash="c" * 64,
-                        candle_interval="CANDLE_INTERVAL_HOUR",
-                        candle_time="2026-08-13T12:00:00+00:00",
-                    ),
-                ),
-            ),
-        )
+        self._state = fake_state(account_id)
 
     def state(self):
         return self._state
@@ -67,7 +81,7 @@ def prepare_tool(monkeypatch, tmp_path):
     ):
         (tmp_path / name).write_text("{}", encoding="utf-8")
         (tmp_path / f"{name}.sha256").write_text("0" * 64, encoding="ascii")
-    monkeypatch.setattr(acceptance, "CentralOrderStore", lambda path: path)
+    monkeypatch.setattr(acceptance, "CentralOrderStore", FakeStore)
     monkeypatch.setattr(acceptance, "CentralOrderManager", FakeManager)
     monkeypatch.setattr(acceptance, "PortfolioRepository", FakeRepository)
     monkeypatch.setattr(
@@ -92,6 +106,11 @@ def args(tmp_path, action: str, *extra: str):
 
 def test_status_is_offline_and_never_reads_secret(monkeypatch, tmp_path):
     prepare_tool(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        acceptance,
+        "CentralOrderManager",
+        lambda *a, **k: pytest.fail("status must not initialize or recover manager"),
+    )
     monkeypatch.setattr(
         acceptance,
         "preferred_secret_provider",
@@ -181,6 +200,187 @@ def test_prepare_requires_exact_confirmation_before_secret_or_network(
             environ={},
             client_factory=lambda *a, **k: pytest.fail("network client created"),
         )
+
+
+def test_m4_prepare_uses_dedicated_enforced_confirmation(tmp_path):
+    assert acceptance._prepare_confirmation(tmp_path) == acceptance.PREPARE_CONFIRMATION
+    (tmp_path / acceptance.M4_ACTIVATION_MANIFEST_NAME).write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    assert (
+        acceptance._prepare_confirmation(tmp_path)
+        == acceptance.M4_PREPARE_CONFIRMATION
+    )
+
+
+def test_m4_dispatch_uses_dedicated_arm_and_confirmation(tmp_path):
+    assert acceptance._dispatch_arm_env(tmp_path) == acceptance.ARM_ENV_NAME
+    assert (
+        acceptance._dispatch_confirmation(tmp_path)
+        == acceptance.SANDBOX_EXECUTION_CONFIRMATION
+    )
+    (tmp_path / acceptance.M4_ACTIVATION_MANIFEST_NAME).write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    assert acceptance._dispatch_arm_env(tmp_path) == acceptance.M4_ARM_ENV_NAME
+    assert (
+        acceptance._dispatch_confirmation(tmp_path)
+        == acceptance.M4_DISPATCH_CONFIRMATION
+    )
+
+
+def test_m4_reauthorization_requires_exact_confirmation_before_secret(
+    monkeypatch,
+    tmp_path,
+):
+    prepare_tool(monkeypatch, tmp_path)
+    (tmp_path / acceptance.M4_ACTIVATION_MANIFEST_NAME).write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "preferred_secret_provider",
+        lambda _path: pytest.fail("secret provider must not be read"),
+    )
+
+    with pytest.raises(RuntimeError, match="exact v3.9 confirmation"):
+        acceptance.run(
+            args(
+                tmp_path,
+                "reauthorize-one",
+                "--intent-id",
+                INTENT,
+                "--confirm",
+                "WRONG",
+            ),
+            environ={},
+            client_factory=lambda *a, **k: pytest.fail("network client created"),
+        )
+
+
+def test_m4_reauthorization_refuses_dispatch_arming_before_secret(
+    monkeypatch,
+    tmp_path,
+):
+    prepare_tool(monkeypatch, tmp_path)
+    (tmp_path / acceptance.M4_ACTIVATION_MANIFEST_NAME).write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "preferred_secret_provider",
+        lambda _path: pytest.fail("secret provider must not be read"),
+    )
+
+    with pytest.raises(RuntimeError, match="Remove dispatch arming"):
+        acceptance.run(
+            args(
+                tmp_path,
+                "reauthorize-one",
+                "--intent-id",
+                INTENT,
+                "--confirm",
+                acceptance.M4_REAUTHORIZE_CONFIRMATION,
+            ),
+            environ={acceptance.M4_ARM_ENV_NAME: "YES"},
+            client_factory=lambda *a, **k: pytest.fail("network client created"),
+        )
+
+
+def test_confirmed_m4_reauthorization_routes_without_dispatch_arm(
+    monkeypatch,
+    tmp_path,
+):
+    prepare_tool(monkeypatch, tmp_path)
+    (tmp_path / acceptance.M4_ACTIVATION_MANIFEST_NAME).write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, token, **kwargs):
+            captured["token"] = token
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    def fake_reauthorize(**kwargs):
+        captured["reauthorize"] = kwargs
+        return {
+            "action": "reauthorize-one",
+            "status": "REAUTHORIZED",
+            "intent_id": INTENT,
+            "proof_refreshed": True,
+            "dispatch_armed": False,
+        }
+
+    monkeypatch.setattr(acceptance, "_reauthorize_one", fake_reauthorize)
+    result = acceptance.run(
+        args(
+            tmp_path,
+            "reauthorize-one",
+            "--intent-id",
+            INTENT,
+            "--confirm",
+            acceptance.M4_REAUTHORIZE_CONFIRMATION,
+        ),
+        environ={acceptance.TOKEN_KEY: "secret-canary"},
+        client_factory=FakeClient,
+    )
+
+    assert result["status"] == "REAUTHORIZED"
+    assert result["proof_refreshed"] is True
+    assert captured["reauthorize"]["expected_intent_id"] == INTENT
+    assert captured["token"] == "secret-canary"
+    assert "secret-canary" not in str(result)
+
+
+def test_dispatch_preflight_is_offline_and_does_not_require_arm(
+    monkeypatch,
+    tmp_path,
+):
+    prepare_tool(monkeypatch, tmp_path)
+    captured = {}
+
+    def fake_preflight(**kwargs):
+        captured.update(kwargs)
+        return {
+            "action": "preflight-dispatch",
+            "status": "PASS",
+            "dispatch_armed": False,
+        }
+
+    monkeypatch.setattr(acceptance, "_preflight_dispatch", fake_preflight)
+    monkeypatch.setattr(
+        acceptance,
+        "preferred_secret_provider",
+        lambda _path: pytest.fail("secret provider must not be read"),
+    )
+    result = acceptance.run(
+        args(
+            tmp_path,
+            "preflight-dispatch",
+            "--intent-id",
+            INTENT,
+        ),
+        environ={},
+        client_factory=lambda *a, **k: pytest.fail("network client created"),
+    )
+
+    assert result == {
+        "action": "preflight-dispatch",
+        "status": "PASS",
+        "dispatch_armed": False,
+    }
+    assert captured["expected_intent_id"] == INTENT
 
 
 def test_confirmed_prepare_routes_one_instrument_without_dispatch_arm(

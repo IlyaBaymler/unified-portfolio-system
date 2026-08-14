@@ -183,6 +183,162 @@ targeted `116 passed`, full `576 passed`.
 - общий денежный резерв;
 - global и instrument-level kill switch.
 
+Разработка разделена на pure domain/policy слой, versioned migration,
+account-wide Central admission, dispatch-time proof, recovery/observability и
+отдельную Sandbox qualification. Canonical `PortfolioState` остаётся
+источником позиций и broker cash, а `CentralOrderState` — единственным
+владельцем внутренних reservations; Portfolio Risk не создаёт параллельный
+ledger.
+
+M1 pure-domain, M2 read-only migration, M3 prospective SHADOW и M4
+authoritative enforcement реализованы в накопительной ветке `v3.9`/draft PR
+`#43`. Immutable model,
+evaluator и sizing не читают runtime-файлы и не вызывают broker API.
+`PortfolioRiskInputAdapter` строит вход только из canonical `PortfolioState`,
+Central reservation projection, существующего `RiskState` и явной instrument
+metadata. Computational policy DTO адаптируется к единственному persisted
+`RiskPolicy`; второго policy/position/cash/reservation ledger нет.
+
+Risk profile schema 2 и RiskState schema 3 мигрируются additively. Legacy
+Sandbox profile получает `CONFIGURATION_REQUIRED`, пока оператор не выполнит
+точное подтверждение новой Portfolio Policy. Global/instrument kill switches
+переживают restart; instrument halt включён в существующий final dispatch guard
+и блокирует provider POST. Read-only report всегда возвращает
+`execution_authorized=false` и не меняет runtime stores.
+
+M3 записывает ровно одно идемпотентное решение на deterministic shadow key,
+сравнивает его с фактическим v3.8 approved target и не меняет candidate,
+Central transitions, authorization или provider calls. Локальные gates:
+core targeted `171 passed`, isolated-runtime `6 passed`, full `663 passed`,
+changed-file Ruff PASS. Для реального M3 gate добавлен транзакционный
+`tools/v3_9_prepare_shadow_runtime.py`: он сохраняет canonical portfolio и
+конфигурации из принятого v3.8, строит checksummed lot metadata, но создаёт
+пустые Central/Risk/journal, останавливает instrument runtimes и не копирует
+секреты, логи или broker-order history. На 2026-08-13 runtime LKOH/SBER
+подготовлен из revision 16; 37 source-файлов не изменились, начальный report
+ожидаемо имеет 0 observations/`INCOMPLETE`, token-free backup проверен.
+Искусственная заявка не создавалась. Перед M4
+нужна реальная runtime-выборка: shadow coverage 100%, `UNAVAILABLE=0` и
+unexplained drift 0. Подключение Portfolio Risk к authoritative Central
+admission остаётся отдельным M4 gate после review этой выборки и
+concurrency/proof design.
+
+Post-policy configure-gate `tools/v3_9_configure_shadow_runtimes.py` также
+закрыт: он проверяет secure credential provider, canonical/runtime lots,
+checksummed UID/lot metadata, `READY/OBSERVE_ONLY`, пустую Central queue и
+согласованно пустые Risk baselines. Единственная запись — checksummed
+config-manifest; оба runtime остаются `STOPPED`, proposal/intent/POST равны 0.
+Идемпотентный повтор дал `ALREADY_CONFIGURED`; backup проверен. Full regression:
+`669 passed`.
+
+Отдельный start-gate `tools/v3_9_start_shadow_runtimes.py` реализован и прошёл
+targeted `61 passed`, full `676 passed`, Ruff PASS. Он не создаёт proposal,
+Central intent или broker order и допускает локальные записи только после
+свежего read-only provider preflight. Первый реальный preview остановлен
+fail-closed: broker `LKOH=0`, sealed canonical/runtime `LKOH=1`; runtime остался
+`STOPPED`, Risk baselines — `UNINITIALIZED`, журнал — пустой. Следующий gate —
+явное acknowledgement внешнего flat-close LKOH, затем повтор
+`START V3.9 SHADOW RUNTIMES`; автоматическое adoption запрещено.
+
+External close LKOH затем явно подтверждён точной фразой
+`ACK EXTERNAL CLOSE LKOH 0`. Recovery-tool повторно доказал provider flat/no
+orders, перевёл только canonical/runtime LKOH 1→0, сохранил runtimes `STOPPED`,
+Risk pristine и Central empty. Canonical revision 17 неблокирующая; повторный
+START preview PASS, token-free post-ACK backup VALID. Полная регрессия после
+recovery integration: `681 passed`, Ruff PASS. Следующий отдельный gate — только
+повторная команда `START V3.9 SHADOW RUNTIMES`.
+
+Повторный START-gate после ACK выполнен: provider flat/no-orders, canonical
+revision 18 `FRESH`/non-blocking, Risk baselines `READY`, оба runtime `ACTIVE`,
+Central empty. Proposal/intent/order submission отсутствуют. Идемпотентный
+повтор PASS, post-START token-free backup VALID. Следующий M3 acceptance gate —
+не создавать искусственную заявку, а дождаться естественного eligible Strategy
+proposal и проверить shadow coverage/drift read-only отчётом.
+
+Operational gap закрыт отдельным `tools/v3_9_run_shadow_observation.py`: `preview`
+делает только provider GET и вычисляет Strategy proposal в памяти, а `apply`
+требует точную фразу `RUN V3.9 SHADOW OBSERVATION` и использует общий
+`GlobalScheduler`/v3.8 Risk/M3 observer с обязательным `observe_only`-выходом до
+любого Central mutation. Реальный preview LKOH/SBER прошёл без записей:
+закрытые свечи LKOH 30m/SBER 1h `18:30/18:00 UTC`, обе естественные цели
+`HOLD=0`, broker POST и execution authorization отсутствуют.
+
+Первый подтверждённый apply затем записал две естественные `HOLD=0` observations
+для свечей `19:00/18:00 UTC`. Coverage `2/2`, unavailable `0`, target drift
+`MATCH=2`, unexplained drift `0`; Central и broker не изменились. Однако обе
+prospective decision были `HALTED`: поздний запуск дал штатный
+`CANDIDATE_PRICE_STALE`, а runner ошибочно добавил `SNAPSHOT_FROM_FUTURE`, потому
+что evaluation timestamp фиксировался до provider snapshot. Порядок времени и
+редакция внутренних IDs в операторском JSON исправлены, append-only evidence не
+переписано. Следующий gate — новая естественная свежая свеча и повторный
+observation; до чистой выборки M4 по-прежнему запрещён.
+
+Повторный observation gate получил новые LKOH 30m/SBER 1h свечи и подтвердил
+исправление snapshot-time: `SNAPSHOT_FROM_FUTURE` отсутствует. Итоговая выборка
+имеет coverage `4/4`, unavailable 0, `MATCH=4`, unexplained drift 0; Central,
+Risk counters и broker path не изменены. Однако обе новые decision снова
+`HALTED/CANDIDATE_PRICE_STALE`. Причина теперь локализована не во времени запуска:
+исторический candle timestamp не является свежим timestamp биржевой цены.
+Implementation gate закрыт через официальный `GetLastPrices`: exchange price,
+его UTC time и source передаются одной immutable candidate-quote структурой;
+missing/invalid/stale/future остаются fail-closed, operational candle fallback
+удалён. Реальный read-only preview получил свежие LKOH/SBER exchange quotes и
+новую LKOH свечу без записей; targeted `86 passed`, full `689 passed`, Ruff PASS.
+Следующий gate — отдельно подтверждённый natural observation; M4 закрыт.
+
+Natural observation gate выполнен на новой LKOH 30m свече `20:00 UTC` без
+искусственной заявки. Новое событие `EVALUATED/PASS` использовало свежий
+`TBANK_LAST_PRICE_EXCHANGE` quote `20:42:41 UTC`, не получило hard blocks и дало
+`MATCH`/unexplained drift false. SBER не имел новой закрытой свечи после уже
+обработанной `19:00 UTC`, поэтому идемпотентно не создал дубликат. Aggregate
+read-only report: coverage `5/5`, unavailable 0, `MATCH=5`, unexplained drift 0,
+execution authorization false. Central остался byte-identical, canonical
+economic state и Risk counters/reservations не изменились; оба runtime `ACTIVE`,
+pending 0. Post-gate backup VALID, token-free, 14 entries. Clean quote path для
+LKOH подтверждён; clean two-instrument sample ещё не получен, поэтому M4 не
+открывается автоматически и требует отдельного review.
+
+Следующий exact-confirmation gate 2026-08-14 закрыл clean sample по обоим
+инструментам: LKOH `06:30 UTC` — `HOLD=0`, SBER `06:00 UTC` — естественный
+`BUY 1`. Оба shadow decision получили `PASS`, approved target `0/1`, hard
+blocks/policy halts/adjustments отсутствуют, drift `MATCH`; scheduler 8/8,
+failures 0. Aggregate coverage `7/7`, unavailable 0, `MATCH=7`, unexplained
+drift 0, execution authorization false. Central остался byte-identical и пуст,
+canonical revision/позиции и Risk economic counters не изменились; broker POST
+0. VALID token-free backup содержит 14 entries. M3 runtime evidence — PASS,
+следующий этап — отдельный финальный review M3; authoritative M4 не включён.
+
+Исторический финальный review M3 — PASS: `689 passed`, scoped core Ruff PASS, critical Ruff
+по всему изменённому Python scope PASS, compileall/diff-check PASS, secret и
+runtime-artifact scan чистый. M4 readiness review подтвердил проектную границу:
+на тот момент authoritative portfolio proof, atomic account-wide admission и
+dispatch enforcement ещё не были реализованы и не входили в M1–M3 publication
+scope.
+
+После этого отдельный M4 (`alpha3`) добавил immutable Portfolio Risk proof,
+атомарные account-wide admission/reservation, фиксированный lock order,
+dispatch-time reproduction и revalidation, restart/recovery и post-fill
+recalculation. Изолированный Sandbox acceptance и финальный review завершены без
+искусственного создания заявки; live dispatch/fill намеренно оставлен за
+границей этого gate. Накопительный draft PR `#43` содержит M1–M4 и Windows/Python
+3.12 GitHub Actions CI.
+
+Повторный review PR `#43` устранил fail-open подстановку `RUB`: checksummed
+sandbox metadata теперь переносит только проверенную валюту источника либо
+сохраняет явное `unknown`, а authoritative admission без валюты блокируется до
+Central/Risk mutation. Configure/start также не активируют runtime с неизвестной
+валютой. ROADMAP синхронизирован с фактическим M4 scope. Локальный correction
+gate: targeted `77 passed`, оба уровня Ruff, `pip check`, compileall и
+diff-check — PASS; полный Windows regression повторяется обязательным PR CI.
+Следующий этап после повторного CI/review — отдельное решение о готовности draft
+PR, без автоматического разрешения live execution.
+
+Подробности:
+
+- `docs/plans/V3_9_PORTFOLIO_RISK_ENGINE_PLAN_RU.md`;
+- `docs/project/V3_9_INTERFACE_FREEZE_RU.md`;
+- `docs/project/V3_9_ISSUE_PROPOSAL_RU.md`.
+
 ## v3.10.0 — Cash-flow Manager
 
 - пополнения, выводы, дивиденды, купоны, комиссии и налоги;

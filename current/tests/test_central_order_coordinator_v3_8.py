@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+
 from trading_robot.bot import BotConfig
 from trading_robot.central_order_coordinator import CentralOrderCoordinator
 from trading_robot.central_order_manager import CentralOrderManager, CentralOrderStore

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,7 +44,7 @@ from trading_robot.runtime_bootstrap import validate_runtime_files
 
 ACCOUNT = "sandbox-account-1"
 NOW = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc).isoformat()
-AFTER = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc).isoformat()
+AFTER = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
 
 
 def portfolio_state(

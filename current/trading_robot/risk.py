@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-import json
 from math import floor, isfinite
-from typing import Any, Mapping
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
-RISK_STATE_VERSION = 2
+RISK_STATE_VERSION = 3
 _MAX_RECORDED_EXECUTION_IDS = 512
 
 
@@ -40,9 +40,7 @@ def _positive_optional(name: str, value: float | None) -> None:
 
 
 def _fraction_optional(name: str, value: float | None) -> None:
-    if value is not None and (
-        not isfinite(float(value)) or not 0 < float(value) <= 1
-    ):
+    if value is not None and (not isfinite(float(value)) or not 0 < float(value) <= 1):
         raise ValueError(f"{name} must be in (0, 1] or None.")
 
 
@@ -88,6 +86,24 @@ class RiskPolicy:
 
     allow_risk_reducing_orders_during_halt: bool = True
 
+    # v3.9 Portfolio Risk fields are additive to the existing single-order
+    # policy. Legacy profiles load with configuration disabled, so an upgrade
+    # cannot silently activate new Sandbox limits.
+    portfolio_policy_configured: bool = False
+    portfolio_policy_mode: str = "OBSERVE_ONLY"
+    max_gross_exposure_rub: float | None = None
+    max_gross_exposure_fraction: float | None = None
+    max_net_exposure_fraction: float | None = None
+    max_instrument_concentration_fraction: float | None = None
+    max_strategy_concentration_fraction: float | None = None
+    max_asset_class_concentration_fraction: float | None = None
+    asset_class_concentration_limits: tuple[tuple[str, float], ...] = ()
+    max_open_positions: int | None = None
+    min_cash_reserve_fraction: float | None = None
+    max_daily_turnover_fraction: float | None = None
+    max_price_age_seconds: int | None = 300
+    portfolio_warning_utilization_fraction: float = 0.8
+
     def __post_init__(self) -> None:
         if self.max_position_lots < 0:
             raise ValueError("max_position_lots must not be negative.")
@@ -98,6 +114,7 @@ class RiskPolicy:
             ("daily_loss_limit_rub", self.daily_loss_limit_rub),
             ("weekly_loss_limit_rub", self.weekly_loss_limit_rub),
             ("max_daily_turnover_rub", self.max_daily_turnover_rub),
+            ("max_gross_exposure_rub", self.max_gross_exposure_rub),
         ):
             _positive_optional(name, value)
         for name, value in (
@@ -106,6 +123,22 @@ class RiskPolicy:
             ("daily_loss_limit_fraction", self.daily_loss_limit_fraction),
             ("weekly_loss_limit_fraction", self.weekly_loss_limit_fraction),
             ("max_drawdown_fraction", self.max_drawdown_fraction),
+            ("max_gross_exposure_fraction", self.max_gross_exposure_fraction),
+            ("max_net_exposure_fraction", self.max_net_exposure_fraction),
+            (
+                "max_instrument_concentration_fraction",
+                self.max_instrument_concentration_fraction,
+            ),
+            (
+                "max_strategy_concentration_fraction",
+                self.max_strategy_concentration_fraction,
+            ),
+            (
+                "max_asset_class_concentration_fraction",
+                self.max_asset_class_concentration_fraction,
+            ),
+            ("min_cash_reserve_fraction", self.min_cash_reserve_fraction),
+            ("max_daily_turnover_fraction", self.max_daily_turnover_fraction),
         ):
             _fraction_optional(name, value)
         if not isfinite(float(self.cash_reserve_rub)) or self.cash_reserve_rub < 0:
@@ -122,9 +155,45 @@ class RiskPolicy:
             self.max_snapshot_age_seconds is not None
             and self.max_snapshot_age_seconds < 0
         ):
-            raise ValueError(
-                "max_snapshot_age_seconds must be non-negative or None."
+            raise ValueError("max_snapshot_age_seconds must be non-negative or None.")
+        if self.max_price_age_seconds is not None and self.max_price_age_seconds < 0:
+            raise ValueError("max_price_age_seconds must be non-negative or None.")
+        if self.max_open_positions is not None and self.max_open_positions < 1:
+            raise ValueError("max_open_positions must be positive or None.")
+        if not isinstance(self.portfolio_policy_configured, bool):
+            raise TypeError("portfolio_policy_configured must be boolean.")
+        portfolio_mode = str(self.portfolio_policy_mode or "").strip().upper()
+        if portfolio_mode not in {"OBSERVE_ONLY", "ENFORCED"}:
+            raise ValueError("portfolio_policy_mode must be OBSERVE_ONLY or ENFORCED.")
+        object.__setattr__(self, "portfolio_policy_mode", portfolio_mode)
+        _fraction_optional(
+            "portfolio_warning_utilization_fraction",
+            self.portfolio_warning_utilization_fraction,
+        )
+        normalized_asset_limits: list[tuple[str, float]] = []
+        for raw in self.asset_class_concentration_limits:
+            if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+                raise ValueError(
+                    "asset_class_concentration_limits entries must be "
+                    "(asset_class, fraction) pairs."
+                )
+            asset_class = str(raw[0] or "").strip().upper()
+            if not asset_class:
+                raise ValueError("Asset-class limit name must not be empty.")
+            fraction = float(raw[1])
+            _fraction_optional(
+                f"asset_class_concentration_limits.{asset_class}",
+                fraction,
             )
+            normalized_asset_limits.append((asset_class, fraction))
+        names = [item[0] for item in normalized_asset_limits]
+        if len(names) != len(set(names)):
+            raise ValueError("Duplicate asset-class concentration limit.")
+        object.__setattr__(
+            self,
+            "asset_class_concentration_limits",
+            tuple(sorted(normalized_asset_limits)),
+        )
 
     @property
     def policy_hash(self) -> str:
@@ -160,9 +229,7 @@ class RiskSnapshot:
     def __post_init__(self) -> None:
         if not isinstance(self.now, datetime):
             raise RiskInputError("now must be a datetime.")
-        if self.snapshot_at is not None and not isinstance(
-            self.snapshot_at, datetime
-        ):
+        if self.snapshot_at is not None and not isinstance(self.snapshot_at, datetime):
             raise RiskInputError("snapshot_at must be a datetime or None.")
         for name, value in (
             ("strategy_target_lots", self.strategy_target_lots),
@@ -193,6 +260,58 @@ class RiskSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class InstrumentRiskHalt:
+    instrument_id: str
+    reason: str
+    source: str
+    set_at: str
+    operator_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        instrument_id = str(self.instrument_id or "").strip()
+        reason = str(self.reason or "").strip()
+        source = str(self.source or "").strip().upper()
+        if not instrument_id or not reason or not source:
+            raise RiskInputError(
+                "Instrument risk halt requires instrument_id, reason and source."
+            )
+        try:
+            parsed = datetime.fromisoformat(str(self.set_at).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RiskInputError(
+                "Instrument risk halt set_at must be ISO-8601."
+            ) from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise RiskInputError("Instrument risk halt set_at must be timezone-aware.")
+        object.__setattr__(self, "instrument_id", instrument_id)
+        object.__setattr__(self, "reason", reason)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(
+            self,
+            "set_at",
+            parsed.astimezone(timezone.utc).isoformat(),
+        )
+        object.__setattr__(
+            self,
+            "operator_ref",
+            str(self.operator_ref or "").strip() or None,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> InstrumentRiskHalt:
+        return cls(
+            instrument_id=value.get("instrument_id", ""),
+            reason=value.get("reason", ""),
+            source=value.get("source", ""),
+            set_at=value.get("set_at", ""),
+            operator_ref=value.get("operator_ref"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class RiskState:
     """Persistable account-level state used by loss and turnover limits."""
 
@@ -207,6 +326,9 @@ class RiskState:
     kill_switch_active: bool = False
     kill_switch_reason: str | None = None
     kill_switch_set_at: str | None = None
+    kill_switch_source: str | None = None
+    kill_switch_operator_ref: str | None = None
+    instrument_kill_switches: tuple[InstrumentRiskHalt, ...] = ()
     risk_resync_required: bool = False
     risk_resync_reason: str | None = None
     risk_resync_set_at: str | None = None
@@ -216,6 +338,9 @@ class RiskState:
     last_evaluated_at: str | None = None
     last_execution_at: str | None = None
     recorded_execution_ids: tuple[str, ...] = ()
+    last_portfolio_risk_decision_id: str | None = None
+    last_portfolio_risk_input_hash: str | None = None
+    last_portfolio_risk_evaluated_at: str | None = None
 
     def __post_init__(self) -> None:
         if self.version > RISK_STATE_VERSION:
@@ -223,21 +348,35 @@ class RiskState:
                 f"Risk state version {self.version} is newer than supported "
                 f"version {RISK_STATE_VERSION}."
             )
-        if self.daily_turnover_rub < 0 or not isfinite(
-            float(self.daily_turnover_rub)
-        ):
+        if self.daily_turnover_rub < 0 or not isfinite(float(self.daily_turnover_rub)):
             raise RiskInputError("daily_turnover_rub must be finite and non-negative.")
         if self.daily_order_count < 0:
             raise RiskInputError("daily_order_count must not be negative.")
+        halts = tuple(self.instrument_kill_switches)
+        if any(not isinstance(item, InstrumentRiskHalt) for item in halts):
+            raise RiskInputError(
+                "instrument_kill_switches must contain InstrumentRiskHalt values."
+            )
+        ids = [item.instrument_id for item in halts]
+        if len(ids) != len(set(ids)):
+            raise RiskInputError("Duplicate instrument risk halt.")
+        object.__setattr__(
+            self,
+            "instrument_kill_switches",
+            tuple(sorted(halts, key=lambda item: item.instrument_id)),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["version"] = RISK_STATE_VERSION
         payload["recorded_execution_ids"] = list(self.recorded_execution_ids)
+        payload["instrument_kill_switches"] = [
+            item.to_dict() for item in self.instrument_kill_switches
+        ]
         return payload
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any] | None) -> "RiskState":
+    def from_dict(cls, value: Mapping[str, Any] | None) -> RiskState:
         if value is None:
             return cls()
         payload = dict(value)
@@ -250,12 +389,27 @@ class RiskState:
                 f"Risk state version {source_version} is newer than supported "
                 f"version {RISK_STATE_VERSION}."
             )
-        # v1 -> v2 is additive. Missing resync fields take safe defaults and
+        # v1 -> v3 and v2 -> v3 are additive. Missing fields take safe defaults and
         # the state is rewritten with the current version on the next save.
         payload["version"] = RISK_STATE_VERSION
         payload.setdefault("risk_resync_required", False)
         payload.setdefault("risk_resync_reason", None)
         payload.setdefault("risk_resync_set_at", None)
+        payload.setdefault("kill_switch_source", None)
+        payload.setdefault("kill_switch_operator_ref", None)
+        payload.setdefault("instrument_kill_switches", ())
+        payload.setdefault("last_portfolio_risk_decision_id", None)
+        payload.setdefault("last_portfolio_risk_input_hash", None)
+        payload.setdefault("last_portfolio_risk_evaluated_at", None)
+        raw_halts = payload.get("instrument_kill_switches") or ()
+        if not isinstance(raw_halts, (list, tuple)):
+            raise RiskInputError("instrument_kill_switches must be an array.")
+        payload["instrument_kill_switches"] = tuple(
+            item
+            if isinstance(item, InstrumentRiskHalt)
+            else InstrumentRiskHalt.from_dict(item)
+            for item in raw_halts
+        )
         payload["recorded_execution_ids"] = tuple(
             str(item) for item in payload.get("recorded_execution_ids") or ()
         )
@@ -367,9 +521,10 @@ class ExecutionRecord:
             raise RiskInputError("lot_size must be a positive integer.")
         if int(self.lot_size) < 1:
             raise RiskInputError("lot_size must be a positive integer.")
-        if self.portfolio_equity_rub is not None and _finite_or_none(
-            self.portfolio_equity_rub
-        ) is None:
+        if (
+            self.portfolio_equity_rub is not None
+            and _finite_or_none(self.portfolio_equity_rub) is None
+        ):
             raise RiskInputError("portfolio_equity_rub must be finite or None.")
         normalized_source = str(self.execution_source).strip().upper()
         if not normalized_source:
@@ -475,9 +630,7 @@ def _roll_state_periods(
     high = updated.high_watermark_equity_rub
     if equity_rub is not None and (high is None or equity_rub > high):
         updated = replace(updated, high_watermark_equity_rub=equity_rub)
-        events.append(
-            _make_event("HIGH_WATERMARK_UPDATED", equity_rub=equity_rub)
-        )
+        events.append(_make_event("HIGH_WATERMARK_UPDATED", equity_rub=equity_rub))
     return updated, tuple(events)
 
 
@@ -553,19 +706,44 @@ class RiskEngine:
         *,
         now: datetime,
         reason: str,
+        source: str = "OPERATOR",
+        operator_ref: str | None = None,
     ) -> tuple[RiskState, RiskEvent]:
         normalized_reason = str(reason).strip() or "Manual kill switch"
+        normalized_source = str(source or "").strip().upper() or "OPERATOR"
+        normalized_ref = str(operator_ref or "").strip() or None
+        idempotent = (
+            state.kill_switch_active
+            and state.kill_switch_reason == normalized_reason
+            and state.kill_switch_source == normalized_source
+            and state.kill_switch_operator_ref == normalized_ref
+        )
+        if idempotent:
+            return state, _make_event(
+                "KILL_SWITCH_ENABLED",
+                "WARNING",
+                reason=normalized_reason,
+                source=normalized_source,
+                operator_ref=normalized_ref,
+                set_at=state.kill_switch_set_at,
+                idempotent=True,
+            )
         updated = replace(
             state,
             kill_switch_active=True,
             kill_switch_reason=normalized_reason,
             kill_switch_set_at=_utc(now).isoformat(),
+            kill_switch_source=normalized_source,
+            kill_switch_operator_ref=normalized_ref,
         )
         return updated, _make_event(
             "KILL_SWITCH_ENABLED",
             "WARNING",
             reason=normalized_reason,
+            source=normalized_source,
+            operator_ref=normalized_ref,
             set_at=updated.kill_switch_set_at,
+            idempotent=False,
         )
 
     def clear_kill_switch(
@@ -584,11 +762,95 @@ class RiskEngine:
             kill_switch_active=False,
             kill_switch_reason=None,
             kill_switch_set_at=None,
+            kill_switch_source=None,
+            kill_switch_operator_ref=None,
         )
         return updated, _make_event(
             "KILL_SWITCH_DISABLED",
             "WARNING",
             cleared_at=_utc(now).isoformat(),
+        )
+
+    def engage_instrument_kill_switch(
+        self,
+        state: RiskState,
+        *,
+        instrument_id: str,
+        now: datetime,
+        reason: str,
+        source: str = "OPERATOR",
+        operator_ref: str | None = None,
+    ) -> tuple[RiskState, RiskEvent]:
+        halt = InstrumentRiskHalt(
+            instrument_id=instrument_id,
+            reason=str(reason).strip() or "Manual instrument kill switch",
+            source=source,
+            operator_ref=operator_ref,
+            set_at=_utc(now).isoformat(),
+        )
+        existing = next(
+            (
+                item
+                for item in state.instrument_kill_switches
+                if item.instrument_id == halt.instrument_id
+            ),
+            None,
+        )
+        if (
+            existing is not None
+            and existing.reason == halt.reason
+            and existing.source == halt.source
+            and existing.operator_ref == halt.operator_ref
+        ):
+            return state, _make_event(
+                "INSTRUMENT_KILL_SWITCH_ENABLED",
+                "WARNING",
+                **existing.to_dict(),
+                idempotent=True,
+            )
+        remaining = tuple(
+            item
+            for item in state.instrument_kill_switches
+            if item.instrument_id != halt.instrument_id
+        )
+        updated = replace(
+            state,
+            instrument_kill_switches=(*remaining, halt),
+        )
+        return updated, _make_event(
+            "INSTRUMENT_KILL_SWITCH_ENABLED",
+            "WARNING",
+            **halt.to_dict(),
+            idempotent=False,
+        )
+
+    def clear_instrument_kill_switch(
+        self,
+        state: RiskState,
+        *,
+        instrument_id: str,
+        now: datetime,
+        confirmation: str,
+    ) -> tuple[RiskState, RiskEvent]:
+        selected = str(instrument_id or "").strip()
+        expected = f"CLEAR INSTRUMENT RISK HALT {selected}".upper()
+        if not selected or str(confirmation).strip().upper() != expected:
+            raise RiskInputError(
+                f"Instrument kill switch confirmation must be exactly '{expected}'."
+            )
+        remaining = tuple(
+            item
+            for item in state.instrument_kill_switches
+            if item.instrument_id != selected
+        )
+        idempotent = len(remaining) == len(state.instrument_kill_switches)
+        updated = replace(state, instrument_kill_switches=remaining)
+        return updated, _make_event(
+            "INSTRUMENT_KILL_SWITCH_DISABLED",
+            "WARNING",
+            instrument_id=selected,
+            cleared_at=_utc(now).isoformat(),
+            idempotent=idempotent,
         )
 
     def mark_external_activity(
@@ -627,8 +889,7 @@ class RiskEngine:
     ) -> tuple[RiskState, tuple[RiskEvent, ...]]:
         if str(confirmation).strip().upper() != "RESET RISK BASELINES":
             raise RiskInputError(
-                "Baseline reset confirmation must be exactly "
-                "'RESET RISK BASELINES'."
+                "Baseline reset confirmation must be exactly 'RESET RISK BASELINES'."
             )
         normalized_equity = _finite_or_none(equity_rub)
         resync_was_required = bool(state.risk_resync_required)
@@ -666,6 +927,79 @@ class RiskEngine:
             )
         return updated, tuple(events)
 
+    def initialize_pristine_baselines(
+        self,
+        state: RiskState,
+        *,
+        now: datetime,
+        equity_rub: float,
+        cash_rub: float,
+        snapshot_at: datetime,
+    ) -> tuple[RiskState, RiskEvent]:
+        """Initialize a never-used account state from one fresh broker snapshot.
+
+        This is deliberately narrower than ``reset_baselines``: it refuses any
+        prior baseline, execution accounting, halt or resynchronization state.
+        It therefore cannot erase history and needs no reset confirmation.
+        """
+
+        normalized_equity = _finite_or_none(equity_rub)
+        normalized_cash = _finite_or_none(cash_rub)
+        if normalized_equity is None or normalized_equity < 0:
+            raise RiskInputError("Initial equity must be finite and non-negative.")
+        if normalized_cash is None or normalized_cash < 0:
+            raise RiskInputError("Initial cash must be finite and non-negative.")
+        if not isinstance(snapshot_at, datetime):
+            raise RiskInputError("Initial snapshot_at must be a datetime.")
+        baseline_fields = (
+            state.daily_date,
+            state.weekly_key,
+            state.daily_start_equity_rub,
+            state.weekly_start_equity_rub,
+            state.high_watermark_equity_rub,
+            state.last_equity_rub,
+            state.last_cash_rub,
+            state.last_snapshot_at,
+            state.last_evaluated_at,
+            state.last_execution_at,
+            state.last_portfolio_risk_decision_id,
+            state.last_portfolio_risk_input_hash,
+            state.last_portfolio_risk_evaluated_at,
+        )
+        if (
+            any(value is not None for value in baseline_fields)
+            or state.daily_turnover_rub != 0
+            or state.daily_order_count != 0
+            or state.recorded_execution_ids
+            or state.kill_switch_active
+            or state.instrument_kill_switches
+            or state.risk_resync_required
+        ):
+            raise RiskInputError(
+                "Risk baselines can be initialized only from a pristine state."
+            )
+        evaluated_at = _utc(now).isoformat()
+        source_snapshot_at = _utc(snapshot_at).isoformat()
+        updated = replace(
+            state,
+            daily_date=_date_key(now),
+            weekly_key=_week_key(now),
+            daily_start_equity_rub=normalized_equity,
+            weekly_start_equity_rub=normalized_equity,
+            high_watermark_equity_rub=normalized_equity,
+            last_equity_rub=normalized_equity,
+            last_cash_rub=normalized_cash,
+            last_snapshot_at=source_snapshot_at,
+            last_evaluated_at=evaluated_at,
+        )
+        return updated, _make_event(
+            "RISK_BASELINES_INITIALIZED",
+            equity_rub=normalized_equity,
+            cash_rub=normalized_cash,
+            snapshot_at=source_snapshot_at,
+            initialized_at=evaluated_at,
+        )
+
     def evaluate(
         self,
         snapshot: RiskSnapshot,
@@ -690,14 +1024,10 @@ class RiskEngine:
         daily_start = rolled.daily_start_equity_rub
         weekly_start = rolled.weekly_start_equity_rub
         daily_pnl = (
-            None
-            if equity is None or daily_start is None
-            else equity - daily_start
+            None if equity is None or daily_start is None else equity - daily_start
         )
         weekly_pnl = (
-            None
-            if equity is None or weekly_start is None
-            else equity - weekly_start
+            None if equity is None or weekly_start is None else equity - weekly_start
         )
         daily_return = (
             None
@@ -710,9 +1040,7 @@ class RiskEngine:
             else weekly_pnl / weekly_start
         )
         drawdown = (
-            None
-            if equity is None or high in (None, 0)
-            else (equity - high) / high
+            None if equity is None or high in (None, 0) else (equity - high) / high
         )
 
         snapshot_time_missing = snapshot.snapshot_at is None
@@ -723,8 +1051,7 @@ class RiskEngine:
             else max(0.0, (now - snapshot_at).total_seconds())
         )
         snapshot_from_future = (
-            snapshot_at is not None
-            and snapshot_at > now + timedelta(seconds=5)
+            snapshot_at is not None and snapshot_at > now + timedelta(seconds=5)
         )
 
         requested_target = int(snapshot.strategy_target_lots)
@@ -741,9 +1068,7 @@ class RiskEngine:
             "snapshot_age_seconds": snapshot_age,
             "equity_rub": equity,
             "cash_rub": cash,
-            "securities_value_rub": _finite_or_none(
-                snapshot.securities_value_rub
-            ),
+            "securities_value_rub": _finite_or_none(snapshot.securities_value_rub),
             "price_rub": price,
             "lot_size": int(snapshot.lot_size),
             "atr_rub": atr,
@@ -933,8 +1258,7 @@ class RiskEngine:
             if self.policy.max_daily_turnover_rub is not None:
                 turnover_remaining = max(
                     0.0,
-                    self.policy.max_daily_turnover_rub
-                    - rolled.daily_turnover_rub,
+                    self.policy.max_daily_turnover_rub - rolled.daily_turnover_rub,
                 )
                 lot_caps["DAILY_TURNOVER_REMAINING"] = current + max(
                     0,
@@ -942,9 +1266,13 @@ class RiskEngine:
                 )
 
         risk_budget = self.policy.risk_per_trade_rub
-        if risk_budget is None and self.policy.risk_per_trade_fraction is not None:
-            if equity is not None and equity > 0:
-                risk_budget = equity * self.policy.risk_per_trade_fraction
+        if (
+            risk_budget is None
+            and self.policy.risk_per_trade_fraction is not None
+            and equity is not None
+            and equity > 0
+        ):
+            risk_budget = equity * self.policy.risk_per_trade_fraction
         risk_distance = stop_distance
         risk_distance_source = "STOP_DISTANCE"
         if risk_distance is None and atr is not None:
@@ -987,7 +1315,10 @@ class RiskEngine:
                     "Risk-reducing order blocked because execution state is "
                     "ambiguous or portfolio data is unsafe."
                 )
-            elif increase_halted and not self.policy.allow_risk_reducing_orders_during_halt:
+            elif (
+                increase_halted
+                and not self.policy.allow_risk_reducing_orders_during_halt
+            ):
                 approved_target = current
                 reduction_blocked = True
                 reasons.append("Risk-reducing orders are disabled by policy.")
@@ -1021,18 +1352,20 @@ class RiskEngine:
                     "No order requested; Risk Engine remains halted for new exposure."
                 )
 
-        approved_target = max(0, min(approved_target, requested_target if risk_increasing else current))
+        approved_target = max(
+            0, min(approved_target, requested_target if risk_increasing else current)
+        )
         approved_delta = approved_target - current
         approved_action = _action(approved_delta)
 
-        all_breaches = tuple(
-            dict.fromkeys([*absolute_breaches, *increase_breaches])
-        )
-        if reduction_blocked:
-            status = "BLOCKED"
-        elif absolute_block and requested_delta != 0:
-            status = "BLOCKED"
-        elif risk_increasing and approved_target == current:
+        all_breaches = tuple(dict.fromkeys([*absolute_breaches, *increase_breaches]))
+        if (
+            reduction_blocked
+            or absolute_block
+            and requested_delta != 0
+            or risk_increasing
+            and approved_target == current
+        ):
             status = "BLOCKED"
         elif risk_increasing and approved_target < requested_target:
             status = "ADJUSTED"
@@ -1096,9 +1429,7 @@ class RiskEngine:
                 severity,
                 status=status,
                 block_kind=block_kind,
-                expected_policy_block=(
-                    status == "BLOCKED" and not absolute_block
-                ),
+                expected_policy_block=(status == "BLOCKED" and not absolute_block),
                 requested_target_lots=requested_target,
                 approved_target_lots=approved_target,
                 breaches=list(all_breaches),
@@ -1121,9 +1452,7 @@ class RiskEngine:
                         "DUPLICATE_EXECUTION_IGNORED",
                         "WARNING",
                         execution_id=execution_id,
-                        execution_source=(
-                            str(record.execution_source).strip().upper()
-                        ),
+                        execution_source=(str(record.execution_source).strip().upper()),
                     ),
                 ),
                 duplicate=True,
@@ -1149,9 +1478,7 @@ class RiskEngine:
             daily_turnover_rub=rolled.daily_turnover_rub + turnover,
             daily_order_count=rolled.daily_order_count + 1,
             last_execution_at=_utc(record.executed_at).isoformat(),
-            last_equity_rub=equity
-            if equity is not None
-            else rolled.last_equity_rub,
+            last_equity_rub=equity if equity is not None else rolled.last_equity_rub,
             recorded_execution_ids=tuple(ids),
         )
         events = [*period_events]

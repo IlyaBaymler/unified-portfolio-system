@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+
 from trading_robot.central_order_manager import (
     CentralOrderCandidate,
     CentralOrderManager,
@@ -315,6 +316,36 @@ def test_kill_switch_after_queue_blocks_dispatch_without_provider_call(
     ).dispatch_next(repository)
 
     assert result.status == "RISK_KILL_SWITCH_ACTIVE"
+    assert result.intent_id == queued.intent_id
+    assert transport.status_calls == 0
+    assert transport.post_calls == 0
+    assert manager.state().queued[0].status == "QUEUED"
+
+
+def test_instrument_kill_switch_after_queue_blocks_dispatch_without_provider_call(
+    tmp_path: Path,
+):
+    risk_runtime, policy, state_store, repository, manager, queued = (
+        setup_guarded_dispatch(tmp_path)
+    )
+    current = state_store.load_account(ACCOUNT)
+    halted, _event = RiskEngine(policy).engage_instrument_kill_switch(
+        current,
+        instrument_id="uid-sber",
+        now=datetime.fromisoformat(NOW),
+        reason="instrument review",
+        source="operator",
+    )
+    state_store.save_account(ACCOUNT, halted)
+    transport = FakeSandboxTransport()
+
+    result = adapter(
+        transport,
+        manager,
+        risk_runtime=risk_runtime,
+    ).dispatch_next(repository)
+
+    assert result.status == "RISK_INSTRUMENT_KILL_SWITCH_ACTIVE"
     assert result.intent_id == queued.intent_id
     assert transport.status_calls == 0
     assert transport.post_calls == 0
@@ -647,7 +678,9 @@ def test_not_found_inspection_remains_uncertain_without_resubmit(tmp_path: Path)
     _state, repository, manager, _queued = setup_runtime(tmp_path)
     transport = FakeSandboxTransport()
     manager.prepare_next(repository)
-    manager.mark_uncertain("" + manager.state().blocking_intent.intent_id, reason="restart")
+    manager.mark_uncertain(
+        "" + manager.state().blocking_intent.intent_id, reason="restart"
+    )
     transport.inspection_error = TBankAPIError(
         "order not found",
         status_code=404,

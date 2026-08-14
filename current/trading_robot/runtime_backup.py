@@ -2,19 +2,20 @@ from __future__ import annotations
 
 """Validated runtime backup, preview and transactional restore for v3.7-alpha3."""
 
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import sqlite3
 import tempfile
 import time
-from typing import Any, Iterable, Mapping
-from uuid import uuid4
 import zipfile
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
 from .journal import EventJournal
 from .locking import InterProcessFileLock
@@ -26,9 +27,14 @@ from .runtime_integrity import (
     sha256_file,
 )
 
-
 DEFAULT_RUNTIME_FILES: tuple[str, ...] = (
     "v3_8_runtime_seed_manifest.json",
+    "v3_9_shadow_runtime_seed_manifest.json",
+    "v3_9_shadow_runtime_config_manifest.json",
+    "v3_9_enforced_runtime_manifest.json",
+    "v3_9_external_close_ack_manifest.json",
+    "v3_9_shadow_runtime_start_manifest.json",
+    "portfolio_risk_metadata.json",
     "strategy_profiles.json",
     "multi_instrument_profiles.json",
     "instrument_runtimes.json",
@@ -55,6 +61,12 @@ _CHECKSUM_MANAGED_JSON_NAMES = {
     "multi_instrument_profiles.json",
     "instrument_runtimes.json",
     "central_order_state.json",
+    "portfolio_risk_metadata.json",
+    "v3_9_shadow_runtime_seed_manifest.json",
+    "v3_9_shadow_runtime_config_manifest.json",
+    "v3_9_enforced_runtime_manifest.json",
+    "v3_9_external_close_ack_manifest.json",
+    "v3_9_shadow_runtime_start_manifest.json",
 }
 
 
@@ -189,7 +201,9 @@ class RuntimeBackupManager:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.suffix.lower() != ".zip":
             target = target.with_suffix(".zip")
-        with InterProcessFileLock(self.lock_path, timeout_seconds=5.0):
+        with InterProcessFileLock(  # noqa: SIM117 - lock covers temp cleanup
+            self.lock_path, timeout_seconds=5.0
+        ):
             with tempfile.TemporaryDirectory(prefix="moex-runtime-backup-") as temp_name:
                 staging = Path(temp_name)
                 entries: list[BackupEntry] = []
@@ -379,7 +393,9 @@ class RuntimeBackupManager:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
 
-        with InterProcessFileLock(self.lock_path, timeout_seconds=5.0):
+        with InterProcessFileLock(  # noqa: SIM117 - lock covers temp cleanup
+            self.lock_path, timeout_seconds=5.0
+        ):
             with tempfile.TemporaryDirectory(prefix="moex-runtime-restore-") as temp_name:
                 workspace = Path(temp_name)
                 staging = workspace / "staging"
@@ -602,7 +618,7 @@ class RuntimeBackupManager:
                     rows = connection.execute(
                         f'SELECT * FROM "{quoted}"'
                     ).fetchall()
-                digest.update(f"TABLE:{table}\n".encode("utf-8"))
+                digest.update(f"TABLE:{table}\n".encode())
                 for row in rows:
                     normalized = {
                         key: (value.hex() if isinstance(value, bytes) else value)

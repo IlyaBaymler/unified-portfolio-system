@@ -889,6 +889,22 @@ class TBankSandboxClient:
             {"instrumentId": instrument_id},
         )
 
+    def get_last_prices(self, instrument_ids: list[str]) -> list[dict[str, Any]]:
+        normalized = tuple(
+            dict.fromkeys(str(item or "").strip() for item in instrument_ids)
+        )
+        if not normalized or any(not item for item in normalized):
+            raise ValueError("instrument_ids must contain non-empty identifiers.")
+        response = self._post(
+            "MarketDataService",
+            "GetLastPrices",
+            {
+                "instrumentId": list(normalized),
+                "lastPriceType": "LAST_PRICE_EXCHANGE",
+            },
+        )
+        return list(response.get("lastPrices", []))
+
     def get_max_lots(
         self,
         account_id: str,

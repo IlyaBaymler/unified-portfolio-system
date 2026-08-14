@@ -48,6 +48,9 @@ _RISK_DISPATCH_STATE_FIELDS = (
     "kill_switch_active",
     "kill_switch_reason",
     "kill_switch_set_at",
+    "kill_switch_source",
+    "kill_switch_operator_ref",
+    "instrument_kill_switches",
     "risk_resync_required",
     "risk_resync_reason",
     "risk_resync_set_at",
@@ -76,10 +79,8 @@ def risk_state_guard_hash(state: RiskState) -> str:
 
     if not isinstance(state, RiskState):
         raise TypeError("risk dispatch guard requires RiskState.")
-    payload = {
-        field: getattr(state, field)
-        for field in _RISK_DISPATCH_STATE_FIELDS
-    }
+    serialized = state.to_dict()
+    payload = {field: serialized[field] for field in _RISK_DISPATCH_STATE_FIELDS}
     canonical = json.dumps(
         payload,
         ensure_ascii=True,
@@ -185,9 +186,7 @@ class RiskExecutionOutcome:
             "duplicate": self.duplicate,
             "error": self.error,
             "registration": (
-                self.registration.to_dict()
-                if self.registration is not None
-                else None
+                self.registration.to_dict() if self.registration is not None else None
             ),
         }
 
@@ -242,8 +241,7 @@ class RiskRuntimeAdapter:
         if loaded is None:
             if self.mode != "DRY_RUN" or not self.auto_create_dry_run_profile:
                 raise RiskPersistenceError(
-                    f"Risk profile {self.mode} is not saved; "
-                    "new exposure is blocked."
+                    f"Risk profile {self.mode} is not saved; new exposure is blocked."
                 )
             loaded = self.profile_store.save_profile(
                 "DRY_RUN",
@@ -274,6 +272,7 @@ class RiskRuntimeAdapter:
         *,
         expected_policy_hash: str,
         expected_state_guard_hash: str | None,
+        instrument_id: str | None = None,
     ) -> Iterator[None]:
         """Hold Risk policy/state stable across the final Sandbox handoff."""
 
@@ -292,12 +291,15 @@ class RiskRuntimeAdapter:
             )
         verified = False
         try:
-            with InterProcessFileLock(
-                self.profile_store.lock_path,
-                timeout_seconds=5.0,
-            ), InterProcessFileLock(
-                self.state_store.lock_path,
-                timeout_seconds=5.0,
+            with (
+                InterProcessFileLock(
+                    self.profile_store.lock_path,
+                    timeout_seconds=5.0,
+                ),
+                InterProcessFileLock(
+                    self.state_store.lock_path,
+                    timeout_seconds=5.0,
+                ),
             ):
                 policy, _auto_created = self._load_policy()
                 state = self.state_store.load_account(self.account_id)
@@ -315,6 +317,15 @@ class RiskRuntimeAdapter:
                     raise RiskDispatchAuthorizationError(
                         "RISK_RESYNC_REQUIRED",
                         "Risk resynchronization is required; Sandbox POST is blocked.",
+                    )
+                selected_instrument = str(instrument_id or "").strip()
+                if selected_instrument and any(
+                    item.instrument_id == selected_instrument
+                    for item in state.instrument_kill_switches
+                ):
+                    raise RiskDispatchAuthorizationError(
+                        "RISK_INSTRUMENT_KILL_SWITCH_ACTIVE",
+                        "Instrument Risk kill switch is active; Sandbox POST is blocked.",
                     )
                 if risk_state_guard_hash(state) != expected_state:
                     raise RiskDispatchAuthorizationError(
@@ -479,7 +490,9 @@ class RiskRuntimeAdapter:
         holder: dict[str, Any] = {}
 
         def updater(state):
-            updated, event = RiskEngine(RiskPolicy(enabled=False)).mark_external_activity(
+            updated, event = RiskEngine(
+                RiskPolicy(enabled=False)
+            ).mark_external_activity(
                 state,
                 now=now,
                 reason=reason,
@@ -498,9 +511,7 @@ class RiskRuntimeAdapter:
     def risk_resync_required(self) -> bool:
         """Return the persistent account resync gate."""
 
-        return bool(
-            self.state_store.load_account(self.account_id).risk_resync_required
-        )
+        return bool(self.state_store.load_account(self.account_id).risk_resync_required)
 
     def record_execution(
         self,

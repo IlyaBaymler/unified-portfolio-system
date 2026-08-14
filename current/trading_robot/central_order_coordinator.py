@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -15,6 +16,7 @@ from .central_order_manager import (
     ExecutionAuthorization,
 )
 from .instrument_runtime import InstrumentRuntime
+from .journal import EventJournal
 from .multi_instrument_config import MultiInstrumentProfile
 from .multi_instrument_strategy import StrategyProposal
 from .portfolio_preflight import (
@@ -23,6 +25,17 @@ from .portfolio_preflight import (
     portfolio_risk_mapping,
 )
 from .portfolio_repository import PortfolioRepository, PortfolioRepositoryError
+from .portfolio_risk_read_service import load_portfolio_risk_metadata
+from .portfolio_risk_runtime import (
+    PortfolioRiskAuthorizationError,
+    PortfolioRiskRuntime,
+)
+from .portfolio_risk_shadow import (
+    PortfolioRiskCandidateQuote,
+    PortfolioRiskShadowObserver,
+    PortfolioRiskShadowResult,
+)
+from .risk_runtime import RiskRuntimeAdapter
 
 
 class CentralOrderCoordinationError(RuntimeError):
@@ -48,7 +61,10 @@ class CentralOrderCoordinationResult:
     cancelled_intent_id: str | None = None
     preflight_status: str | None = None
     risk_status: str | None = None
+    portfolio_risk_status: str | None = None
+    portfolio_risk_decision_id: str | None = None
     reason: str | None = None
+    portfolio_risk_shadow: PortfolioRiskShadowResult | None = None
     broker_execution_authorized: bool = False
 
     def __post_init__(self) -> None:
@@ -70,7 +86,14 @@ class CentralOrderCoordinationResult:
             "cancelled_intent_id": self.cancelled_intent_id,
             "preflight_status": self.preflight_status,
             "risk_status": self.risk_status,
+            "portfolio_risk_status": self.portfolio_risk_status,
+            "portfolio_risk_decision_id": self.portfolio_risk_decision_id,
             "reason": self.reason,
+            "portfolio_risk_shadow": (
+                self.portfolio_risk_shadow.to_dict()
+                if self.portfolio_risk_shadow is not None
+                else None
+            ),
             "broker_execution_authorized": False,
         }
 
@@ -90,6 +113,8 @@ class CentralOrderCoordinator:
         risk_runtime: Any,
         *,
         preflight_gate: PortfolioPreflightGate | None = None,
+        portfolio_risk_shadow: PortfolioRiskShadowObserver | None = None,
+        portfolio_risk_runtime: PortfolioRiskRuntime | None = None,
     ) -> None:
         if str(getattr(risk_runtime, "account_id", "")).strip() != (
             manager.account_id
@@ -107,6 +132,38 @@ class CentralOrderCoordinator:
         self.portfolio_repository = portfolio_repository
         self.risk_runtime = risk_runtime
         self.preflight_gate = preflight_gate or PortfolioPreflightGate()
+        self.portfolio_risk_shadow = portfolio_risk_shadow
+        self.portfolio_risk_runtime = portfolio_risk_runtime
+        metadata = None
+        metadata_path = manager.store.path.parent / "portfolio_risk_metadata.json"
+        if metadata_path.is_file():
+            try:
+                metadata = load_portfolio_risk_metadata(metadata_path)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                metadata = None
+        if self.portfolio_risk_runtime is not None and (
+            self.portfolio_risk_runtime.account_id != manager.account_id
+        ):
+            raise CentralOrderCoordinationError(
+                "Portfolio Risk runtime account scope does not match Central."
+            )
+        if self.portfolio_risk_shadow is None and isinstance(
+            risk_runtime,
+            RiskRuntimeAdapter,
+        ):
+            try:
+                runtime_root = manager.store.path.parent
+                self.portfolio_risk_shadow = PortfolioRiskShadowObserver(
+                    account_id=manager.account_id,
+                    mode="SANDBOX_EXECUTION",
+                    profile_store=risk_runtime.profile_store,
+                    journal=EventJournal(runtime_root / "trading_events.db"),
+                    instrument_metadata=(
+                        metadata
+                    ),
+                )
+            except (OSError, RuntimeError, sqlite3.Error):
+                self.portfolio_risk_shadow = None
 
     def coordinate(
         self,
@@ -118,6 +175,8 @@ class CentralOrderCoordinator:
         lot_size: int,
         now: datetime,
         cash_buffer_bps: int = 100,
+        observe_only: bool = False,
+        portfolio_risk_candidate_quote: PortfolioRiskCandidateQuote | None = None,
     ) -> CentralOrderCoordinationResult:
         self._validate_inputs(
             proposal,
@@ -211,6 +270,78 @@ class CentralOrderCoordinator:
             or getattr(risk, "error", None)
             or decision is None
         )
+        portfolio_shadow = None
+        if self.portfolio_risk_shadow is not None and decision is not None:
+            try:
+                shadow_quote = portfolio_risk_candidate_quote
+                if (
+                    shadow_quote is None
+                    and not observe_only
+                    and self.portfolio_risk_runtime is None
+                ):
+                    shadow_quote = PortfolioRiskCandidateQuote(
+                        unit_price_rub=price,
+                        price_at=proposal.candle_time,
+                        source="LEGACY_STRATEGY_CLOSED_CANDLE",
+                    )
+                portfolio_shadow = self.portfolio_risk_shadow.observe(
+                    proposal=proposal,
+                    portfolio=portfolio_state,
+                    central_orders=initial_central,
+                    risk_state=assessment.state,
+                    actual_approved_target_lots=approved_target,
+                    actual_risk_decision_id=str(risk.decision_id or ""),
+                    actual_risk_status=risk_status or None,
+                    actual_risk_policy_hash=risk.policy_hash,
+                    actual_reason_codes=tuple(
+                        str(item)
+                        for item in (
+                            *(getattr(decision, "reasons", ()) or ()),
+                            *(getattr(decision, "breaches", ()) or ()),
+                        )
+                    ),
+                    lot_size=lot_size,
+                    candidate_quote=shadow_quote,
+                    evaluated_at=_utc(now),
+                    cash_buffer_bps=cash_buffer_bps,
+                    excluded_reservation_ids=(
+                        (existing.intent_id,) if existing is not None else ()
+                    ),
+                )
+            except (
+                ArithmeticError,
+                LookupError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+                sqlite3.Error,
+            ):
+                # M3 observability must never mutate the accepted v3.8 path.
+                portfolio_shadow = None
+        if observe_only:
+            return self._result(
+                proposal,
+                status=(
+                    "SHADOW_OBSERVED"
+                    if portfolio_shadow is not None
+                    else "SHADOW_UNAVAILABLE"
+                ),
+                lease=lease,
+                current_lots=current_lots,
+                approved_target_lots=approved_target,
+                preflight_status=preflight.status.value,
+                risk_status=risk_status or None,
+                portfolio_risk_shadow=portfolio_shadow,
+                reason=(
+                    None
+                    if portfolio_shadow is not None
+                    else (
+                        str(getattr(risk, "error", "") or "").strip()
+                        or "Portfolio Risk shadow observation is unavailable."
+                    )
+                ),
+            )
         no_position_change = approved_target == current_lots
         no_change_is_safe = (
             not assessment_failed
@@ -240,6 +371,7 @@ class CentralOrderCoordinator:
                 cancelled_intent_id=cancelled,
                 preflight_status=preflight.status.value,
                 risk_status=risk_status,
+                portfolio_risk_shadow=portfolio_shadow,
             )
         if assessment_failed or not bool(
             getattr(decision, "order_allowed", False)
@@ -252,6 +384,7 @@ class CentralOrderCoordinator:
                 approved_target_lots=approved_target,
                 preflight_status=preflight.status.value,
                 risk_status=risk_status or None,
+                portfolio_risk_shadow=portfolio_shadow,
                 reason=(
                     str(getattr(risk, "error", "") or "").strip()
                     or "; ".join(getattr(decision, "reasons", ()) or ())
@@ -260,6 +393,16 @@ class CentralOrderCoordinator:
             )
 
         try:
+            authoritative_quote = portfolio_risk_candidate_quote
+            if (
+                self.portfolio_risk_runtime is not None
+                and authoritative_quote is None
+            ):
+                raise PortfolioRiskAuthorizationError(
+                    "PORTFOLIO_RISK_PRICE_UNAVAILABLE",
+                    "Authoritative Portfolio Risk requires a current candidate quote.",
+                    retryable=True,
+                )
             authorization = ExecutionAuthorization.from_gate_results(
                 preflight,
                 risk,
@@ -272,19 +415,91 @@ class CentralOrderCoordinator:
                 runtime_config_hash=runtime.config.runtime_config_hash,
                 current_lots=current_lots,
                 approved_target_lots=approved_target,
-                estimated_price_rub=price,
+                estimated_price_rub=(
+                    authoritative_quote.unit_price_rub
+                    if authoritative_quote is not None
+                    else price
+                ),
                 lot_size=lot_size,
             )
-        except (CentralOrderConflictError, TypeError, ValueError) as exc:
+        except (
+            CentralOrderConflictError,
+            PortfolioRiskAuthorizationError,
+            TypeError,
+            ValueError,
+        ) as exc:
             return self._result(
                 proposal,
-                status="AUTHORIZATION_BLOCKED",
+                status=getattr(exc, "status", "AUTHORIZATION_BLOCKED"),
                 lease=lease,
                 current_lots=current_lots,
                 approved_target_lots=approved_target,
                 preflight_status=preflight.status.value,
                 risk_status=risk_status or None,
+                portfolio_risk_shadow=portfolio_shadow,
                 reason=str(exc),
+            )
+
+        if self.portfolio_risk_runtime is not None:
+            assert authoritative_quote is not None
+            try:
+                admitted = self.portfolio_risk_runtime.admit(
+                    self.manager,
+                    self.portfolio_repository,
+                    candidate,
+                    authorization,
+                    price_at=authoritative_quote.price_at,
+                    price_source=authoritative_quote.source,
+                    evaluated_at=_utc(now),
+                    cash_buffer_bps=cash_buffer_bps,
+                )
+            except PortfolioRiskAuthorizationError as exc:
+                return self._result(
+                    proposal,
+                    status=exc.status,
+                    lease=lease,
+                    current_lots=current_lots,
+                    approved_target_lots=current_lots,
+                    preflight_status=preflight.status.value,
+                    risk_status=risk_status,
+                    portfolio_risk_shadow=portfolio_shadow,
+                    reason=str(exc),
+                )
+            except (CentralOrderConflictError, OSError, RuntimeError) as exc:
+                return self._result(
+                    proposal,
+                    status="PORTFOLIO_RISK_ADMISSION_UNAVAILABLE",
+                    lease=lease,
+                    current_lots=current_lots,
+                    approved_target_lots=current_lots,
+                    preflight_status=preflight.status.value,
+                    risk_status=risk_status,
+                    portfolio_risk_shadow=portfolio_shadow,
+                    reason=str(exc),
+                )
+            enqueue = admitted.enqueue
+            final_target = admitted.decision.approved_target_lots
+            if enqueue.reauthorized:
+                final_status = "REAUTHORIZED"
+            elif enqueue.replaced_intent_id is not None:
+                final_status = "REPLACED"
+            elif enqueue.idempotent:
+                final_status = "ALREADY_PROCESSED"
+            else:
+                final_status = "QUEUED"
+            return self._result(
+                proposal,
+                status=final_status,
+                lease=lease,
+                current_lots=current_lots,
+                approved_target_lots=final_target,
+                intent_id=enqueue.intent.intent_id,
+                cancelled_intent_id=enqueue.replaced_intent_id,
+                preflight_status=preflight.status.value,
+                risk_status=risk_status,
+                portfolio_risk_status=admitted.decision.status,
+                portfolio_risk_decision_id=admitted.decision.decision_id,
+                portfolio_risk_shadow=portfolio_shadow,
             )
 
         revision_check = self.preflight_gate.recheck(
@@ -301,6 +516,7 @@ class CentralOrderCoordinator:
                 approved_target_lots=approved_target,
                 preflight_status=preflight.status.value,
                 risk_status=risk_status,
+                portfolio_risk_shadow=portfolio_shadow,
                 reason=revision_check.reason,
             )
 
@@ -315,6 +531,7 @@ class CentralOrderCoordinator:
                 approved_target_lots=approved_target,
                 preflight_status=preflight.status.value,
                 risk_status=risk_status,
+                portfolio_risk_shadow=portfolio_shadow,
                 reason=f"{blocker.intent_id} is {blocker.status}.",
             )
 
@@ -336,6 +553,7 @@ class CentralOrderCoordinator:
                 intent_id=duplicate.intent_id,
                 preflight_status=preflight.status.value,
                 risk_status=risk_status,
+                portfolio_risk_shadow=portfolio_shadow,
                 reason=f"Existing intent is {duplicate.status}; resubmit is forbidden.",
             )
 
@@ -357,6 +575,7 @@ class CentralOrderCoordinator:
                 intent_id=refreshed.intent_id,
                 preflight_status=preflight.status.value,
                 risk_status=risk_status,
+                portfolio_risk_shadow=portfolio_shadow,
             )
 
         cancelled = None
@@ -380,6 +599,7 @@ class CentralOrderCoordinator:
             cancelled_intent_id=cancelled,
             preflight_status=preflight.status.value,
             risk_status=risk_status,
+            portfolio_risk_shadow=portfolio_shadow,
         )
 
     def _validate_inputs(
@@ -487,6 +707,9 @@ class CentralOrderCoordinator:
         cancelled_intent_id: str | None = None,
         preflight_status: str | None = None,
         risk_status: str | None = None,
+        portfolio_risk_status: str | None = None,
+        portfolio_risk_decision_id: str | None = None,
+        portfolio_risk_shadow: PortfolioRiskShadowResult | None = None,
         reason: str | None = None,
     ) -> CentralOrderCoordinationResult:
         return CentralOrderCoordinationResult(
@@ -501,6 +724,9 @@ class CentralOrderCoordinator:
             cancelled_intent_id=cancelled_intent_id,
             preflight_status=preflight_status,
             risk_status=risk_status,
+            portfolio_risk_status=portfolio_risk_status,
+            portfolio_risk_decision_id=portfolio_risk_decision_id,
+            portfolio_risk_shadow=portfolio_risk_shadow,
             reason=reason,
         )
 

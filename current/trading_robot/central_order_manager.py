@@ -16,7 +16,7 @@ from uuid import NAMESPACE_URL, uuid5
 from .journal import EventJournal, JournalEvent
 from .locking import InterProcessFileLock, LockUnavailableError
 from .multi_instrument_strategy import StrategyProposal
-from .portfolio_model import SnapshotFreshness
+from .portfolio_model import PortfolioState, SnapshotFreshness
 from .portfolio_preflight import (
     PortfolioPreflightDecision,
     PortfolioSnapshotLease,
@@ -51,6 +51,9 @@ TERMINAL_STATUSES = frozenset({"RECONCILED", "FAILED", "CANCELLED"})
 _ALLOWED_RISK_STATUSES = frozenset(
     {"PASS", "ADJUSTED", "REDUCTION_ALLOWED"}
 )
+_ALLOWED_PORTFOLIO_RISK_STATUSES = frozenset(
+    {"PASS", "ADJUSTED", "REDUCTION_ALLOWED"}
+)
 _RECONCILIATION_OUTCOMES = frozenset(
     {"FILLED", "PARTIALLY_FILLED", "REJECTED", "CANCELLED", "NOT_SUBMITTED"}
 )
@@ -80,6 +83,225 @@ class CentralOrderConflictError(CentralOrderError):
 
 class CentralOrderStateError(CentralOrderError):
     """Raised when persisted manager state fails validation."""
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioRiskAuthorizationProof:
+    """Immutable M4 proof for one account-wide admission decision.
+
+    ``admission_*`` is finalized by :class:`CentralOrderManager` while its
+    account-wide lock is held.  This keeps evaluation, reservation and the
+    persisted queue revision in one transaction.
+    """
+
+    decision_id: str
+    input_hash: str
+    policy_hash: str
+    status: str
+    single_risk_approved_target_lots: int
+    approved_target_lots: int
+    snapshot_revision: int
+    snapshot_checksum: str
+    central_order_revision: int
+    reservation_projection_hash: str
+    risk_state_guard_hash: str
+    evaluated_at: str
+    candidate_price_at: str
+    candidate_price_source: str
+    cash_buffer_bps: int
+    excluded_reservation_ids: tuple[str, ...] = ()
+    admission_central_revision: int | None = None
+    admission_reservation_projection_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "decision_id",
+            "input_hash",
+            "policy_hash",
+            "snapshot_checksum",
+            "reservation_projection_hash",
+            "risk_state_guard_hash",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _sha256_text(
+                    getattr(self, field_name),
+                    f"portfolio_risk.{field_name}",
+                ),
+            )
+        status = str(self.status or "").strip().upper()
+        if status not in _ALLOWED_PORTFOLIO_RISK_STATUSES:
+            raise CentralOrderConflictError(
+                f"Portfolio Risk status {status!r} does not authorize an order."
+            )
+        object.__setattr__(self, "status", status)
+        for field_name in (
+            "single_risk_approved_target_lots",
+            "approved_target_lots",
+            "snapshot_revision",
+            "central_order_revision",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _non_negative_int(
+                    getattr(self, field_name),
+                    f"portfolio_risk.{field_name}",
+                ),
+            )
+        object.__setattr__(
+            self,
+            "evaluated_at",
+            _timestamp(self.evaluated_at, "portfolio_risk.evaluated_at"),
+        )
+        object.__setattr__(
+            self,
+            "candidate_price_at",
+            _timestamp(
+                self.candidate_price_at,
+                "portfolio_risk.candidate_price_at",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "candidate_price_source",
+            _required_text(
+                self.candidate_price_source,
+                "portfolio_risk.candidate_price_source",
+            ).upper(),
+        )
+        normalized_buffer = _non_negative_int(
+            self.cash_buffer_bps,
+            "portfolio_risk.cash_buffer_bps",
+        )
+        if normalized_buffer > 5_000:
+            raise CentralOrderStateError(
+                "portfolio_risk.cash_buffer_bps must not exceed 5000."
+            )
+        object.__setattr__(self, "cash_buffer_bps", normalized_buffer)
+        if isinstance(self.excluded_reservation_ids, (str, bytes)):
+            raise CentralOrderStateError(
+                "portfolio_risk.excluded_reservation_ids must be an array."
+            )
+        excluded = tuple(
+            sorted(
+                {
+                    _required_text(item, "portfolio_risk.excluded_reservation_id")
+                    for item in self.excluded_reservation_ids
+                }
+            )
+        )
+        object.__setattr__(self, "excluded_reservation_ids", excluded)
+        admission_revision = self.admission_central_revision
+        admission_hash = self.admission_reservation_projection_hash
+        if (admission_revision is None) != (admission_hash is None):
+            raise CentralOrderStateError(
+                "Portfolio Risk admission revision/hash must be set together."
+            )
+        if admission_revision is not None:
+            normalized_revision = _non_negative_int(
+                admission_revision,
+                "portfolio_risk.admission_central_revision",
+            )
+            if normalized_revision <= self.central_order_revision:
+                raise CentralOrderStateError(
+                    "Portfolio Risk admission revision must advance Central state."
+                )
+            object.__setattr__(
+                self,
+                "admission_central_revision",
+                normalized_revision,
+            )
+            object.__setattr__(
+                self,
+                "admission_reservation_projection_hash",
+                _sha256_text(
+                    admission_hash,
+                    "portfolio_risk.admission_reservation_projection_hash",
+                ),
+            )
+
+    @property
+    def finalized(self) -> bool:
+        return self.admission_central_revision is not None
+
+    def finalize(
+        self,
+        *,
+        central_revision: int,
+        reservation_projection_hash: str,
+    ) -> PortfolioRiskAuthorizationProof:
+        if self.finalized:
+            raise CentralOrderStateError("Portfolio Risk proof is already finalized.")
+        return replace(
+            self,
+            admission_central_revision=central_revision,
+            admission_reservation_projection_hash=reservation_projection_hash,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "decision_id": self.decision_id,
+            "input_hash": self.input_hash,
+            "policy_hash": self.policy_hash,
+            "status": self.status,
+            "single_risk_approved_target_lots": (
+                self.single_risk_approved_target_lots
+            ),
+            "approved_target_lots": self.approved_target_lots,
+            "snapshot_revision": self.snapshot_revision,
+            "snapshot_checksum": self.snapshot_checksum,
+            "central_order_revision": self.central_order_revision,
+            "reservation_projection_hash": self.reservation_projection_hash,
+            "risk_state_guard_hash": self.risk_state_guard_hash,
+            "evaluated_at": self.evaluated_at,
+            "candidate_price_at": self.candidate_price_at,
+            "candidate_price_source": self.candidate_price_source,
+            "cash_buffer_bps": self.cash_buffer_bps,
+            "excluded_reservation_ids": list(self.excluded_reservation_ids),
+            "admission_central_revision": self.admission_central_revision,
+            "admission_reservation_projection_hash": (
+                self.admission_reservation_projection_hash
+            ),
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        raw: Mapping[str, Any],
+    ) -> PortfolioRiskAuthorizationProof:
+        excluded = raw.get("excluded_reservation_ids", [])
+        if not isinstance(excluded, list):
+            raise CentralOrderStateError(
+                "portfolio_risk.excluded_reservation_ids must be an array."
+            )
+        return cls(
+            decision_id=raw.get("decision_id", ""),
+            input_hash=raw.get("input_hash", ""),
+            policy_hash=raw.get("policy_hash", ""),
+            status=raw.get("status", ""),
+            single_risk_approved_target_lots=raw.get(
+                "single_risk_approved_target_lots", -1
+            ),
+            approved_target_lots=raw.get("approved_target_lots", -1),
+            snapshot_revision=raw.get("snapshot_revision", -1),
+            snapshot_checksum=raw.get("snapshot_checksum", ""),
+            central_order_revision=raw.get("central_order_revision", -1),
+            reservation_projection_hash=raw.get(
+                "reservation_projection_hash", ""
+            ),
+            risk_state_guard_hash=raw.get("risk_state_guard_hash", ""),
+            evaluated_at=raw.get("evaluated_at", ""),
+            candidate_price_at=raw.get("candidate_price_at", ""),
+            candidate_price_source=raw.get("candidate_price_source", ""),
+            cash_buffer_bps=raw.get("cash_buffer_bps", -1),
+            excluded_reservation_ids=tuple(excluded),
+            admission_central_revision=raw.get("admission_central_revision"),
+            admission_reservation_projection_hash=raw.get(
+                "admission_reservation_projection_hash"
+            ),
+        )
 
 
 def _required_text(value: Any, field_name: str) -> str:
@@ -184,6 +406,7 @@ class ExecutionAuthorization:
     risk_order_allowed: bool
     authorized_at: str
     risk_state_guard_hash: str | None = None
+    portfolio_risk: PortfolioRiskAuthorizationProof | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -309,6 +532,31 @@ class ExecutionAuthorization:
             )
         )
         object.__setattr__(self, "risk_state_guard_hash", state_guard)
+        if self.portfolio_risk is not None and not isinstance(
+            self.portfolio_risk,
+            PortfolioRiskAuthorizationProof,
+        ):
+            raise CentralOrderStateError(
+                "authorization.portfolio_risk must be PortfolioRiskAuthorizationProof."
+            )
+        if self.portfolio_risk is not None:
+            proof = self.portfolio_risk
+            if proof.approved_target_lots != self.authorized_target_lots:
+                raise CentralOrderStateError(
+                    "Portfolio Risk target differs from final authorization target."
+                )
+            if proof.snapshot_revision != self.portfolio_revision:
+                raise CentralOrderStateError(
+                    "Portfolio Risk/canonical revision mismatch."
+                )
+            if proof.snapshot_checksum != self.portfolio_decision_checksum:
+                raise CentralOrderStateError(
+                    "Portfolio Risk/canonical checksum mismatch."
+                )
+            if proof.risk_state_guard_hash != self.risk_state_guard_hash:
+                raise CentralOrderStateError(
+                    "Portfolio Risk/single-order Risk state guard mismatch."
+                )
 
     @classmethod
     def from_gate_results(
@@ -398,6 +646,11 @@ class ExecutionAuthorization:
             "risk_order_allowed": self.risk_order_allowed,
             "authorized_at": self.authorized_at,
             "risk_state_guard_hash": self.risk_state_guard_hash,
+            "portfolio_risk": (
+                self.portfolio_risk.to_dict()
+                if self.portfolio_risk is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -416,6 +669,14 @@ class ExecutionAuthorization:
         if not isinstance(risk_order_allowed, bool):
             raise CentralOrderStateError(
                 "authorization.risk_order_allowed must be boolean."
+            )
+        raw_portfolio_risk = raw.get("portfolio_risk")
+        if raw_portfolio_risk is not None and not isinstance(
+            raw_portfolio_risk,
+            Mapping,
+        ):
+            raise CentralOrderStateError(
+                "authorization.portfolio_risk must be an object or null."
             )
         return cls(
             account_id=raw.get("account_id", ""),
@@ -438,6 +699,11 @@ class ExecutionAuthorization:
             risk_order_allowed=risk_order_allowed,
             authorized_at=raw.get("authorized_at", ""),
             risk_state_guard_hash=raw.get("risk_state_guard_hash"),
+            portfolio_risk=(
+                PortfolioRiskAuthorizationProof.from_dict(raw_portfolio_risk)
+                if raw_portfolio_risk is not None
+                else None
+            ),
         )
 
 
@@ -1017,17 +1283,24 @@ class CentralOrderIntent:
         self,
         authorization: ExecutionAuthorization,
         *,
+        candidate: CentralOrderCandidate | None = None,
+        reserved_cash_kopecks: int | None = None,
         at: str | None = None,
     ) -> CentralOrderIntent:
         if self.status != "QUEUED":
             raise CentralOrderConflictError(
                 "Only a QUEUED intent can receive a new authorization."
             )
-        if authorization.account_id != self.candidate.account_id:
+        refreshed_candidate = candidate or self.candidate
+        if refreshed_candidate.idempotency_key() != self.idempotency_key:
+            raise CentralOrderConflictError(
+                "Reauthorization cannot change intent identity."
+            )
+        if authorization.account_id != refreshed_candidate.account_id:
             raise CentralOrderConflictError("Reauthorization account mismatch.")
-        if authorization.instrument_id != self.candidate.instrument_id:
+        if authorization.instrument_id != refreshed_candidate.instrument_id:
             raise CentralOrderConflictError("Reauthorization instrument mismatch.")
-        if authorization.authorized_target_lots != self.candidate.target_lots:
+        if authorization.authorized_target_lots != refreshed_candidate.target_lots:
             raise CentralOrderConflictError("Reauthorization target mismatch.")
         if (
             authorization.portfolio_revision
@@ -1039,7 +1312,13 @@ class CentralOrderIntent:
         timestamp = _timestamp(at or _now(), "reauthorized_at")
         return replace(
             self,
+            candidate=refreshed_candidate,
             authorization=authorization,
+            reserved_cash_kopecks=(
+                self.reserved_cash_kopecks
+                if reserved_cash_kopecks is None
+                else reserved_cash_kopecks
+            ),
             updated_at=timestamp,
             transitions=(
                 *self.transitions,
@@ -1260,6 +1539,65 @@ class CentralOrderState:
         return state
 
 
+def central_reservation_projection_hash(
+    state: CentralOrderState,
+    *,
+    excluded_reservation_ids: tuple[str, ...] = (),
+    revision: int | None = None,
+) -> str:
+    """Hash the exact Central reservation projection used by Portfolio Risk."""
+
+    if not isinstance(state, CentralOrderState):
+        raise TypeError("state must be CentralOrderState.")
+    if isinstance(excluded_reservation_ids, (str, bytes)):
+        raise CentralOrderStateError(
+            "excluded_reservation_ids must be an array."
+        )
+    excluded = tuple(
+        sorted(
+            {
+                _required_text(item, "excluded_reservation_id")
+                for item in excluded_reservation_ids
+            }
+        )
+    )
+    known = {item.intent_id for item in state.intents}
+    unknown = sorted(set(excluded) - known)
+    if unknown:
+        raise CentralOrderStateError(
+            "Excluded reservation does not exist in Central state: "
+            + ", ".join(unknown)
+        )
+    selected_revision = (
+        state.revision
+        if revision is None
+        else _non_negative_int(revision, "projection.revision")
+    )
+    payload = {
+        "account_id": state.account_id,
+        "revision": selected_revision,
+        "excluded_reservation_ids": list(excluded),
+        "reservations": [
+            {
+                "intent_id": intent.intent_id,
+                "instrument_id": intent.candidate.instrument_id,
+                "status": intent.status,
+                "reserved_cash_kopecks": intent.reserved_cash_kopecks,
+            }
+            for intent in state.intents
+            if intent.status in RESERVATION_STATUSES
+            and intent.intent_id not in excluded
+        ],
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class CentralOrderStore:
     """Checksum-managed, lock-serialized account-wide queue persistence."""
 
@@ -1373,6 +1711,8 @@ class EnqueueResult:
     idempotent: bool
     state_revision: int
     reserved_cash_kopecks: int
+    reauthorized: bool = False
+    replaced_intent_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1405,6 +1745,20 @@ class CentralOrderManager:
 
     def state(self) -> CentralOrderState:
         return self.store.load(expected_account_id=self.account_id)
+
+    def inspect_locked(self, reader: Callable[[CentralOrderState], T]) -> T:
+        """Read one Central state while participating in the store lock order."""
+
+        if not callable(reader):
+            raise TypeError("reader must be callable.")
+
+        def operation(
+            state: CentralOrderState,
+        ) -> tuple[CentralOrderState, T]:
+            return state, reader(state)
+
+        _, result = self.store.mutate(self.account_id, operation)
+        return result
 
     def enqueue(
         self,
@@ -1492,6 +1846,234 @@ class CentralOrderManager:
             reserved_cash_kopecks=state.reserved_cash_kopecks,
         )
 
+    def admit_portfolio(
+        self,
+        admission_builder: Callable[
+            [CentralOrderState],
+            tuple[CentralOrderCandidate, ExecutionAuthorization],
+        ],
+        *,
+        cash_buffer_bps: int = 100,
+    ) -> EnqueueResult:
+        """Evaluate and reserve one M4 candidate under the Central lock.
+
+        The builder receives the current serialized account projection.  It
+        must return a final candidate and an authorization containing an
+        unfinalized Portfolio Risk proof derived from that exact projection.
+        """
+
+        if not callable(admission_builder):
+            raise TypeError("admission_builder must be callable.")
+
+        def operation(
+            state: CentralOrderState,
+        ) -> tuple[
+            CentralOrderState,
+            tuple[CentralOrderIntent, bool, bool, str | None],
+        ]:
+            blocker = state.blocking_intent
+            if blocker is not None:
+                raise CentralOrderConflictError(
+                    "Account-wide pending/uncertain gate is active: "
+                    f"{blocker.intent_id} {blocker.status}."
+                )
+            candidate, authorization = admission_builder(state)
+            if not isinstance(candidate, CentralOrderCandidate):
+                raise CentralOrderStateError(
+                    "Portfolio admission builder must return CentralOrderCandidate."
+                )
+            if not isinstance(authorization, ExecutionAuthorization):
+                raise CentralOrderStateError(
+                    "Portfolio admission builder must return ExecutionAuthorization."
+                )
+            proof = authorization.portfolio_risk
+            if proof is None:
+                raise CentralOrderConflictError(
+                    "Authoritative admission requires Portfolio Risk proof."
+                )
+            if proof.finalized:
+                raise CentralOrderStateError(
+                    "Portfolio Risk proof must be finalized by Central admission."
+                )
+            if candidate.account_id != self.account_id:
+                raise CentralOrderConflictError("Candidate account scope mismatch.")
+            if authorization.account_id != self.account_id:
+                raise CentralOrderConflictError(
+                    "Authorization account scope mismatch."
+                )
+            if candidate.instrument_id != authorization.instrument_id:
+                raise CentralOrderConflictError(
+                    "Candidate/authorization instrument mismatch."
+                )
+            if candidate.target_lots != authorization.authorized_target_lots:
+                raise CentralOrderConflictError(
+                    "Candidate target differs from authorized Portfolio Risk target."
+                )
+            lower, upper = sorted(
+                (
+                    candidate.current_lots,
+                    proof.single_risk_approved_target_lots,
+                )
+            )
+            if not lower <= proof.approved_target_lots <= upper:
+                raise CentralOrderConflictError(
+                    "Portfolio Risk target exceeds the single-order Risk boundary."
+                )
+            if proof.central_order_revision != state.revision:
+                raise CentralOrderConflictError(
+                    "Portfolio Risk proof was not evaluated on the locked Central revision."
+                )
+            expected_pre_projection = central_reservation_projection_hash(
+                state,
+                excluded_reservation_ids=proof.excluded_reservation_ids,
+            )
+            if proof.reservation_projection_hash != expected_pre_projection:
+                raise CentralOrderConflictError(
+                    "Portfolio Risk reservation projection changed before admission."
+                )
+
+            duplicate = next(
+                (
+                    item
+                    for item in state.intents
+                    if item.idempotency_key == candidate.idempotency_key()
+                ),
+                None,
+            )
+            active_same_instrument = next(
+                (
+                    item
+                    for item in state.intents
+                    if item.status in RESERVATION_STATUSES
+                    and item.candidate.instrument_id == candidate.instrument_id
+                ),
+                None,
+            )
+            expected_excluded = (
+                (active_same_instrument.intent_id,)
+                if active_same_instrument is not None
+                else ()
+            )
+            if proof.excluded_reservation_ids != expected_excluded:
+                raise CentralOrderConflictError(
+                    "Portfolio Risk proof does not match the replaceable reservation scope."
+                )
+            if duplicate is not None and duplicate.status != "QUEUED":
+                return state, (duplicate, True, False, None)
+
+            if duplicate is not None:
+                reservation = candidate.reservation_kopecks(
+                    cash_buffer_bps=cash_buffer_bps
+                )
+                projected_reserved = (
+                    state.reserved_cash_kopecks
+                    - duplicate.reserved_cash_kopecks
+                    + reservation
+                )
+                if projected_reserved > authorization.available_cash_kopecks:
+                    raise CentralOrderConflictError(
+                        "Canonical RUB cash no longer covers refreshed reservations."
+                    )
+                provisional = duplicate.reauthorize(
+                    authorization,
+                    candidate=candidate,
+                    reserved_cash_kopecks=reservation,
+                )
+                projected_state = state.replace_intent(provisional)
+                projected_revision = state.revision + 1
+                projected_hash = central_reservation_projection_hash(
+                    projected_state,
+                    revision=projected_revision,
+                )
+                finalized = replace(
+                    authorization,
+                    portfolio_risk=proof.finalize(
+                        central_revision=projected_revision,
+                        reservation_projection_hash=projected_hash,
+                    ),
+                )
+                refreshed = replace(provisional, authorization=finalized)
+                return state.replace_intent(refreshed), (
+                    refreshed,
+                    True,
+                    True,
+                    None,
+                )
+
+            replaced_id = None
+            working = state
+            if active_same_instrument is not None:
+                replaced_id = active_same_instrument.intent_id
+                cancelled = active_same_instrument.transition(
+                    "CANCELLED",
+                    detail=(
+                        "atomically superseded by a newer Portfolio Risk "
+                        "admission"
+                    ),
+                    outcome="SUPERSEDED",
+                )
+                working = state.replace_intent(cancelled)
+
+            reservation = candidate.reservation_kopecks(
+                cash_buffer_bps=cash_buffer_bps
+            )
+            if (
+                working.reserved_cash_kopecks + reservation
+                > authorization.available_cash_kopecks
+            ):
+                raise CentralOrderConflictError(
+                    "Insufficient unreserved RUB cash for queued BUY intents."
+                )
+            provisional = CentralOrderIntent.create(
+                candidate,
+                authorization,
+                queue_sequence=state.next_sequence,
+                reserved_cash_kopecks=reservation,
+            )
+            projected = replace(
+                working,
+                next_sequence=state.next_sequence + 1,
+                intents=(*working.intents, provisional),
+            )
+            projected_revision = state.revision + 1
+            projected_hash = central_reservation_projection_hash(
+                projected,
+                revision=projected_revision,
+            )
+            finalized = replace(
+                authorization,
+                portfolio_risk=proof.finalize(
+                    central_revision=projected_revision,
+                    reservation_projection_hash=projected_hash,
+                ),
+            )
+            intent = replace(provisional, authorization=finalized)
+            updated = replace(
+                projected,
+                intents=tuple(
+                    intent if item.intent_id == intent.intent_id else item
+                    for item in projected.intents
+                ),
+            )
+            return updated, (intent, False, False, replaced_id)
+
+        state, (intent, idempotent, reauthorized, replaced_id) = self.store.mutate(
+            self.account_id,
+            operation,
+        )
+        if reauthorized:
+            self._record("CENTRAL_ORDER_REAUTHORIZED", intent)
+        elif not idempotent:
+            self._record("CENTRAL_ORDER_ENQUEUED", intent)
+        return EnqueueResult(
+            intent=intent,
+            idempotent=idempotent,
+            state_revision=state.revision,
+            reserved_cash_kopecks=state.reserved_cash_kopecks,
+            reauthorized=reauthorized,
+            replaced_intent_id=replaced_id,
+        )
+
     def reauthorize_queued(
         self,
         intent_id: str,
@@ -1527,6 +2109,12 @@ class CentralOrderManager:
         portfolio_repository: PortfolioRepository,
         *,
         expected_intent_id: str | None = None,
+        locked_portfolio_state: PortfolioState | None = None,
+        portfolio_risk_validator: Callable[
+            [PortfolioState, CentralOrderState, CentralOrderIntent],
+            Any,
+        ]
+        | None = None,
     ) -> DispatchPreparation | None:
         expected = (
             _required_text(expected_intent_id, "expected_intent_id")
@@ -1550,10 +2138,30 @@ class CentralOrderManager:
                 raise CentralOrderConflictError(
                     "Central-order queue head changed after external precheck."
                 )
-            self._validate_portfolio_for_dispatch(
+            portfolio_state = self._validate_portfolio_for_dispatch(
                 portfolio_repository,
                 intent,
+                locked_portfolio_state=locked_portfolio_state,
             )
+            proof = intent.authorization.portfolio_risk
+            if proof is not None:
+                if not proof.finalized:
+                    raise CentralOrderConflictError(
+                        "Portfolio Risk proof is not finalized."
+                    )
+                if state.revision != proof.admission_central_revision:
+                    raise CentralOrderConflictError(
+                        "Central queue changed after Portfolio Risk admission."
+                    )
+                if (
+                    central_reservation_projection_hash(state)
+                    != proof.admission_reservation_projection_hash
+                ):
+                    raise CentralOrderConflictError(
+                        "Central reservation projection changed after Portfolio Risk admission."
+                    )
+            if portfolio_risk_validator is not None:
+                portfolio_risk_validator(portfolio_state, state, intent)
             prepared = intent.transition(
                 "IN_FLIGHT",
                 detail="canonical snapshot rechecked; broker POST remains external",
@@ -1654,25 +2262,30 @@ class CentralOrderManager:
             "executed_lots",
         )
 
-        def operation(
-            state: CentralOrderState,
-        ) -> tuple[CentralOrderState, CentralOrderIntent]:
-            current = next(
-                (item for item in state.intents if item.intent_id == selected),
+        with portfolio_repository.locked_snapshot(
+            expected_account_id=self.account_id
+        ) as locked_portfolio:
+            observed = next(
+                (
+                    item
+                    for item in self.state().intents
+                    if item.intent_id == selected
+                ),
                 None,
             )
-            if current is None:
+            if observed is None:
                 raise CentralOrderConflictError(f"Unknown intent {selected}.")
             lease = self._validate_reconciliation(
                 portfolio_repository,
-                current,
+                observed,
                 outcome=normalized_outcome,
                 executed_lots=normalized_executed_lots,
+                locked_portfolio_state=locked_portfolio,
             )
             if normalized_executed_lots:
                 risk_status, risk_execution_id = self._record_risk_execution(
                     risk_runtime,
-                    current,
+                    observed,
                     lease,
                     executed_lots=normalized_executed_lots,
                     execution_price_rub=execution_price_rub,
@@ -1680,22 +2293,43 @@ class CentralOrderManager:
                 )
             else:
                 risk_status, risk_execution_id = "NOT_REQUIRED", None
-            updated = current.transition(
-                "RECONCILED",
-                detail="canonical broker reconciliation completed",
-                outcome=normalized_outcome,
-                executed_lots=normalized_executed_lots,
-                reconciled_portfolio_revision=lease.revision,
-                reconciled_portfolio_decision_checksum=(
-                    lease.decision_checksum
-                ),
-                reconciled_portfolio_snapshot_at=lease.state.snapshot_at,
-                risk_execution_status=risk_status,
-                risk_execution_id=risk_execution_id,
-            )
-            return state.replace_intent(updated), updated
 
-        _, intent = self.store.mutate(self.account_id, operation)
+            def operation(
+                state: CentralOrderState,
+            ) -> tuple[CentralOrderState, CentralOrderIntent]:
+                current = next(
+                    (item for item in state.intents if item.intent_id == selected),
+                    None,
+                )
+                if current is None:
+                    raise CentralOrderConflictError(f"Unknown intent {selected}.")
+                if current.status != observed.status:
+                    raise CentralOrderConflictError(
+                        "Central order changed during reconciliation."
+                    )
+                self._validate_reconciliation(
+                    portfolio_repository,
+                    current,
+                    outcome=normalized_outcome,
+                    executed_lots=normalized_executed_lots,
+                    locked_portfolio_state=locked_portfolio,
+                )
+                updated = current.transition(
+                    "RECONCILED",
+                    detail="canonical broker reconciliation completed",
+                    outcome=normalized_outcome,
+                    executed_lots=normalized_executed_lots,
+                    reconciled_portfolio_revision=lease.revision,
+                    reconciled_portfolio_decision_checksum=(
+                        lease.decision_checksum
+                    ),
+                    reconciled_portfolio_snapshot_at=lease.state.snapshot_at,
+                    risk_execution_status=risk_status,
+                    risk_execution_id=risk_execution_id,
+                )
+                return state.replace_intent(updated), updated
+
+            _, intent = self.store.mutate(self.account_id, operation)
         self._record("CENTRAL_ORDER_RECONCILED", intent)
         return intent
 
@@ -1888,13 +2522,22 @@ class CentralOrderManager:
         self,
         repository: PortfolioRepository,
         intent: CentralOrderIntent,
-    ) -> None:
-        try:
-            state = repository.load(expected_account_id=self.account_id)
-        except PortfolioRepositoryError as exc:
-            raise CentralOrderConflictError(
-                f"Canonical portfolio reload failed: {exc}"
-            ) from exc
+        *,
+        locked_portfolio_state: PortfolioState | None = None,
+    ) -> PortfolioState:
+        if locked_portfolio_state is None:
+            try:
+                state = repository.load(expected_account_id=self.account_id)
+            except PortfolioRepositoryError as exc:
+                raise CentralOrderConflictError(
+                    f"Canonical portfolio reload failed: {exc}"
+                ) from exc
+        else:
+            state = locked_portfolio_state
+            if state.account_id != self.account_id:
+                raise CentralOrderConflictError(
+                    "Locked canonical portfolio account scope mismatch."
+                )
         authorization = intent.authorization
         lease = PortfolioSnapshotLease.from_state(state)
         reasons: list[str] = []
@@ -1922,8 +2565,17 @@ class CentralOrderManager:
             reasons.append(
                 "Canonical portfolio decision checksum changed after authorization."
             )
+        if (
+            authorization.portfolio_risk is not None
+            and lease.document_checksum
+            != authorization.portfolio_document_checksum
+        ):
+            reasons.append(
+                "Canonical portfolio document checksum changed after authorization."
+            )
         if reasons:
             raise CentralOrderConflictError(" ".join(reasons))
+        return state
 
     def _validate_reconciliation(
         self,
@@ -1932,6 +2584,7 @@ class CentralOrderManager:
         *,
         outcome: str,
         executed_lots: int,
+        locked_portfolio_state: PortfolioState | None = None,
     ) -> PortfolioSnapshotLease:
         if outcome not in _RECONCILIATION_OUTCOMES:
             raise CentralOrderConflictError(
@@ -1951,12 +2604,19 @@ class CentralOrderManager:
             raise CentralOrderConflictError(
                 f"{outcome} reconciliation requires zero executed lots."
             )
-        try:
-            state = repository.load(expected_account_id=self.account_id)
-        except PortfolioRepositoryError as exc:
-            raise CentralOrderConflictError(
-                f"Canonical portfolio reconciliation reload failed: {exc}"
-            ) from exc
+        if locked_portfolio_state is None:
+            try:
+                state = repository.load(expected_account_id=self.account_id)
+            except PortfolioRepositoryError as exc:
+                raise CentralOrderConflictError(
+                    f"Canonical portfolio reconciliation reload failed: {exc}"
+                ) from exc
+        else:
+            state = locked_portfolio_state
+            if state.account_id != self.account_id:
+                raise CentralOrderConflictError(
+                    "Locked reconciliation portfolio account scope mismatch."
+                )
         reasons: list[str] = []
         if state.portfolio_source != "CANONICAL" or not state.migration.complete:
             reasons.append("Canonical portfolio cutover is incomplete.")
