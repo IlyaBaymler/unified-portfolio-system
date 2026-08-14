@@ -508,7 +508,7 @@ def test_risk_state_v2_migration_adds_instrument_halts_without_losing_counters()
         }
     )
 
-    assert state.version == 3
+    assert state.version == 4
     assert state.daily_turnover_rub == 1_234.0
     assert state.daily_order_count == 2
     assert state.recorded_execution_ids == ("legacy",)
@@ -604,7 +604,7 @@ def test_state_schema_migration_keeps_original_rollback_backup(tmp_path) -> None
         RiskState(daily_turnover_rub=500.0, daily_order_count=2),
     )
 
-    assert json.loads(path.read_text(encoding="utf-8"))["version"] == 3
+    assert json.loads(path.read_text(encoding="utf-8"))["version"] == 4
     assert json.loads(
         path.with_name("risk_state.json.bak").read_text(encoding="utf-8")
     ) == legacy_document

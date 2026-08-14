@@ -355,7 +355,7 @@ class RiskProfileStore:
 class RiskStateStore:
     """Atomic per-account persistence for additive RiskState migration."""
 
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -374,10 +374,10 @@ class RiskStateStore:
         if not isinstance(document, dict):
             raise RiskPersistenceError("Risk state root must be an object.")
         version = int(document.get("version", 0) or 0)
-        if version not in {1, 2, self.SCHEMA_VERSION}:
+        if version not in {1, 2, 3, self.SCHEMA_VERSION}:
             raise RiskPersistenceError(
                 f"Unsupported risk state schema {version}; supported schemas "
-                f"are 1, 2 and {self.SCHEMA_VERSION}."
+                f"are 1, 2, 3 and {self.SCHEMA_VERSION}."
             )
         accounts = document.get("accounts")
         if not isinstance(accounts, dict):

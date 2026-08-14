@@ -110,6 +110,7 @@ def test_policy_hash_is_stable_and_sensitive():
         {"atr_multiplier": 0},
         {"max_orders_per_day": 0},
         {"max_snapshot_age_seconds": -1},
+        {"max_snapshot_age_seconds": float("inf")},
     ],
 )
 def test_policy_validation(kwargs):
@@ -596,7 +597,7 @@ def test_state_store_migrates_alpha3_v1_document(tmp_path):
     )
     store = RiskStateStore(path)
     state = store.load_account("A")
-    assert state.version == 3
+    assert state.version == 4
     assert state.daily_order_count == 2
     assert state.recorded_execution_ids == ("legacy-exec",)
     assert state.risk_resync_required is False
@@ -604,7 +605,7 @@ def test_state_store_migrates_alpha3_v1_document(tmp_path):
     store.save_account("A", state)
     migrated = json.loads(path.read_text(encoding="utf-8"))
     assert migrated["version"] == RiskStateStore.SCHEMA_VERSION
-    assert migrated["accounts"]["A"]["version"] == 3
+    assert migrated["accounts"]["A"]["version"] == 4
     assert migrated["accounts"]["A"]["risk_resync_required"] is False
 
 
@@ -637,6 +638,212 @@ def test_external_activity_requires_explicit_risk_resync():
         "RISK_BASELINES_RESET",
         "RISK_RESYNC_COMPLETED",
     ]
+
+
+def test_unexplained_cash_change_sets_persistent_external_cash_gate():
+    engine = RiskEngine(permissive_policy())
+    state = RiskState(
+        daily_date="2026-07-22",
+        weekly_key="2026-W30",
+        daily_start_equity_rub=50_000.0,
+        weekly_start_equity_rub=50_000.0,
+        high_watermark_equity_rub=50_000.0,
+        last_equity_rub=50_000.0,
+        last_cash_rub=40_000.0,
+        last_snapshot_at=(NOW - timedelta(minutes=1)).isoformat(),
+    )
+
+    assessment = engine.evaluate(
+        snapshot(target=0, current=0, equity=55_000.0, cash=45_000.0),
+        state,
+    )
+
+    assert assessment.state.risk_resync_required is True
+    assert assessment.state.risk_resync_source == "EXTERNAL_CASH_CHANGE"
+    assert assessment.state.risk_resync_cash_before_rub == 40_000.0
+    assert assessment.state.risk_resync_cash_observed_rub == 45_000.0
+    assert "RISK_RESYNC_REQUIRED" in assessment.decision.breaches
+    assert any(
+        event.event_type == "EXTERNAL_CASH_CHANGE_DETECTED"
+        for event in assessment.events
+    )
+
+    position_gate, _event = engine.mark_external_activity(
+        state,
+        now=NOW - timedelta(seconds=1),
+        reason="position drift",
+        source="BROKER_POSITION_DRIFT",
+    )
+    upgraded = engine.evaluate(
+        snapshot(target=0, current=0, equity=55_000.0, cash=45_000.0),
+        position_gate,
+    )
+    assert upgraded.state.risk_resync_source == "BROKER_POSITION_DRIFT"
+    assert upgraded.state.risk_resync_cash_before_rub is None
+    assert upgraded.state.last_cash_rub == 40_000.0
+    assert not any(
+        event.event_type == "EXTERNAL_CASH_CHANGE_DETECTED"
+        for event in upgraded.events
+    )
+    reset, _events = engine.reset_baselines(
+        upgraded.state,
+        now=NOW + timedelta(seconds=1),
+        equity_rub=55_000.0,
+        confirmation="RESET RISK BASELINES",
+    )
+    rediscovered = engine.evaluate(
+        snapshot(
+            target=0,
+            current=0,
+            equity=55_000.0,
+            cash=45_000.0,
+            now=NOW + timedelta(seconds=2),
+            snapshot_at=NOW + timedelta(seconds=2),
+        ),
+        reset,
+    )
+    assert rediscovered.state.risk_resync_source == "EXTERNAL_CASH_CHANGE"
+    assert rediscovered.state.risk_resync_cash_before_rub == 40_000.0
+
+
+def test_one_kopeck_cash_change_is_material():
+    engine = RiskEngine(permissive_policy())
+    detected, event = engine.mark_external_cash_change(
+        RiskState(last_cash_rub=100_000.0),
+        now=NOW,
+        cash_rub=100_000.01,
+        equity_rub=100_000.01,
+        snapshot_at=NOW,
+    )
+
+    assert detected.risk_resync_required is True
+    assert detected.risk_resync_cash_before_rub == 100_000.0
+    assert detected.risk_resync_cash_observed_rub == 100_000.01
+    assert event.details["cash_delta_rub"] == 0.01
+
+
+def test_external_cash_resync_preserves_execution_accounting():
+    engine = RiskEngine(permissive_policy())
+    detected, _event = engine.mark_external_cash_change(
+        RiskState(
+            daily_date="2026-07-22",
+            weekly_key="2026-W30",
+            daily_start_equity_rub=50_000.0,
+            weekly_start_equity_rub=50_000.0,
+            high_watermark_equity_rub=51_000.0,
+            daily_turnover_rub=12_500.0,
+            daily_order_count=3,
+            recorded_execution_ids=("known-fill",),
+            last_equity_rub=50_500.0,
+            last_cash_rub=40_000.0,
+        ),
+        now=NOW,
+        cash_rub=45_000.0,
+        equity_rub=55_500.0,
+        snapshot_at=NOW,
+    )
+    protected, _position_event = engine.mark_external_activity(
+        detected,
+        now=NOW + timedelta(seconds=1),
+        reason="position drift also observed",
+        source="BROKER_POSITION_DRIFT",
+    )
+
+    assert protected.risk_resync_source == "BROKER_POSITION_DRIFT"
+    assert protected.risk_resync_cash_before_rub is None
+    assert protected.risk_resync_cash_observed_rub is None
+    assert protected.last_cash_rub == 40_000.0
+    with pytest.raises(RiskInputError, match="cannot clear a non-cash"):
+        engine.complete_external_cash_resync(
+            protected,
+            now=NOW + timedelta(minutes=1),
+            equity_rub=55_500.0,
+            cash_rub=45_000.0,
+            snapshot_at=NOW + timedelta(minutes=1),
+        )
+    reset, reset_events = engine.reset_baselines(
+        protected,
+        now=NOW + timedelta(seconds=2),
+        equity_rub=55_500.0,
+        confirmation="RESET RISK BASELINES",
+    )
+    assert reset.risk_resync_required is False
+    assert reset_events[-1].event_type == "RISK_RESYNC_COMPLETED"
+    rediscovered = engine.evaluate(
+        snapshot(
+            target=0,
+            current=0,
+            equity=55_500.0,
+            cash=45_000.0,
+            now=NOW + timedelta(minutes=2),
+            snapshot_at=NOW + timedelta(minutes=2),
+        ),
+        reset,
+    )
+    assert rediscovered.state.risk_resync_source == "EXTERNAL_CASH_CHANGE"
+    assert rediscovered.state.risk_resync_cash_before_rub == 40_000.0
+
+    updated, event = engine.complete_external_cash_resync(
+        detected,
+        now=NOW + timedelta(minutes=1),
+        equity_rub=55_500.0,
+        cash_rub=45_000.0,
+        snapshot_at=NOW + timedelta(minutes=1),
+    )
+
+    assert event.event_type == "EXTERNAL_CASH_RESYNC_COMPLETED"
+    assert updated.risk_resync_required is False
+    assert updated.daily_start_equity_rub == 55_500.0
+    assert updated.weekly_start_equity_rub == 55_500.0
+    assert updated.high_watermark_equity_rub == 55_500.0
+    assert updated.daily_turnover_rub == 12_500.0
+    assert updated.daily_order_count == 3
+    assert updated.recorded_execution_ids == ("known-fill",)
+
+
+def test_confirmed_execution_refreshes_cash_anchor_without_resync():
+    engine = RiskEngine(permissive_policy())
+    state = RiskState(
+        daily_date="2026-07-22",
+        weekly_key="2026-W30",
+        daily_start_equity_rub=50_000.0,
+        weekly_start_equity_rub=50_000.0,
+        high_watermark_equity_rub=50_000.0,
+        last_equity_rub=50_000.0,
+        last_cash_rub=40_000.0,
+    )
+    registration = engine.record_execution(
+        state,
+        ExecutionRecord(
+            execution_id="confirmed-buy",
+            executed_at=NOW,
+            signed_lots=1,
+            price_rub=250.0,
+            lot_size=10,
+            portfolio_equity_rub=50_000.0,
+            portfolio_cash_rub=37_500.0,
+            portfolio_snapshot_at=NOW,
+        ),
+    )
+
+    assessment = engine.evaluate(
+        snapshot(
+            target=1,
+            current=1,
+            equity=50_000.0,
+            cash=37_500.0,
+            now=NOW + timedelta(seconds=1),
+            snapshot_at=NOW + timedelta(seconds=1),
+        ),
+        registration.state,
+    )
+
+    assert registration.state.last_cash_rub == 37_500.0
+    assert assessment.state.risk_resync_required is False
+    assert not any(
+        event.event_type == "EXTERNAL_CASH_CHANGE_DETECTED"
+        for event in assessment.events
+    )
 
 
 def test_future_snapshot_remains_absolute_block_and_policy_block_is_warning():

@@ -234,8 +234,28 @@ M5.1 operator control plane реализован и прошёл локальн�
 `OBSERVE_ONLY` и обязательный account scope. Targeted `7 passed`, full
 regression `728 passed`, pip check, critical/strict Ruff, compileall и
 diff-check PASS. Proposal/intent/dispatch/provider POST отсутствуют;
-M5.1 опубликован в draft PR #44, замечания финального review исправлены.
-Merge остаётся отдельным gate.
+PR #44 снят с draft и squash-merged в `main` (`ac308660`). Post-merge CI:
+`728 passed`, pip check, critical/strict Ruff, compileall PASS, annotations 0.
+
+M5.2 локально реализован в `agent/v3-9-beta1-m5-2-recovery`: RiskState schema 4
+отличает необъяснимый `EXTERNAL_CASH_CHANGE` от position/ownership drift,
+confirmed fill обновляет cash anchor, а двухфазный CLI связывает apply с
+enforced policy, fresh canonical revision/checksums, Risk guard и пустой Central
+reservation projection. Stale proof, pending/uncertain или non-cash source
+fail-closed; automatic dispatch/resubmit отсутствуют, economic counters и
+execution IDs сохраняются. `prepare` и `apply` требуют конечный policy limit и
+повторно проверяют фактический wall-clock возраст canonical snapshot. Isolated
+runtime и два restart/read-only запуска приняты 2026-08-14 на естественном
+external cash change без искусственной заявки: apply атомарно обновил RiskState и
+его `.bak`, provider POST/dispatch/resubmit отсутствовали, consumed proof
+отклонён. Final-review correction закрепляет приоритет non-cash resync gate,
+сохранность trusted cash anchor до последовательного recovery, one-kopeck-safe
+comparison, фактический mutation inventory и правдивый статус уже выполненной
+mutation при ошибке записи CLI output. Boundary-inclusive targeted matrix
+`157 passed`, full CI regression `747 passed`; live Sandbox Account ID удалён из test fixtures.
+Post-review correction до запуска operation отклоняет lexical/resolved
+`--output` внутри runtime. M5.2 опубликован в draft PR #45; следующий отдельный
+gate — post-output-boundary final review. M5.3 не выполнен.
 
 ## 8. `v3.9.0` — acceptance и release qualification
 

@@ -335,20 +335,44 @@ M5 `beta1` начат отдельно в `agent/v3-9-beta1-recovery-ux`. Пер
 добавляет единый operator CLI `tools/v3_9_risk_control.py`: read-only
 inspect/explain/policy review и exact-confirmation global/instrument kill-switch
 transitions. Account ID в выводе маскируется; mutation ограничена существующим
-checksummed `risk_state.json` и не создаёт proposal, Central intent, arming или
-provider POST. Corrupt policy проверяется до mutation, поэтому ошибка не может
+атомарным `risk_state.json` с last-good `.bak` и не создаёт proposal, Central
+intent, arming или provider POST. Corrupt policy проверяется до mutation, поэтому ошибка не может
 маскировать уже выполненную запись. Финальный review дополнительно закрыл
 canonical uppercase instrument ID, блокирующий статус `OBSERVE_ONLY` и
 обязательный Sandbox account scope. Targeted `7 passed`, full regression
-`728 passed`, pip check, critical/strict Ruff и compileall PASS. M5.1 опубликован
-в draft PR #44; замечания финального review исправлены. Merge остаётся отдельным gate.
-External cash resync/recovery matrix остаётся отдельным M5.2 gate, а
-EventJournal/support bundle/standalone — M5.3.
+`728 passed`, pip check, critical/strict Ruff и compileall PASS. PR #44 снят с
+draft и squash-merged в `main` (`ac308660`); post-merge CI: `728 passed`, все
+gates PASS, annotations 0.
+
+M5.2 реализован в отдельной ветке `agent/v3-9-beta1-m5-2-recovery`. Новый
+`RiskState` schema 4 сохраняет proof необъяснимого `EXTERNAL_CASH_CHANGE`, а
+подтверждённый fill обновляет cash anchor после canonical reconciliation.
+`tools/v3_9_external_cash_resync.py` реализует read-only `prepare` и отдельный
+exact-confirmation `apply`, связанный с policy/canonical/Risk/Central hashes.
+Reservation, pending/uncertain, stale proof или position-drift source блокируют
+resync; policy обязан задавать конечный snapshot-age limit, а фактический
+wall-clock возраст повторно проверяется в `prepare` и `apply`. Execution counters,
+kill switches и IDs сохраняются.
+
+Isolated runtime и restart/read-only acceptance 2026-08-14 прошли на естественном
+external cash change без искусственной заявки. `prepare` не выполнил запись,
+exact-confirmation `apply` изменил атомарный RiskState и обновил его `.bak`; два
+новых процесса подтвердили сохранность baselines и запрет повторного применения
+consumed proof. Proposal/intent/dispatch/resubmit/provider POST отсутствовали.
+Boundary-inclusive targeted matrix после final-review fixes: `157 passed`, full
+CI regression: `747 passed`. Non-cash resync gate имеет приоритет над cash evidence,
+trusted cash anchor не продвигается до его отдельного устранения, material delta
+сравнивается в целых копейках, а post-apply output error не скрывает уже
+выполненную запись. CLI также до любой operation отклоняет lexical/resolved
+`--output` внутри runtime и не может отчётом перезаписать state. M5.2 опубликован
+в draft PR #45. Следующий отдельный gate — post-output-boundary final review PR #45;
+EventJournal/support bundle/standalone остаются M5.3.
 
 Подробности:
 
 - `docs/plans/V3_9_PORTFOLIO_RISK_ENGINE_PLAN_RU.md`;
 - `docs/plans/V3_9_M5_1_OPERATOR_CONTROL_RUNBOOK_RU.md`;
+- `docs/plans/V3_9_M5_2_EXTERNAL_CASH_RECOVERY_RUNBOOK_RU.md`;
 - `docs/project/V3_9_INTERFACE_FREEZE_RU.md`;
 - `docs/project/V3_9_ISSUE_PROPOSAL_RU.md`.
 

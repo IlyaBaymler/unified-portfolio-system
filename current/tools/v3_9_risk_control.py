@@ -98,6 +98,13 @@ def _state_summary(state: RiskState) -> dict[str, Any]:
         "risk_resync_required": state.risk_resync_required,
         "risk_resync_reason": state.risk_resync_reason,
         "risk_resync_set_at": state.risk_resync_set_at,
+        "risk_resync_source": state.risk_resync_source,
+        "risk_resync_cash_before_rub": state.risk_resync_cash_before_rub,
+        "risk_resync_cash_observed_rub": state.risk_resync_cash_observed_rub,
+        "risk_resync_equity_observed_rub": (
+            state.risk_resync_equity_observed_rub
+        ),
+        "risk_resync_snapshot_at": state.risk_resync_snapshot_at,
         "daily_turnover_rub": state.daily_turnover_rub,
         "daily_order_count": state.daily_order_count,
         "last_equity_rub": state.last_equity_rub,

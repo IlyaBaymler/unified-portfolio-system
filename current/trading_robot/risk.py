@@ -4,6 +4,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from hashlib import sha256
 from math import floor, isfinite
 from typing import Any
@@ -12,8 +13,9 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
-RISK_STATE_VERSION = 3
+RISK_STATE_VERSION = 4
 _MAX_RECORDED_EXECUTION_IDS = 512
+_EXTERNAL_CASH_CHANGE_TOLERANCE_KOPECKS = 1
 
 
 class RiskInputError(ValueError):
@@ -26,6 +28,25 @@ def _finite_or_none(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if isfinite(number) else None
+
+
+def cash_delta_kopecks(before_rub: Any, after_rub: Any) -> int | None:
+    """Return a RUB balance delta in integer kopecks without float drift."""
+
+    try:
+        before = Decimal(str(before_rub))
+        after = Decimal(str(after_rub))
+    except (InvalidOperation, ValueError):
+        return None
+    if not before.is_finite() or not after.is_finite():
+        return None
+    before_kopecks = int(
+        (before * 100).to_integral_value(rounding=ROUND_HALF_UP)
+    )
+    after_kopecks = int(
+        (after * 100).to_integral_value(rounding=ROUND_HALF_UP)
+    )
+    return after_kopecks - before_kopecks
 
 
 def _utc(value: datetime) -> datetime:
@@ -151,11 +172,13 @@ class RiskPolicy:
             raise ValueError("atr_multiplier must be positive.")
         if self.max_orders_per_day is not None and self.max_orders_per_day < 1:
             raise ValueError("max_orders_per_day must be positive or None.")
-        if (
-            self.max_snapshot_age_seconds is not None
-            and self.max_snapshot_age_seconds < 0
+        if self.max_snapshot_age_seconds is not None and (
+            not isfinite(float(self.max_snapshot_age_seconds))
+            or self.max_snapshot_age_seconds < 0
         ):
-            raise ValueError("max_snapshot_age_seconds must be non-negative or None.")
+            raise ValueError(
+                "max_snapshot_age_seconds must be finite, non-negative, or None."
+            )
         if self.max_price_age_seconds is not None and self.max_price_age_seconds < 0:
             raise ValueError("max_price_age_seconds must be non-negative or None.")
         if self.max_open_positions is not None and self.max_open_positions < 1:
@@ -332,6 +355,11 @@ class RiskState:
     risk_resync_required: bool = False
     risk_resync_reason: str | None = None
     risk_resync_set_at: str | None = None
+    risk_resync_source: str | None = None
+    risk_resync_cash_before_rub: float | None = None
+    risk_resync_cash_observed_rub: float | None = None
+    risk_resync_equity_observed_rub: float | None = None
+    risk_resync_snapshot_at: str | None = None
     last_equity_rub: float | None = None
     last_cash_rub: float | None = None
     last_snapshot_at: str | None = None
@@ -365,6 +393,16 @@ class RiskState:
             "instrument_kill_switches",
             tuple(sorted(halts, key=lambda item: item.instrument_id)),
         )
+        source = str(self.risk_resync_source or "").strip().upper() or None
+        object.__setattr__(self, "risk_resync_source", source)
+        for name in (
+            "risk_resync_cash_before_rub",
+            "risk_resync_cash_observed_rub",
+            "risk_resync_equity_observed_rub",
+        ):
+            value = getattr(self, name)
+            if value is not None and _finite_or_none(value) is None:
+                raise RiskInputError(f"{name} must be finite or None.")
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -389,12 +427,17 @@ class RiskState:
                 f"Risk state version {source_version} is newer than supported "
                 f"version {RISK_STATE_VERSION}."
             )
-        # v1 -> v3 and v2 -> v3 are additive. Missing fields take safe defaults and
+        # v1 -> v4, v2 -> v4 and v3 -> v4 are additive. Missing fields take safe defaults and
         # the state is rewritten with the current version on the next save.
         payload["version"] = RISK_STATE_VERSION
         payload.setdefault("risk_resync_required", False)
         payload.setdefault("risk_resync_reason", None)
         payload.setdefault("risk_resync_set_at", None)
+        payload.setdefault("risk_resync_source", None)
+        payload.setdefault("risk_resync_cash_before_rub", None)
+        payload.setdefault("risk_resync_cash_observed_rub", None)
+        payload.setdefault("risk_resync_equity_observed_rub", None)
+        payload.setdefault("risk_resync_snapshot_at", None)
         payload.setdefault("kill_switch_source", None)
         payload.setdefault("kill_switch_operator_ref", None)
         payload.setdefault("instrument_kill_switches", ())
@@ -501,6 +544,8 @@ class ExecutionRecord:
     price_rub: float
     lot_size: int
     portfolio_equity_rub: float | None = None
+    portfolio_cash_rub: float | None = None
+    portfolio_snapshot_at: datetime | None = None
     execution_source: str = "STRATEGY"
 
     def __post_init__(self) -> None:
@@ -526,6 +571,16 @@ class ExecutionRecord:
             and _finite_or_none(self.portfolio_equity_rub) is None
         ):
             raise RiskInputError("portfolio_equity_rub must be finite or None.")
+        if (
+            self.portfolio_cash_rub is not None
+            and _finite_or_none(self.portfolio_cash_rub) is None
+        ):
+            raise RiskInputError("portfolio_cash_rub must be finite or None.")
+        if self.portfolio_snapshot_at is not None and not isinstance(
+            self.portfolio_snapshot_at,
+            datetime,
+        ):
+            raise RiskInputError("portfolio_snapshot_at must be a datetime or None.")
         normalized_source = str(self.execution_source).strip().upper()
         if not normalized_source:
             raise RiskInputError("execution_source must not be empty.")
@@ -869,6 +924,11 @@ class RiskEngine:
             risk_resync_required=True,
             risk_resync_reason=normalized_reason,
             risk_resync_set_at=set_at,
+            risk_resync_source=normalized_source,
+            risk_resync_cash_before_rub=None,
+            risk_resync_cash_observed_rub=None,
+            risk_resync_equity_observed_rub=None,
+            risk_resync_snapshot_at=None,
         )
         return updated, _make_event(
             "EXTERNAL_ACTIVITY_DETECTED",
@@ -879,6 +939,129 @@ class RiskEngine:
             set_at=set_at,
         )
 
+    def mark_external_cash_change(
+        self,
+        state: RiskState,
+        *,
+        now: datetime,
+        cash_rub: float,
+        equity_rub: float | None,
+        snapshot_at: datetime | None,
+    ) -> tuple[RiskState, RiskEvent]:
+        previous_cash = _finite_or_none(state.last_cash_rub)
+        observed_cash = _finite_or_none(cash_rub)
+        observed_equity = _finite_or_none(equity_rub)
+        if previous_cash is None or observed_cash is None:
+            raise RiskInputError(
+                "External cash detection requires previous and observed RUB cash."
+            )
+        cash_delta_in_kopecks = cash_delta_kopecks(previous_cash, observed_cash)
+        if (
+            cash_delta_in_kopecks is None
+            or abs(cash_delta_in_kopecks)
+            < _EXTERNAL_CASH_CHANGE_TOLERANCE_KOPECKS
+        ):
+            raise RiskInputError("Observed RUB cash has not materially changed.")
+        cash_delta = cash_delta_in_kopecks / 100.0
+        detected_at = _utc(now).isoformat()
+        source_snapshot_at = (
+            _utc(snapshot_at).isoformat() if snapshot_at is not None else None
+        )
+        updated = replace(
+            state,
+            risk_resync_required=True,
+            risk_resync_reason=(
+                "Unexplained RUB cash change requires canonical baseline resync."
+            ),
+            risk_resync_set_at=detected_at,
+            risk_resync_source="EXTERNAL_CASH_CHANGE",
+            risk_resync_cash_before_rub=previous_cash,
+            risk_resync_cash_observed_rub=observed_cash,
+            risk_resync_equity_observed_rub=observed_equity,
+            risk_resync_snapshot_at=source_snapshot_at,
+        )
+        return updated, _make_event(
+            "EXTERNAL_CASH_CHANGE_DETECTED",
+            "ERROR",
+            cash_before_rub=previous_cash,
+            cash_observed_rub=observed_cash,
+            cash_delta_rub=cash_delta,
+            equity_observed_rub=observed_equity,
+            snapshot_at=source_snapshot_at,
+            risk_resync_required=True,
+            set_at=detected_at,
+        )
+
+    def complete_external_cash_resync(
+        self,
+        state: RiskState,
+        *,
+        now: datetime,
+        equity_rub: float,
+        cash_rub: float,
+        snapshot_at: datetime,
+    ) -> tuple[RiskState, RiskEvent]:
+        if not state.risk_resync_required:
+            raise RiskInputError("External cash resync is not required.")
+        if state.risk_resync_source != "EXTERNAL_CASH_CHANGE":
+            raise RiskInputError(
+                "External cash baseline resync cannot clear a non-cash resync gate."
+            )
+        normalized_equity = _finite_or_none(equity_rub)
+        normalized_cash = _finite_or_none(cash_rub)
+        if normalized_equity is None or normalized_equity < 0:
+            raise RiskInputError("Resync equity must be finite and non-negative.")
+        if normalized_cash is None or normalized_cash < 0:
+            raise RiskInputError("Resync cash must be finite and non-negative.")
+        if not isinstance(snapshot_at, datetime):
+            raise RiskInputError("Resync snapshot_at must be a datetime.")
+        previous_cash = _finite_or_none(state.risk_resync_cash_before_rub)
+        if previous_cash is None:
+            raise RiskInputError("External cash resync has no trusted cash anchor.")
+        cash_delta_in_kopecks = cash_delta_kopecks(previous_cash, normalized_cash)
+        if (
+            cash_delta_in_kopecks is None
+            or abs(cash_delta_in_kopecks)
+            < _EXTERNAL_CASH_CHANGE_TOLERANCE_KOPECKS
+        ):
+            raise RiskInputError("External cash delta is no longer present.")
+        cash_delta = cash_delta_in_kopecks / 100.0
+        completed_at = _utc(now).isoformat()
+        source_snapshot_at = _utc(snapshot_at).isoformat()
+        updated = replace(
+            state,
+            daily_date=_date_key(now),
+            weekly_key=_week_key(now),
+            daily_start_equity_rub=normalized_equity,
+            weekly_start_equity_rub=normalized_equity,
+            high_watermark_equity_rub=normalized_equity,
+            risk_resync_required=False,
+            risk_resync_reason=None,
+            risk_resync_set_at=None,
+            risk_resync_source=None,
+            risk_resync_cash_before_rub=None,
+            risk_resync_cash_observed_rub=None,
+            risk_resync_equity_observed_rub=None,
+            risk_resync_snapshot_at=None,
+            last_equity_rub=normalized_equity,
+            last_cash_rub=normalized_cash,
+            last_snapshot_at=source_snapshot_at,
+            last_evaluated_at=completed_at,
+        )
+        return updated, _make_event(
+            "EXTERNAL_CASH_RESYNC_COMPLETED",
+            "WARNING",
+            cash_before_rub=previous_cash,
+            cash_rub=normalized_cash,
+            cash_delta_rub=cash_delta,
+            equity_rub=normalized_equity,
+            snapshot_at=source_snapshot_at,
+            completed_at=completed_at,
+            daily_turnover_rub=updated.daily_turnover_rub,
+            daily_order_count=updated.daily_order_count,
+            recorded_execution_count=len(updated.recorded_execution_ids),
+        )
+
     def reset_baselines(
         self,
         state: RiskState,
@@ -887,6 +1070,10 @@ class RiskEngine:
         equity_rub: float | None,
         confirmation: str,
     ) -> tuple[RiskState, tuple[RiskEvent, ...]]:
+        if state.risk_resync_source == "EXTERNAL_CASH_CHANGE":
+            raise RiskInputError(
+                "External cash resync requires the canonical v3.9 proof workflow."
+            )
         if str(confirmation).strip().upper() != "RESET RISK BASELINES":
             raise RiskInputError(
                 "Baseline reset confirmation must be exactly 'RESET RISK BASELINES'."
@@ -905,6 +1092,11 @@ class RiskEngine:
             risk_resync_required=False,
             risk_resync_reason=None,
             risk_resync_set_at=None,
+            risk_resync_source=None,
+            risk_resync_cash_before_rub=None,
+            risk_resync_cash_observed_rub=None,
+            risk_resync_equity_observed_rub=None,
+            risk_resync_snapshot_at=None,
             last_equity_rub=normalized_equity,
             last_evaluated_at=_utc(now).isoformat(),
         )
@@ -1019,6 +1211,27 @@ class RiskEngine:
             equity_rub=equity,
         )
         events: list[RiskEvent] = list(period_events)
+        observed_cash_delta_kopecks = cash_delta_kopecks(
+            rolled.last_cash_rub,
+            cash,
+        )
+        if (
+            not rolled.risk_resync_required
+            and observed_cash_delta_kopecks is not None
+            and abs(observed_cash_delta_kopecks)
+            >= _EXTERNAL_CASH_CHANGE_TOLERANCE_KOPECKS
+        ):
+            rolled, cash_event = self.mark_external_cash_change(
+                rolled,
+                now=now,
+                cash_rub=cash,
+                equity_rub=equity,
+                snapshot_at=snapshot.snapshot_at,
+            )
+            events.append(cash_event)
+        trusted_cash_after_evaluation = (
+            rolled.last_cash_rub if rolled.risk_resync_required else cash
+        )
 
         high = rolled.high_watermark_equity_rub
         daily_start = rolled.daily_start_equity_rub
@@ -1091,6 +1304,7 @@ class RiskEngine:
             "risk_resync_required": rolled.risk_resync_required,
             "risk_resync_reason": rolled.risk_resync_reason,
             "risk_resync_set_at": rolled.risk_resync_set_at,
+            "risk_resync_source": rolled.risk_resync_source,
         }
 
         if not self.policy.enabled:
@@ -1120,7 +1334,7 @@ class RiskEngine:
             updated = replace(
                 rolled,
                 last_equity_rub=equity,
-                last_cash_rub=cash,
+                last_cash_rub=trusted_cash_after_evaluation,
                 last_snapshot_at=(snapshot_at.isoformat() if snapshot_at else None),
                 last_evaluated_at=now.isoformat(),
             )
@@ -1404,7 +1618,7 @@ class RiskEngine:
         updated = replace(
             rolled,
             last_equity_rub=equity,
-            last_cash_rub=cash,
+            last_cash_rub=trusted_cash_after_evaluation,
             last_snapshot_at=(snapshot_at.isoformat() if snapshot_at else None),
             last_evaluated_at=now.isoformat(),
         )
@@ -1460,6 +1674,7 @@ class RiskEngine:
             )
 
         equity = _finite_or_none(record.portfolio_equity_rub)
+        cash = _finite_or_none(record.portfolio_cash_rub)
         rolled, period_events = _roll_state_periods(
             state,
             now=record.executed_at,
@@ -1479,6 +1694,12 @@ class RiskEngine:
             daily_order_count=rolled.daily_order_count + 1,
             last_execution_at=_utc(record.executed_at).isoformat(),
             last_equity_rub=equity if equity is not None else rolled.last_equity_rub,
+            last_cash_rub=cash if cash is not None else rolled.last_cash_rub,
+            last_snapshot_at=(
+                _utc(record.portfolio_snapshot_at).isoformat()
+                if record.portfolio_snapshot_at is not None
+                else rolled.last_snapshot_at
+            ),
             recorded_execution_ids=tuple(ids),
         )
         events = [*period_events]

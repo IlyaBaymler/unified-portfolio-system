@@ -147,7 +147,7 @@ def test_support_bundle_excludes_env_and_redacts_logs_and_events(tmp_path: Path)
 def test_support_bundle_auto_redacts_account_id_inside_transaction_id(
     tmp_path: Path,
 ):
-    account_id = "751427b0-a3ec-468d-ab28-e9801654ecb4"
+    account_id = "00000000-0000-4000-8000-000000000042"
     create_runtime(tmp_path, account_id=account_id)
     EventJournal(tmp_path / "trading_events.db").record(
         JournalEvent(
@@ -177,7 +177,7 @@ def test_support_bundle_auto_redacts_account_id_inside_transaction_id(
         manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
     assert account_id not in combined
     assert "<REDACTED>" in combined
-    assert manifest["account_id"] == "<REDACTED_ACCOUNT:ecb4>"
+    assert manifest["account_id"] == "<REDACTED_ACCOUNT:0042>"
 
     explicit_account_id = "operator-selected-account"
     explicit_result = SupportBundleBuilder(tmp_path, app_version="0.3.7").build(

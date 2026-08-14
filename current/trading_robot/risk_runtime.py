@@ -54,6 +54,11 @@ _RISK_DISPATCH_STATE_FIELDS = (
     "risk_resync_required",
     "risk_resync_reason",
     "risk_resync_set_at",
+    "risk_resync_source",
+    "risk_resync_cash_before_rub",
+    "risk_resync_cash_observed_rub",
+    "risk_resync_equity_observed_rub",
+    "risk_resync_snapshot_at",
     "last_execution_at",
     "recorded_execution_ids",
 )
@@ -584,6 +589,8 @@ class RiskRuntimeAdapter:
                 price_rub=float(price_rub),
                 lot_size=max(1, int(lot_size)),
                 portfolio_equity_rub=inputs["equity_rub"],
+                portfolio_cash_rub=inputs["cash_rub"],
+                portfolio_snapshot_at=executed_at,
                 execution_source=normalized_source,
             )
             holder: dict[str, ExecutionRegistration] = {}

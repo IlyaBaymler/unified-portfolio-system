@@ -1,8 +1,8 @@
 # v3.9 M5.1 — Operator Risk Control Runbook
 
-Статус: опубликовано в draft PR #44 из ветки
-`agent/v3-9-beta1-recovery-ux`; замечания финального review исправлены,
-merge не выполнялся.
+Статус: `MERGED / POST-MERGE CI PASS`. PR #44 снят с draft и squash-merged в
+`main` (`ac308660`); Windows/Python 3.12 post-merge CI: `728 passed`, pip check,
+critical/strict Ruff, compileall PASS, annotations 0.
 
 ## Граница этапа
 

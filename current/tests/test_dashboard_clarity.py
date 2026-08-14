@@ -37,7 +37,7 @@ def test_kill_switch_banner_is_explicit_for_all_states():
 
 
 def test_full_account_id_is_never_abridged():
-    account_id = "751427b0-a3ec-468d-ab28-e9801654ecb4"
+    account_id = "00000000-0000-4000-8000-000000000042"
     assert full_account_id(account_id) == account_id
 
 

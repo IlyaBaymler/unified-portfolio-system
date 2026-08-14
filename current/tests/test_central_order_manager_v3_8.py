@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
 from trading_robot.central_order_manager import (
     CentralOrderCandidate,
     CentralOrderConflictError,
@@ -604,6 +605,57 @@ def test_submitted_order_remains_blocking_until_reconciled(tmp_path: Path):
         submitted.authorization.risk_decision_id
     )
     assert central.state().reserved_cash_kopecks == 0
+
+
+def test_partial_fill_restart_keeps_terminal_accounting_without_resubmit(
+    tmp_path: Path,
+):
+    initial = portfolio_state()
+    repository = save_portfolio(tmp_path, initial)
+    central = manager(tmp_path)
+    selected_candidate = candidate(target_lots=3)
+    selected_authorization = authorization(initial, target_lots=3)
+    queued = central.enqueue(
+        selected_candidate,
+        selected_authorization,
+    ).intent
+    central.prepare_next(repository)
+    submitted = central.mark_submitted(
+        queued.intent_id,
+        broker_order_id="broker-order-partial",
+    )
+    repository.save(
+        portfolio_state(revision=1, actual_lots=1, snapshot_at=AFTER),
+        expected_revision=0,
+    )
+    risk_runtime = FakeRiskRuntime()
+
+    terminal = central.mark_reconciled(
+        submitted.intent_id,
+        portfolio_repository=repository,
+        outcome="PARTIALLY_FILLED",
+        executed_lots=1,
+        risk_runtime=risk_runtime,
+        execution_price_rub=100.0,
+        execution_price_source="executedOrderPrice",
+    )
+    restarted = manager(tmp_path)
+
+    assert terminal.status == "RECONCILED"
+    assert terminal.outcome == "PARTIALLY_FILLED"
+    assert terminal.executed_lots == 1
+    assert terminal.risk_execution_status == "RECORDED"
+    assert restarted.recover_after_restart() is None
+    assert restarted.state().reserved_cash_kopecks == 0
+    assert restarted.prepare_next(repository) is None
+    assert len(risk_runtime.calls) == 1
+    duplicate = restarted.enqueue(
+        selected_candidate,
+        selected_authorization,
+    )
+    assert duplicate.idempotent is True
+    assert duplicate.intent.intent_id == terminal.intent_id
+    assert duplicate.intent.status == "RECONCILED"
 
 
 def test_confirmed_fill_is_persisted_in_real_risk_state(tmp_path: Path):

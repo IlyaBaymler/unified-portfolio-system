@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-import json
 from pathlib import Path
 
 from trading_robot.journal import EventJournal, JournalEvent
@@ -15,7 +15,6 @@ from trading_robot.risk_reporting import (
     write_burn_in_report,
     write_dashboard_snapshot,
 )
-
 
 NOW = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
 
@@ -377,7 +376,7 @@ def test_burn_in_report_allows_operator_authorized_diagnostic_order_without_stra
 
 
 def test_dashboard_and_exports_preserve_full_account_id_and_kill_switch_time(tmp_path: Path):
-    account_id = "751427b0-a3ec-468d-ab28-e9801654ecb4"
+    account_id = "00000000-0000-4000-8000-000000000042"
     set_at = "2026-07-25T10:00:00+00:00"
     snapshot = build_risk_dashboard_snapshot(
         account_id=account_id,
@@ -464,7 +463,7 @@ def test_burn_in_report_can_start_at_first_matching_software_version_session():
 
 
 def test_dashboard_preserves_full_account_id_and_kill_switch_audit_metadata():
-    full_id = "751427b0-a3ec-468d-ab28-e9801654ecb4"
+    full_id = "00000000-0000-4000-8000-000000000042"
     rows = [
         _decision_row(account_id=full_id),
         {
