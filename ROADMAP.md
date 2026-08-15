@@ -364,15 +364,38 @@ CI regression: `747 passed`. Non-cash resync gate имеет приоритет 
 trusted cash anchor не продвигается до его отдельного устранения, material delta
 сравнивается в целых копейках, а post-apply output error не скрывает уже
 выполненную запись. CLI также до любой operation отклоняет lexical/resolved
-`--output` внутри runtime и не может отчётом перезаписать state. M5.2 опубликован
-в draft PR #45. Следующий отдельный gate — post-output-boundary final review PR #45;
-EventJournal/support bundle/standalone остаются M5.3.
+`--output` внутри runtime и не может отчётом перезаписать state. M5.2
+squash-merged через PR #45 в `main` (`cc02294`); post-merge CI run
+`31825722096` прошёл с `747 passed`, pip check, critical/strict Ruff и
+compileall PASS.
+
+M5.3 локально реализован в
+`agent/v3-9-beta1-m5-3-qualification`: checksum-aware backup source,
+restore primary/last-good consistency, transactional rollback companions,
+read-only EventJournal, v3.9-aware sanitized support bundle, Sandbox-only
+standalone layout и единый read-only final-review tool. Final-review correction
+закрыл unknown-account redaction, backup content/version validation, orphan
+recovery rollback, support checksum coverage и structural launcher contract.
+Disposable restore выявил и закрыл recovery-only gap для `UNCHANGED` primary;
+успешная и аварийная ветки закреплены regression tests. Targeted matrix:
+`57 passed`; full local regression: `771 passed`; pip check, critical/strict
+Ruff и compileall PASS. Isolated M5.3 runtime подготовлен из принятого M5.2:
+31/31 material hash совпали, lock/WAL/SHM/secrets не копировались, read-only
+inspect — PASS. Verified backup, sanitized support bundle и explicit
+structural-only standalone layout пересозданы; повторный final-review — PASS,
+failures 0, material hash changes 0, raw Account ID evidence leaks 0.
+Isolated `RESTORE RUNTIME` принят на новой disposable-копии принятого v3.8:
+backup verification PASS, 10/10 restored entries, checksum 6/6, last-good 5/5,
+offline inspect `IDLE`, material/residual changes 0, WAL/SHM 0. Release identity
+и фактический standalone build/launch не заявлены выполненными. Следующий gate —
+`COMMIT/PUSH M5.3`.
 
 Подробности:
 
 - `docs/plans/V3_9_PORTFOLIO_RISK_ENGINE_PLAN_RU.md`;
 - `docs/plans/V3_9_M5_1_OPERATOR_CONTROL_RUNBOOK_RU.md`;
 - `docs/plans/V3_9_M5_2_EXTERNAL_CASH_RECOVERY_RUNBOOK_RU.md`;
+- `docs/plans/V3_9_M5_3_PERSISTENCE_STANDALONE_RUNBOOK_RU.md`;
 - `docs/project/V3_9_INTERFACE_FREEZE_RU.md`;
 - `docs/project/V3_9_ISSUE_PROPOSAL_RU.md`.
 

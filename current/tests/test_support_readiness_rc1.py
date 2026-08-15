@@ -193,6 +193,107 @@ def test_support_bundle_auto_redacts_account_id_inside_transaction_id(
     assert explicit_account_id not in explicit_combined
 
 
+def test_support_bundle_covers_v3_9_integrity_and_generated_risk_snapshot(
+    tmp_path: Path,
+):
+    account_id = "m5-3-account-00000042"
+    create_runtime(tmp_path, account_id=account_id)
+    for name in (
+        "v3_9_enforced_runtime_manifest.json",
+        "v3_9_m5_2_runtime_seed_manifest.json",
+        "portfolio_risk_metadata.json",
+        "multi_instrument_profiles.json",
+        "instrument_runtimes.json",
+        "central_order_state.json",
+    ):
+        atomic_write_json(
+            tmp_path / name,
+            {"version": 1, "name": name},
+            write_checksum=True,
+        )
+
+    result = SupportBundleBuilder(tmp_path, app_version="0.3.9b1").build(
+        tmp_path / "support-v3-9.zip",
+        account_id=account_id,
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        integrity = json.loads(
+            archive.read("runtime_integrity.json").decode("utf-8")
+        )
+        dashboard = json.loads(
+            archive.read("risk_dashboard_snapshot.json").decode("utf-8")
+        )
+        combined = b"\n".join(archive.read(name) for name in archive.namelist())
+    assert integrity["v3_9_enforced_runtime_manifest.json"]["valid"] is True
+    assert integrity["v3_9_m5_2_runtime_seed_manifest.json"]["valid"] is True
+    assert integrity["portfolio_risk_metadata.json"]["valid"] is True
+    assert all(report["path"] == name for name, report in integrity.items())
+    assert dashboard["status"] == "UNAVAILABLE"
+    assert account_id.encode("utf-8") not in combined
+
+
+def test_support_bundle_does_not_serialize_unknown_dashboard_exception(
+    tmp_path: Path,
+    monkeypatch,
+):
+    account_id = "m5-3-account-00000042"
+    unknown_account = "persisted-foreign-account-991122"
+    create_runtime(tmp_path, account_id=account_id)
+
+    def fail_dashboard(**_kwargs):
+        raise ValueError(f"persisted account mismatch: {unknown_account}")
+
+    monkeypatch.setattr(
+        "trading_robot.support_bundle.load_risk_dashboard_snapshot",
+        fail_dashboard,
+    )
+
+    result = SupportBundleBuilder(tmp_path, app_version="0.3.9b1").build(
+        tmp_path / "support-error-redaction.zip",
+        account_id=account_id,
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        dashboard = json.loads(
+            archive.read("risk_dashboard_snapshot.json").decode("utf-8")
+        )
+        combined = b"\n".join(archive.read(name) for name in archive.namelist())
+    assert dashboard == {
+        "status": "UNAVAILABLE",
+        "error_type": "ValueError",
+        "detail": "Risk dashboard generation failed safely.",
+    }
+    assert unknown_account.encode("utf-8") not in combined
+
+
+def test_support_bundle_reports_v3_9_checksum_mismatch(tmp_path: Path):
+    create_runtime(tmp_path)
+    metadata = tmp_path / "portfolio_risk_metadata.json"
+    atomic_write_json(
+        metadata,
+        {"version": 1, "instruments": []},
+        write_checksum=True,
+    )
+    metadata.write_text(
+        json.dumps({"version": 1, "instruments": [], "tampered": True}),
+        encoding="utf-8",
+    )
+
+    result = SupportBundleBuilder(tmp_path, app_version="0.3.9b1").build(
+        tmp_path / "support-v3-9-tampered.zip"
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        integrity = json.loads(
+            archive.read("runtime_integrity.json").decode("utf-8")
+        )
+    assert (
+        integrity["portfolio_risk_metadata.json"]["status"]
+        == "CHECKSUM_MISMATCH"
+    )
+
+
 def test_readiness_ready_with_valid_runtime_api_and_backup(tmp_path: Path):
     account_id = "account-123"
     create_runtime(tmp_path, account_id=account_id)

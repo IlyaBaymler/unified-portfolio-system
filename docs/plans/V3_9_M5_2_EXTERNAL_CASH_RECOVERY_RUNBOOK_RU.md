@@ -1,7 +1,7 @@
 # v3.9 M5.2 — External Cash Resync и Recovery Runbook
 
 Дата: 2026-08-14
-Статус: `ISOLATED RUNTIME + RESTART / POST-FIX FINAL REVIEW PENDING`
+Статус: `COMPLETED / SQUASH-MERGED PR #45 / POST-MERGE CI PASS`
 
 ## 1. Граница этапа
 
@@ -171,8 +171,9 @@ order count, execution IDs и kill switches сохранены.
 proposal, Central intent, dispatch и resubmit не выполнялись. Проверенный
 token-free pre-apply backup сохранён как rollback evidence.
 
-## 9. Следующий отдельный gate
+## 9. Итог и следующий отдельный gate
 
-M5.2 опубликован в draft PR #45. Следующий отдельный gate —
-post-output-boundary final review PR #45. M5.3 qualification выполняется только
-отдельной командой.
+PR #45 squash-merged в `main` (`cc02294`). Post-merge GitHub Actions run
+`31825722096`: `747 passed`, pip check, critical/strict Ruff и compileall PASS.
+Следующий отдельный этап — M5.3; его runbook:
+`docs/plans/V3_9_M5_3_PERSISTENCE_STANDALONE_RUNBOOK_RU.md`.

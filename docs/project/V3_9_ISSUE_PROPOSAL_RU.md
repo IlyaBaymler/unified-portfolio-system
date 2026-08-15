@@ -254,8 +254,32 @@ comparison, фактический mutation inventory и правдивый ст
 mutation при ошибке записи CLI output. Boundary-inclusive targeted matrix
 `157 passed`, full CI regression `747 passed`; live Sandbox Account ID удалён из test fixtures.
 Post-review correction до запуска operation отклоняет lexical/resolved
-`--output` внутри runtime. M5.2 опубликован в draft PR #45; следующий отдельный
-gate — post-output-boundary final review. M5.3 не выполнен.
+`--output` внутри runtime. M5.2 squash-merged через PR #45 в `main`
+(`cc02294`); post-merge CI run `31825722096` прошёл с `747 passed`, pip check,
+critical/strict Ruff и compileall PASS.
+
+M5.3 локально реализован в
+`agent/v3-9-beta1-m5-3-qualification`. Backup проверяет checksum-managed source,
+restore синхронизирует primary checksum/last-good и сохраняет companions при
+аварийном rollback. EventJournal read-only не создаёт sidecars при пустом WAL;
+support bundle включает v3.9 integrity и fresh Risk dashboard без raw Account
+ID/absolute runtime paths; standalone verifier закрепляет Sandbox-only layout.
+Read-only final-review tool не выполняет restore, proposal, intent, dispatch,
+resubmit или provider POST. Реальный accepted M5.2 provenance manifest добавлен
+в backup/support/standalone coverage. Final-review correction закрыл
+unknown-account redaction, backup content/version validation, orphan recovery
+rollback, support checksum coverage и structural launcher contract. Реальный
+disposable restore дополнительно закрыл recovery-only ветку `UNCHANGED`
+primary. Targeted matrix: `57 passed`; full local regression: `771 passed`;
+pip check, critical/strict Ruff и compileall PASS.
+Isolated M5.3 runtime подготовлен: 31/31 material hash совпали, lock/WAL/SHM и
+secrets не копировались, read-only inspect — PASS. Verified backup, sanitized
+support bundle и structural-only standalone layout пересозданы; повторный
+final-review — PASS, failures 0, material hash changes 0, raw Account ID
+evidence leaks 0. Isolated `RESTORE RUNTIME` к принятому v3.8 завершён PASS:
+10/10 entries, checksum 6/6, last-good 5/5, offline inspect `IDLE`, изменения
+material/residual hashes 0, WAL/SHM и raw Account ID leaks 0. Фактический
+standalone build/launch остаётся gate M6. Следующий gate — `COMMIT/PUSH M5.3`.
 
 ## 8. `v3.9.0` — acceptance и release qualification
 

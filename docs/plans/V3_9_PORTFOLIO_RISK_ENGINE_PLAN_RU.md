@@ -1,8 +1,8 @@
 # План разработки v3.9.0 — Portfolio Risk Engine
 
 Дата: 2026-08-14
-Статус: `IN DEVELOPMENT / M5.2 ISOLATED RUNTIME + RESTART / POST-FIX FINAL REVIEW PENDING`
-Базовый commit: `ac308660` — squash merge PR #44 (`v3.9 M5.1`)
+Статус: `IN DEVELOPMENT / M5.3 LOCAL ACCEPTANCE PASS / COMMIT-PUSH PENDING`
+Базовый commit: `cc02294` — squash merge PR #45 (`v3.9 M5.2`)
 
 План сверен с пакетом обновления
 `v3_9_portfolio_risk_codex_plan_2026-08-13.zip`, SHA-256
@@ -927,51 +927,42 @@ gate и не зависеть от ручного broker сценария для
 
 ## 13. Текущий следующий шаг
 
-M5.1 завершён и squash-merged через PR #44 в `main` (`ac308660`). Post-merge
-Windows/Python 3.12 CI: `728 passed`, pip check, critical/strict Ruff,
-compileall PASS, annotations 0.
+M5.2 squash-merged через PR #45 в `main` (`cc02294`). Post-merge GitHub Actions
+run `31825722096`: `747 passed`, pip check, critical/strict Ruff и compileall
+PASS.
 
-M5.2 реализован в `agent/v3-9-beta1-m5-2-recovery` от этого commit:
+M5.3 локально реализован в
+`agent/v3-9-beta1-m5-3-qualification` от этого commit:
 
-1. обновить confirmed-execution accounting так, чтобы canonical cash после
-   fill становился новым trusted anchor;
-2. любое иное изменение RUB cash сохранять как persistent
-   `EXTERNAL_CASH_CHANGE` и блокировать новой exposure до resync;
-3. добавить read-only `prepare` proof и отдельный exact-confirmation `apply`,
-   связанные с policy/canonical/Risk/Central hashes;
-4. запретить apply при reservation, pending/uncertain, stale proof и non-cash
-   resync source; сохранить turnover/order counters, kill switches и execution
-   IDs;
-5. закрыть restart matrix для active reservation, in-flight/uncertain и
-   partial fill без duplicate dispatch/resubmit.
-6. при `prepare` и `apply` повторно проверять фактический wall-clock возраст
-   canonical snapshot; policy без конечного `max_snapshot_age_seconds` не
-   допускается к resync.
+1. checksum-aware JSON integrity и отказ backup от повреждённого source;
+2. согласованный restore primary checksum/last-good и transactional rollback
+   recovery companions;
+3. side-effect-free read-only EventJournal для пустого WAL и fail-closed
+   qualification при ненулевом WAL;
+4. v3.8/v3.9 runtime integrity, fresh Risk dashboard и Account ID/path/token
+   redaction внутри support bundle;
+5. параметризованный Sandbox-only standalone layout contract;
+6. read-only `tools/v3_9_persistence_qualification.py` для раздельных
+   `inspect` и `final-review`.
 
-Локальная реализация использует additive `RiskState` schema 4,
-`trading_robot/portfolio_risk_recovery.py` и
-`tools/v3_9_external_cash_resync.py`. Boundary-inclusive targeted Risk/recovery
-matrix: `157 passed`; full CI regression: `747 passed`; pip check, critical/strict Ruff и
-compileall PASS. CLI не создаёт proposal, Central intent, dispatch, resubmit или
-provider POST. Final-review correction закрепляет приоритет non-cash gate над
-cash evidence, сохраняет trusted cash anchor для последовательного recovery,
-сравнивает delta в целых копейках, фиксирует `risk_state.json + .bak` как
-разрешённый material inventory и отличает ошибку вывода после выполненного apply
-от ошибки до mutation. Последующая correction проверяет lexical и resolved
-`--output` до запуска prepare/apply и запрещает любой output внутри runtime.
-Live Sandbox Account ID удалён из test fixtures. Runbook:
-`docs/plans/V3_9_M5_2_EXTERNAL_CASH_RECOVERY_RUNBOOK_RU.md`.
+После final-review correction закрыты unknown-account redaction, backup
+content/version validation, orphan recovery rollback, support checksum coverage
+и structural launcher contract. Disposable restore дополнительно выявил и
+закрыл recovery-only gap для `UNCHANGED` primary; восстановление companions и
+аварийный rollback этой ветки закреплены тестами. Targeted M5.3/EventJournal
+matrix: `57 passed`; full local regression: `771 passed`; pip check,
+critical/strict Ruff и compileall PASS. Isolated M5.3
+runtime подготовлен из принятого post-resync M5.2 runtime: 31/31 material hash
+совпали, lock/WAL/SHM/secrets не копировались, повторный read-only inspect —
+PASS. Verified backup, sanitized support bundle и structural-only standalone
+layout пересозданы; повторный final-review — PASS, failures 0, material hash
+changes 0, raw Account ID evidence leaks 0. `RESTORE RUNTIME` выполнен на новой
+disposable-копии принятого v3.8 backup: verification PASS, 10/10 entries,
+checksum 6/6, last-good 5/5, offline inspect `IDLE`, material/residual changes 0,
+WAL/SHM и raw Account ID leaks 0. Исходный M5.3 runtime не изменён. Release
+identity не менялась, фактический executable не строился/не запускался.
+Proposal, Central intent, dispatch, resubmit и provider POST отсутствовали.
 
-Isolated token-free runtime gate 2026-08-14 принят на естественно возникшем
-external cash change без искусственной заявки. При остановленных runtimes и
-нулевых Central reservation/pending/uncertain read-only `prepare` сохранил все
-material hashes, а отдельно подтверждённый `apply` атомарно обновил
-`risk_state.json` и last-good `risk_state.json.bak`; checksum sidecar для
-RiskState в M5.2 не заявляется. Accounting counters, execution IDs и kill
-switches сохранились. Два restart/read-only запуска в новых процессах подтвердили новые
-baselines, очищенный resync gate и fail-closed отказ consumed proof. Provider
-POST, proposal, intent, dispatch и resubmit не выполнялись; pre-apply token-free
-backup прошёл проверку.
-
-M5.2 опубликован в draft PR #45. Следующий отдельный gate —
-post-output-boundary final review PR #45. M5.3 остаётся отдельным решением.
+Runbook:
+`docs/plans/V3_9_M5_3_PERSISTENCE_STANDALONE_RUNBOOK_RU.md`.
+Следующий отдельный gate — `COMMIT/PUSH M5.3`.

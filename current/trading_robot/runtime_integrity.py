@@ -2,13 +2,14 @@ from __future__ import annotations
 
 """Runtime integrity inspection shared by recovery, backup and readiness UI."""
 
-from dataclasses import asdict, dataclass
-from enum import StrEnum
 import hashlib
 import json
-from pathlib import Path
 import sqlite3
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
 
 
 class IntegrityStatus(StrEnum):
@@ -18,6 +19,9 @@ class IntegrityStatus(StrEnum):
     INCOMPATIBLE = "INCOMPATIBLE"
     UNREADABLE = "UNREADABLE"
     EMPTY = "EMPTY"
+    CHECKSUM_MISSING = "CHECKSUM_MISSING"
+    CHECKSUM_UNREADABLE = "CHECKSUM_UNREADABLE"
+    CHECKSUM_MISMATCH = "CHECKSUM_MISMATCH"
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +61,7 @@ def inspect_json_file(
     *,
     expected_versions: set[int | str] | None = None,
     validator: JsonValidator | None = None,
+    require_checksum: bool = False,
 ) -> FileIntegrityReport:
     target = Path(path)
     if not target.exists():
@@ -84,8 +89,8 @@ def inspect_json_file(
             detail="File is empty.",
         )
     try:
-        raw = target.read_text(encoding="utf-8")
-        document = json.loads(raw)
+        raw = target.read_bytes()
+        document = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeError) as exc:
         return FileIntegrityReport(
             path=str(target),
@@ -111,13 +116,50 @@ def inspect_json_file(
             detail="JSON root must be an object.",
         )
     version = document.get("version")
+    digest = hashlib.sha256(raw).hexdigest()
+    checksum_path = target.with_name(target.name + ".sha256")
+    if require_checksum or checksum_path.exists():
+        if not checksum_path.is_file():
+            return FileIntegrityReport(
+                path=str(target),
+                status=IntegrityStatus.CHECKSUM_MISSING,
+                kind="json",
+                size_bytes=size,
+                sha256=digest,
+                schema_version=version,
+                detail=f"Checksum sidecar is missing: {checksum_path.name}",
+            )
+        try:
+            expected_checksum = (
+                checksum_path.read_text(encoding="ascii").strip().lower()
+            )
+        except (OSError, UnicodeError) as exc:
+            return FileIntegrityReport(
+                path=str(target),
+                status=IntegrityStatus.CHECKSUM_UNREADABLE,
+                kind="json",
+                size_bytes=size,
+                sha256=digest,
+                schema_version=version,
+                detail=str(exc),
+            )
+        if expected_checksum != digest:
+            return FileIntegrityReport(
+                path=str(target),
+                status=IntegrityStatus.CHECKSUM_MISMATCH,
+                kind="json",
+                size_bytes=size,
+                sha256=digest,
+                schema_version=version,
+                detail="SHA-256 does not match sidecar.",
+            )
     if expected_versions is not None and version not in expected_versions:
         return FileIntegrityReport(
             path=str(target),
             status=IntegrityStatus.INCOMPATIBLE,
             kind="json",
             size_bytes=size,
-            sha256=sha256_file(target),
+            sha256=digest,
             schema_version=version,
             detail=(
                 f"Unsupported schema version {version!r}; expected one of "
@@ -127,13 +169,13 @@ def inspect_json_file(
     if validator is not None:
         try:
             validator(document)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - validator is an extension boundary
             return FileIntegrityReport(
                 path=str(target),
                 status=IntegrityStatus.CORRUPT,
                 kind="json",
                 size_bytes=size,
-                sha256=sha256_file(target),
+                sha256=digest,
                 schema_version=version,
                 detail=str(exc),
             )
@@ -142,7 +184,7 @@ def inspect_json_file(
         status=IntegrityStatus.VALID,
         kind="json",
         size_bytes=size,
-        sha256=sha256_file(target),
+        sha256=digest,
         schema_version=version,
         detail="JSON parsed successfully.",
     )
@@ -175,8 +217,13 @@ def inspect_sqlite_file(path: str | Path) -> FileIntegrityReport:
             detail="Database file is empty.",
         )
     try:
+        wal_path = target.with_name(target.name + "-wal")
+        use_immutable = not wal_path.exists() or wal_path.stat().st_size == 0
+        uri = f"file:{target.resolve().as_posix()}?mode=ro"
+        if use_immutable:
+            uri += "&immutable=1"
         connection = sqlite3.connect(
-            f"file:{target.resolve().as_posix()}?mode=ro",
+            uri,
             uri=True,
             timeout=5.0,
         )
@@ -214,9 +261,7 @@ def inspect_sqlite_file(path: str | Path) -> FileIntegrityReport:
             size_bytes=size,
             sha256=sha256_file(target),
             schema_version=(schema_row[0] if schema_row else None),
-            detail=(
-                f"quick_check={quick_values}; integrity_check={integrity_values}"
-            ),
+            detail=(f"quick_check={quick_values}; integrity_check={integrity_values}"),
         )
     return FileIntegrityReport(
         path=str(target),

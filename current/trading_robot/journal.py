@@ -82,11 +82,18 @@ class EventJournal:
     def _connect(self) -> sqlite3.Connection:
         read_only_uri = self.path.resolve().as_uri() + "?mode=ro"
         wal_path = self.path.with_name(self.path.name + "-wal")
-        if self.read_only and not wal_path.exists():
+        wal_is_empty = False
+        if self.read_only:
+            try:
+                wal_is_empty = not wal_path.exists() or wal_path.stat().st_size == 0
+            except OSError:
+                wal_is_empty = False
+        if self.read_only and wal_is_empty:
             # A stopped, fully checkpointed journal can be opened as immutable.
             # This prevents SQLite from creating -wal/-shm sidecars on a
-            # strictly read-only reporting path. If a WAL exists we retain the
-            # normal read-only URI so committed WAL frames remain visible.
+            # strictly read-only reporting path. An empty leftover WAL is also
+            # safe to ignore. If a non-empty WAL exists we retain the normal
+            # read-only URI so committed WAL frames remain visible.
             read_only_uri += "&immutable=1"
         connection = (
             sqlite3.connect(
@@ -348,9 +355,7 @@ class EventJournal:
             raise ValueError("Unsupported WAL checkpoint mode.")
         self._ensure_schema()
         with self._connection() as connection:
-            row = connection.execute(
-                f"PRAGMA wal_checkpoint({normalized})"
-            ).fetchone()
+            row = connection.execute(f"PRAGMA wal_checkpoint({normalized})").fetchone()
         busy, log_frames, checkpointed_frames = (
             (int(row[0]), int(row[1]), int(row[2])) if row else (0, 0, 0)
         )

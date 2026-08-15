@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import re
+import sqlite3
 import tempfile
 import zipfile
 from collections.abc import Iterable, Mapping
@@ -17,6 +18,8 @@ from typing import Any
 from .journal import EventJournal
 from .logging_setup import redact_sensitive_text
 from .portfolio_model import PORTFOLIO_STATE_SCHEMA_VERSION, validate_portfolio_document
+from .risk_persistence import RiskProfileStore, RiskStateStore
+from .risk_reporting import load_risk_dashboard_snapshot
 from .runtime_integrity import inspect_json_file, inspect_sqlite_file, sha256_file
 
 _SECRET_KEY_PARTS = (
@@ -32,6 +35,45 @@ _SECRET_LIKE_RE = re.compile(
     r"(?i)(?:Bearer\s+[A-Za-z0-9._~+\-/=]{12,}|"
     r"TBANK_(?:SANDBOX_)?TOKEN\s*[=:]\s*[^\s,;]+)"
 )
+
+_RUNTIME_INTEGRITY_JSON_NAMES = (
+    "v3_8_runtime_seed_manifest.json",
+    "v3_9_shadow_runtime_seed_manifest.json",
+    "v3_9_shadow_runtime_config_manifest.json",
+    "v3_9_enforced_runtime_manifest.json",
+    "v3_9_m5_2_runtime_seed_manifest.json",
+    "v3_9_external_close_ack_manifest.json",
+    "v3_9_shadow_runtime_start_manifest.json",
+    "portfolio_risk_metadata.json",
+    "strategy_profiles.json",
+    "multi_instrument_profiles.json",
+    "instrument_runtimes.json",
+    "central_order_state.json",
+    "risk_profiles.json",
+    "risk_state.json",
+    "robot_state.json",
+    "portfolio_state.json",
+    "canonical_migration_report.json",
+    "portfolio_legacy_shadow.json",
+    "sandbox_diagnostic_state.json",
+)
+
+_CHECKSUM_REQUIRED_JSON_NAMES = {
+    "v3_8_runtime_seed_manifest.json",
+    "v3_9_shadow_runtime_seed_manifest.json",
+    "v3_9_shadow_runtime_config_manifest.json",
+    "v3_9_enforced_runtime_manifest.json",
+    "v3_9_m5_2_runtime_seed_manifest.json",
+    "v3_9_external_close_ack_manifest.json",
+    "v3_9_shadow_runtime_start_manifest.json",
+    "portfolio_risk_metadata.json",
+    "multi_instrument_profiles.json",
+    "instrument_runtimes.json",
+    "central_order_state.json",
+    "portfolio_state.json",
+    "canonical_migration_report.json",
+    "portfolio_legacy_shadow.json",
+}
 
 
 def _normalise_known_values(values: Iterable[str]) -> tuple[str, ...]:
@@ -188,37 +230,30 @@ class SupportBundleBuilder:
             self._write_json(staging / "manifest.json", manifest, redact=False)
 
             integrity: dict[str, Any] = {}
-            for name in (
-                "strategy_profiles.json",
-                "multi_instrument_profiles.json",
-                "instrument_runtimes.json",
-                "central_order_state.json",
-                "risk_profiles.json",
-                "risk_state.json",
-                "robot_state.json",
-                "portfolio_state.json",
-                "canonical_migration_report.json",
-                "portfolio_legacy_shadow.json",
-                "sandbox_diagnostic_state.json",
-            ):
+            for name in _RUNTIME_INTEGRITY_JSON_NAMES:
                 if name == "portfolio_state.json":
                     report = inspect_json_file(
                         self.app_dir / name,
                         expected_versions={PORTFOLIO_STATE_SCHEMA_VERSION},
                         validator=validate_portfolio_document,
+                        require_checksum=True,
                     )
                 else:
-                    report = inspect_json_file(self.app_dir / name)
+                    report = inspect_json_file(
+                        self.app_dir / name,
+                        require_checksum=name in _CHECKSUM_REQUIRED_JSON_NAMES,
+                    )
                 integrity[name] = report.to_dict()
-            integrity["trading_events.db"] = inspect_sqlite_file(
-                self.journal_path
-            ).to_dict()
-            self._write_json(staging / "runtime_integrity.json", integrity)
+                integrity[name]["path"] = name
+            journal_integrity = inspect_sqlite_file(self.journal_path).to_dict()
+            journal_integrity["path"] = "trading_events.db"
+            integrity["trading_events.db"] = journal_integrity
+            self._write_json(
+                staging / "runtime_integrity.json",
+                redact_object(integrity, known_values=scan_secrets),
+            )
 
-            for name in (
-                "runtime_bootstrap_report.json",
-                "risk_dashboard_snapshot.json",
-            ):
+            for name in ("runtime_bootstrap_report.json",):
                 path = self.app_dir / name
                 if not path.exists():
                     continue
@@ -230,6 +265,48 @@ class SupportBundleBuilder:
                     staging / name,
                     redact_object(document, known_values=scan_secrets),
                 )
+
+            dashboard_destination = staging / "risk_dashboard_snapshot.json"
+            if effective_account_id and self.journal_path.is_file():
+                try:
+                    dashboard = load_risk_dashboard_snapshot(
+                        profile_store=RiskProfileStore(
+                            self.app_dir / "risk_profiles.json"
+                        ),
+                        state_store=RiskStateStore(self.app_dir / "risk_state.json"),
+                        journal=EventJournal(self.journal_path, read_only=True),
+                        account_id=effective_account_id,
+                    ).to_dict()
+                except (
+                    OSError,
+                    RuntimeError,
+                    TypeError,
+                    ValueError,
+                    sqlite3.Error,
+                ) as exc:
+                    dashboard = {
+                        "status": "UNAVAILABLE",
+                        "error_type": type(exc).__name__,
+                        "detail": "Risk dashboard generation failed safely.",
+                    }
+                self._write_json(
+                    dashboard_destination,
+                    redact_object(dashboard, known_values=scan_secrets),
+                )
+            elif (self.app_dir / "risk_dashboard_snapshot.json").is_file():
+                try:
+                    dashboard = json.loads(
+                        (self.app_dir / "risk_dashboard_snapshot.json").read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    dashboard = None
+                if dashboard is not None:
+                    self._write_json(
+                        dashboard_destination,
+                        redact_object(dashboard, known_values=scan_secrets),
+                    )
 
             for name in ("robot_gui.log", "robot_debug.log"):
                 source = self.app_dir / name
@@ -244,7 +321,7 @@ class SupportBundleBuilder:
                 )
 
             if self.journal_path.exists():
-                journal = EventJournal(self.journal_path)
+                journal = EventJournal(self.journal_path, read_only=True)
                 events = journal.recent(
                     limit=max(1, int(recent_event_limit)),
                     account_id=effective_account_id,

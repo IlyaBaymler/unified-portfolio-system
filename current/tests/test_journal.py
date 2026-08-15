@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from trading_robot.journal import EventJournal, JournalEvent
+from trading_robot.runtime_integrity import inspect_sqlite_file
 
 
 def test_event_journal_records_queries_and_exports(tmp_path: Path):
@@ -137,3 +138,17 @@ def test_recent_and_count_can_filter_by_account(tmp_path: Path):
     assert [row["event_type"] for row in rows] == ["A"]
     assert journal.count(account_id="ACC-A") == 1
     assert journal.count(account_id="ACC-B") == 1
+
+
+def test_read_only_empty_wal_remains_side_effect_free(tmp_path: Path):
+    path = tmp_path / "checkpointed.db"
+    EventJournal(path).record(JournalEvent(category="test", event_type="READY"))
+    wal = path.with_name(path.name + "-wal")
+    shm = path.with_name(path.name + "-shm")
+    wal.write_bytes(b"")
+    shm.unlink(missing_ok=True)
+
+    assert inspect_sqlite_file(path).valid
+    assert EventJournal(path, read_only=True).count() == 1
+    assert wal.read_bytes() == b""
+    assert not shm.exists()

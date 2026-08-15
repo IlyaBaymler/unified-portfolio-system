@@ -522,9 +522,38 @@ inventory и правдиво сообщает уже выполненную Ris
 ошибке записи CLI output. Post-review correction до любой runtime operation
 отклоняет lexical или resolved `--output` внутри `--runtime-dir`, поэтому отчёт
 не может перезаписать runtime state. Boundary-inclusive targeted matrix:
-`157 passed`; full CI regression: `747 passed`; live Account ID удалён из test fixtures. M5.2
-опубликован в draft PR #45. Следующий отдельный gate — post-output-boundary final
-review PR #45; M5.3 остаётся отдельным этапом.
+`157 passed`; full CI regression: `747 passed`; live Account ID удалён из test
+fixtures. M5.2 squash-merged через PR #45 в `main` (`cc02294`); post-merge
+GitHub Actions run `31825722096` завершился успешно: `747 passed`, pip check,
+critical/strict Ruff и compileall PASS.
+
+M5.3 локально реализован отдельно в
+`agent/v3-9-beta1-m5-3-qualification`. Срез добавляет checksum-aware backup
+source validation, согласованный restore checksum/last-good, transactional
+rollback companions, side-effect-free read-only EventJournal для пустого WAL,
+расширенный sanitized support bundle и параметризованный Sandbox-only
+standalone layout verifier. Новый read-only
+`tools/v3_9_persistence_qualification.py` объединяет runtime, backup, support
+bundle и standalone evidence, маскирует Account ID и сохраняет все dispatch/
+resubmit/provider POST flags выключенными. Реальный accepted M5.2 runtime
+добавил coverage checksummed provenance manifest. После final-review correction
+закрыты unknown-account error redaction, backup content/version validation,
+orphan recovery rollback, support checksum coverage и structural launcher
+contract. Во время фактического disposable restore дополнительно закрыт gap
+recovery-only ветки: `UNCHANGED` primary теперь транзакционно восстанавливает
+отсутствующий checksum/last-good без перезаписи primary и ложной audit-копии.
+Targeted matrix: `57 passed`; full local regression: `771 passed`; pip check,
+critical/strict Ruff и compileall PASS. Isolated M5.3 runtime подготовлен byte-identical allowlist-
+копированием 31 material-файла; lock/WAL/SHM/secrets не переносились, повторный
+read-only inspect — PASS. Verified backup и sanitized support bundle созданы;
+standalone artifact честно ограничен `STRUCTURAL_LAYOUT_FIXTURE` без executable.
+Пересозданные artifacts и повторный final-review: PASS, failures 0, material
+hash changes 0, raw Account ID evidence leaks 0. `RESTORE RUNTIME` принят на
+новой disposable-копии v3.8 backup `90609f...cede`: 10/10 entries, checksum
+6/6, last-good 5/5, offline inspect `IDLE`, residual/material hash changes 0,
+WAL/SHM и raw Account ID leaks 0. Исходный M5.3 runtime не изменён.
+Фактический standalone build/launch остаётся gate M6. Следующий отдельный gate —
+`COMMIT/PUSH M5.3`.
 
 Основные документы:
 
@@ -532,6 +561,7 @@ review PR #45; M5.3 остаётся отдельным этапом.
 - `docs/plans/V3_9_M4_SANDBOX_ACCEPTANCE_RUNBOOK_RU.md`;
 - `docs/plans/V3_9_M5_1_OPERATOR_CONTROL_RUNBOOK_RU.md`;
 - `docs/plans/V3_9_M5_2_EXTERNAL_CASH_RECOVERY_RUNBOOK_RU.md`;
+- `docs/plans/V3_9_M5_3_PERSISTENCE_STANDALONE_RUNBOOK_RU.md`;
 - `docs/project/V3_9_INTERFACE_FREEZE_RU.md`;
 - `docs/project/V3_9_ISSUE_PROPOSAL_RU.md`.
 

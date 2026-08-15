@@ -2,12 +2,28 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 REQUIRED_DIRS = ("app", "runtime", "backups", "reports", "logs", "support")
+STRUCTURAL_FIXTURE_LAUNCHER = """@echo off
+echo Qualification-only structural fixture: executable was not built.
+exit /b 2
+"""
+STRUCTURAL_FIXTURE_MARKER = """STRUCTURAL_LAYOUT_FIXTURE
+EXECUTABLE_NOT_BUILT
+executable_launch_verified=false
+"""
 FORBIDDEN_RUNTIME_NAMES = {
     ".env",
+    "v3_8_runtime_seed_manifest.json",
+    "v3_9_shadow_runtime_seed_manifest.json",
+    "v3_9_shadow_runtime_config_manifest.json",
+    "v3_9_enforced_runtime_manifest.json",
+    "v3_9_m5_2_runtime_seed_manifest.json",
+    "v3_9_external_close_ack_manifest.json",
+    "v3_9_shadow_runtime_start_manifest.json",
+    "portfolio_risk_metadata.json",
     "robot_state.json",
     "portfolio_state.json",
     "risk_state.json",
@@ -23,7 +39,43 @@ FORBIDDEN_RUNTIME_NAMES = {
 }
 
 
-def verify_layout(root: str | Path) -> list[str]:
+def _private_runtime_name(name: str) -> bool:
+    lowered = name.lower()
+    return (
+        lowered in FORBIDDEN_RUNTIME_NAMES
+        or lowered.endswith(
+            ("-wal", "-shm", ".lock", ".lastgood", ".lastgood.sha256", ".bak")
+        )
+        or ".pre_restore_" in lowered
+        or (
+            lowered.endswith(".sha256")
+            and any(
+                lowered.startswith(prefix)
+                for prefix in (
+                    "portfolio_",
+                    "multi_instrument_",
+                    "instrument_runtimes",
+                    "central_order_",
+                    "v3_8_",
+                    "v3_9_",
+                )
+            )
+        )
+    )
+
+
+def _normalized_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def verify_layout(
+    root: str | Path,
+    *,
+    expected_version: str = "0.3.7",
+    expected_channel: str = "stable",
+    minimum_risk_state_schema: int | None = None,
+    allow_structural_fixture: bool = False,
+) -> list[str]:
     base = Path(root).resolve()
     errors: list[str] = []
     if not base.is_dir():
@@ -33,8 +85,7 @@ def verify_layout(root: str | Path) -> list[str]:
             errors.append(f"Missing directory: {name}")
     if not (base / "MOEX Research Robot.bat").is_file():
         errors.append("Missing portable launcher: MOEX Research Robot.bat")
-    if not (base / "app" / "MOEXResearchRobot.exe").is_file():
-        errors.append("Missing executable: app/MOEXResearchRobot.exe")
+    structural_fixture = False
     manifest_path = base / "app" / "build_manifest.json"
     if not manifest_path.is_file():
         errors.append("Missing app/build_manifest.json")
@@ -44,21 +95,113 @@ def verify_layout(root: str | Path) -> list[str]:
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             errors.append(f"Invalid build manifest: {exc}")
         else:
-            if manifest.get("software_version") != "0.3.7":
-                errors.append("Build manifest version is not 0.3.7")
-            if manifest.get("release_channel") != "stable":
-                errors.append("Build manifest channel is not stable")
-    for name in FORBIDDEN_RUNTIME_NAMES:
-        if (base / name).exists() or (base / "app" / name).exists():
-            errors.append(f"Private runtime file leaked into package: {name}")
+            if not isinstance(manifest, dict):
+                errors.append("Build manifest root is not an object")
+            else:
+                declares_structural_fixture = (
+                    manifest.get("artifact_kind") == "STRUCTURAL_LAYOUT_FIXTURE"
+                )
+                if declares_structural_fixture and not allow_structural_fixture:
+                    errors.append("Structural fixture requires explicit opt-in")
+                structural_fixture = (
+                    allow_structural_fixture and declares_structural_fixture
+                )
+                if manifest.get("software_version") != expected_version:
+                    errors.append(
+                        "Build manifest version is not " + str(expected_version)
+                    )
+                if manifest.get("release_channel") != expected_channel:
+                    errors.append(
+                        "Build manifest channel is not " + str(expected_channel)
+                    )
+                if manifest.get("sandbox_only") is not True:
+                    errors.append("Build manifest does not enforce sandbox_only=true")
+                if manifest.get("real_account_execution") is not False:
+                    errors.append(
+                        "Build manifest does not enforce real_account_execution=false"
+                    )
+                if minimum_risk_state_schema is not None:
+                    try:
+                        risk_state_schema = int(manifest.get("risk_state_schema"))
+                    except (TypeError, ValueError):
+                        risk_state_schema = -1
+                    if risk_state_schema < int(minimum_risk_state_schema):
+                        errors.append(
+                            "Build manifest RiskState schema is below "
+                            + str(minimum_risk_state_schema)
+                        )
+                if structural_fixture:
+                    if manifest.get("executable_built") is not False:
+                        errors.append(
+                            "Structural fixture manifest must set executable_built=false"
+                        )
+                    if manifest.get("executable_launch_verified") is not False:
+                        errors.append(
+                            "Structural fixture manifest must set "
+                            "executable_launch_verified=false"
+                        )
+    executable = base / "app" / "MOEXResearchRobot.exe"
+    structural_marker = base / "app" / "EXECUTABLE_NOT_BUILT.txt"
+    if structural_fixture:
+        if executable.exists():
+            errors.append("Structural fixture must not contain an executable")
+        if not structural_marker.is_file():
+            errors.append("Missing structural fixture marker")
+        else:
+            try:
+                marker_text = _normalized_text(structural_marker)
+            except (OSError, UnicodeError) as exc:
+                errors.append(f"Invalid structural fixture marker: {exc}")
+            else:
+                if marker_text != STRUCTURAL_FIXTURE_MARKER:
+                    errors.append("Structural fixture marker contract mismatch")
+        launcher = base / "MOEX Research Robot.bat"
+        try:
+            launcher_text = _normalized_text(launcher)
+        except (OSError, UnicodeError) as exc:
+            errors.append(f"Invalid structural fixture launcher: {exc}")
+        else:
+            if launcher_text != STRUCTURAL_FIXTURE_LAUNCHER:
+                errors.append("Structural fixture launcher must fail closed")
+    elif not executable.is_file():
+        errors.append("Missing executable: app/MOEXResearchRobot.exe")
+    mutable_directories = ("runtime", "backups", "reports", "logs", "support")
+    for directory_name in mutable_directories:
+        directory = base / directory_name
+        if not directory.is_dir():
+            continue
+        for path in directory.rglob("*"):
+            if path.is_file():
+                errors.append(
+                    "Mutable package directory is not empty: "
+                    + path.relative_to(base).as_posix()
+                )
+    for path in base.rglob("*"):
+        if path.is_file() and _private_runtime_name(path.name):
+            errors.append(
+                "Private runtime file leaked into package: "
+                + path.relative_to(base).as_posix()
+            )
     return errors
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify v3.7.0 Stable portable layout.")
+    parser = argparse.ArgumentParser(
+        description="Verify a Sandbox-only portable layout."
+    )
     parser.add_argument("--root", required=True)
+    parser.add_argument("--expected-version", default="0.3.7")
+    parser.add_argument("--expected-channel", default="stable")
+    parser.add_argument("--minimum-risk-state-schema", type=int)
+    parser.add_argument("--allow-structural-fixture", action="store_true")
     args = parser.parse_args(argv)
-    errors = verify_layout(args.root)
+    errors = verify_layout(
+        args.root,
+        expected_version=args.expected_version,
+        expected_channel=args.expected_channel,
+        minimum_risk_state_schema=args.minimum_risk_state_schema,
+        allow_structural_fixture=args.allow_structural_fixture,
+    )
     if errors:
         for error in errors:
             print(f"[ERROR] {error}")
