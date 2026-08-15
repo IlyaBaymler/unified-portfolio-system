@@ -160,7 +160,7 @@ instrument_id
 
 Каждый runtime имеет собственный temporal state и performance attribution.
 
-### v5.x — multi-timeframe / Universe / Supervisor
+### v5.x — multi-timeframe / Universe / adaptive selection
 
 Issue #41.
 
@@ -211,6 +211,37 @@ persisted `InstrumentRuntime` — ExecutionSlot. Ни одна из этих м�
 При переходе к нескольким strategy contributions один `candle_interval` не должен описывать всю позицию. Canonical PortfolioState хранит состояние/target/ownership, а подробный temporal context относится к versioned StrategyRuntime/StrategyProposal и performance attribution.
 
 Изменение timeframe должно менять config identity/hash, чтобы restart/recovery не мог ошибочно считать `SMA/1h` и `SMA/15m` одной и той же стратегией.
+
+### v4.0 — aggregate target ownership
+
+Portfolio Supervisor владеет policy lifecycle агрегированного target и
+attribution, но не actual broker position и не execution lifecycle:
+
+```text
+StrategyContributionProposal[]
+-> Portfolio Supervisor requested target
+-> Portfolio Risk approved target
+-> RebalancePlanner net action
+-> Central queue/reservation/admission
+-> ExecutionAdapter POST
+-> PortfolioManager reconciliation
+```
+
+Существующий `multi_instrument_strategy.StrategyProposal` уже содержит direct
+`primary_target_lots` и связан с Central coordinator. v4 не создаёт второй
+одноимённый тип: M0 определяет versioned `StrategyContributionProposal` и
+контролируемый legacy adapter/retirement path.
+
+Broker actual lots остаются canonical facts. Schema-3 draft вводит ownership
+aggregate target, а strategy identities переносит в `TargetAttribution`.
+Ex-post realized attribution хранится отдельно и обязана сходиться с canonical
+actual lots через явный residual. Supervisor не создаёт второй actual-position,
+cash, reservation или broker-order ledger.
+
+Persisted/hashable contribution и budget contracts не используют binary float:
+применяется fixed-point exposure и согласованный Money/minor-units contract.
+DecisionEpoch связывает proposal, quote, canonical, cash, Risk и Central
+revisions/checksums; attribution-only изменение не создаёт broker action.
 
 ## Safety boundary для adaptive timeframe
 

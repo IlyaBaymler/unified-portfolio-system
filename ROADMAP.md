@@ -387,8 +387,12 @@ failures 0, material hash changes 0, raw Account ID evidence leaks 0.
 Isolated `RESTORE RUNTIME` принят на новой disposable-копии принятого v3.8:
 backup verification PASS, 10/10 restored entries, checksum 6/6, last-good 5/5,
 offline inspect `IDLE`, material/residual changes 0, WAL/SHM 0. Release identity
-и фактический standalone build/launch не заявлены выполненными. Следующий gate —
-`COMMIT/PUSH M5.3`.
+и фактический standalone build/launch не заявлены выполненными. Post-final-review
+correction запретил произвольный Risk dashboard exception text в support bundle
+и сохранил `RuntimeBackupError` failures в rollback diagnostics. M5.3
+squash-merged через PR #46 в `main` (`cddd80f3`); exact-head и post-merge GitHub
+Actions прошли с `774 passed`, pip check, critical/strict Ruff и compileall PASS,
+annotations 0. Следующий v3.9 gate — M6 Stable qualification.
 
 Подробности:
 
@@ -408,15 +412,34 @@ offline inspect `IDLE`, material/residual changes 0, WAL/SHM 0. Release identity
 
 ## v4.0.0 — Portfolio Supervisor Foundation
 
-- формальный `StrategyRuntime` с identity
-  `instrument + strategy + config + timeframe`;
-- `StrategyProposal` / `StrategyIntent`;
-- deterministic `ConfiguredCandidateSet`;
-- TargetPortfolio и RebalancePlan;
-- несколько стратегий/timeframe на instrument;
-- Capital Allocation;
-- performance attribution;
-- единый audit trail — Issue #40.
+Статус: `PLANNING / M0 PENDING / AUTHORITATIVE IMPLEMENTATION BLOCKED`.
+
+- formal `StrategyRuntimeId = instrument + strategy + config + timeframe`;
+- versioned `StrategyContributionProposal`, без конфликта с существующим
+  direct-target `StrategyProposal`;
+- deterministic ProposalSnapshot/DecisionEpoch с quote/cash/Risk/Central proofs;
+- fixed-point contribution budgets, без float в persisted/hash contracts;
+- один Supervisor-owned aggregate target policy на instrument;
+- ex-ante TargetAttribution отдельно от ex-post realized attribution;
+- deterministic CapitalAllocator и одна net RebalanceAction на instrument;
+- Portfolio Risk остаётся mandatory hard gate;
+- Central остаётся владельцем queue/reservations/admission/dispatch proof;
+- attribution-only transition не создаёт intent/order/cash effect;
+- schema-3 target-owner migration только после shadow и rollback gates.
+
+M0 planning можно выполнять заранее. M1/M2 ждут принятую v3.9 baseline; M4/M5
+дополнительно зависят от принятого v3.10 Decimal/Money contract (#49) и
+CashAvailability boundary (#53). Existing
+Issue #40 используется для alpha2 runtime/scheduling и не дублируется.
+
+Подробности:
+
+- `docs/plans/V4_0_PORTFOLIO_SUPERVISOR_PLAN_RU.md`;
+- `docs/project/V4_0_ARCHITECTURE_REVIEW_2026-08-14_RU.md`;
+- `docs/project/V4_0_INTERFACE_FREEZE_DRAFT_RU.md`;
+- `docs/project/V4_0_ISSUE_MAP_RU.md`.
+
+GitHub tracking: umbrella #57, milestones #58-#68 и existing alpha2 Issue #40.
 
 ## v4.1.0 — Ограниченный реальный контур
 

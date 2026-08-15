@@ -552,8 +552,12 @@ hash changes 0, raw Account ID evidence leaks 0. `RESTORE RUNTIME` принят 
 новой disposable-копии v3.8 backup `90609f...cede`: 10/10 entries, checksum
 6/6, last-good 5/5, offline inspect `IDLE`, residual/material hash changes 0,
 WAL/SHM и raw Account ID leaks 0. Исходный M5.3 runtime не изменён.
-Фактический standalone build/launch остаётся gate M6. Следующий отдельный gate —
-`COMMIT/PUSH M5.3`.
+Post-final-review correction дополнительно запретил произвольный Risk dashboard
+exception text в support bundle и сохранил `RuntimeBackupError` failures в
+rollback diagnostics. M5.3 squash-merged через PR #46 в `main` (`cddd80f3`);
+exact-head и post-merge GitHub Actions прошли с `774 passed`, pip check,
+critical/strict Ruff и compileall PASS, annotations 0. Фактический standalone
+build/launch и Stable acceptance остаются отдельным gate M6.
 
 Основные документы:
 
@@ -564,6 +568,30 @@ WAL/SHM и raw Account ID leaks 0. Исходный M5.3 runtime не измен
 - `docs/plans/V3_9_M5_3_PERSISTENCE_STANDALONE_RUNBOOK_RU.md`;
 - `docs/project/V3_9_INTERFACE_FREEZE_RU.md`;
 - `docs/project/V3_9_ISSUE_PROPOSAL_RU.md`.
+
+## Планирование v4.0 Portfolio Supervisor
+
+Roadmap v4 reviewed 2026-08-14 и принят с архитектурными корректировками.
+Статус: `PLANNING / M0 PENDING`; authoritative implementation не начата.
+
+Supervisor формирует один aggregate target и attribution, но не получает
+broker execution authority. `PortfolioState`, Portfolio Risk, Central queue/
+reservations и ExecutionAdapter сохраняют существующие single-owner boundaries.
+Новый contribution contract использует fixed-point/Money representations и не
+дублирует существующий direct-target `StrategyProposal`.
+
+M0 planning может быть отдельным documents-only gate. M1/M2 ждут принятую v3.9
+baseline; canonical cutover/execution дополнительно зависят от принятого
+v3.10 Decimal/Money contract (#49) и CashAvailability boundary (#53).
+
+Документы:
+
+- `docs/plans/V4_0_PORTFOLIO_SUPERVISOR_PLAN_RU.md`;
+- `docs/project/V4_0_ARCHITECTURE_REVIEW_2026-08-14_RU.md`;
+- `docs/project/V4_0_INTERFACE_FREEZE_DRAFT_RU.md`;
+- `docs/project/V4_0_ISSUE_MAP_RU.md`.
+
+GitHub tracking: umbrella #57, milestone Issues #58-#68 и existing alpha2 #40.
 
 ## Рабочая связка ChatGPT + Codex
 
