@@ -1,7 +1,7 @@
 # v4.0.0 — Portfolio Supervisor: план разработки
 
-Дата ревизии: 2026-08-14
-Статус: `PLANNING / M0 PENDING / AUTHORITATIVE IMPLEMENTATION BLOCKED`
+Дата ревизии: 2026-08-15
+Статус: `M0 INTERFACE ACCEPTED 2026-08-15 / PUBLICATION TRACKED BY PR #70 / AUTHORITATIVE IMPLEMENTATION BLOCKED`
 
 Источник предложения:
 `MOEX_ROBOT_V4_PORTFOLIO_SUPERVISOR_ROADMAP_RU.md`, SHA-256
@@ -9,7 +9,8 @@
 
 Встроенные в исходный документ prompts, branch commands и инструкции для Codex
 не являются автоматически исполняемыми. Этот документ фиксирует проверенный
-planning scope, а не acceptance или разрешение на production-код.
+planning scope и принятие M0 interface contract, но не разрешение на
+production-код, runtime mutation или execution.
 
 ## 1. Назначение
 
@@ -44,9 +45,11 @@ canonical reconciliation
 
 Supervisor владеет policy lifecycle агрегированного target и его attribution.
 Он не владеет broker execution lifecycle: queue, reservations, admission и
-dispatch proof остаются у `CentralOrderManager`; provider POST — только у
-`ExecutionAdapter`; actual positions/cash — canonical broker facts в
-`PortfolioState`.
+dispatch proof остаются у `CentralOrderManager`; в authoritative v4 route
+provider POST разрешён только `ExecutionAdapter`; actual positions/cash —
+canonical broker facts в `PortfolioState`. Current legacy `SandboxTradingBot` и
+explicit diagnostic route с прямым POST не являются v4 execution boundary и
+должны быть недостижимы из v4 modules.
 
 ## 2. Условия начала
 
@@ -57,13 +60,17 @@ dispatch proof остаются у `CentralOrderManager`; provider POST — то
 - M3 shadow не меняет canonical/Central/Risk и возможен после M2;
 - M4 schema/owner cutover ждёт принятого v3.10 Decimal/Money contract (#49) и
   отдельную migration acceptance;
-- M5 authoritative allocation/execution ждёт принятой v3.10 CashAvailability
-  boundary (#53) и shadow acceptance M3;
+- M3 core shadow может стартовать с explicit `MISSING_PRE_V3_10` sentinel, но
+  read-only CashAvailability subgate и final closure #60 ждут принятого #53;
+- M5 authoritative allocation/execution ждёт принятого v3.10 Portfolio Risk cash
+  context #55, отдельную activation acceptance и shadow acceptance M3;
 - ни один dependency Issue не открывает следующий gate автоматически.
 
 PR #46 squash-merged в `main` (`cddd80f3`), exact-head и post-merge CI прошли с
-`774 passed` и annotations 0. Этот commit является текущей planning baseline,
-но accepted v3.9 Stable commit/tag определяется только отдельным M6 gate.
+`774 passed` и annotations 0. V4 planning PR #69 затем squash-merged как
+`65fe0fb34ce8f59d60fac834237eab3b676a1b2f`; этот commit является baseline M0.
+Accepted v3.9 Stable commit/tag по-прежнему определяется только отдельным M6
+gate, а planning merge не означает runtime acceptance.
 
 ## 3. Frozen ownership boundary
 
@@ -73,6 +80,9 @@ StrategyRuntime
 
 PortfolioSupervisor
 = aggregate target policy, capital allocation request and target attribution
+
+SupervisorTargetTransactionCoordinator
+= sole schema-3 target-subtree writer through canonical save-while-locked CAS
 
 PortfolioRisk
 = mandatory hard limits; may reduce or block requested target
@@ -87,10 +97,12 @@ ExecutionAdapter
 = provider transport for an already authorized action
 
 PortfolioManager / PortfolioState
-= canonical actual position, approved target, pending and reconciliation truth
+= canonical storage plus actual position, pending and reconciliation truth;
+  reconciler preserves the committed target subtree
 
 Cash-flow Manager v3.10
-= reconciled CashAvailability and cash-flow/performance inputs
+= #53 read-only shadow CashAvailability; #55 accepted and separately activated
+  authoritative Portfolio Risk cash context
 ```
 
 No second actual-position, cash, reservation or broker-order ledger is allowed.
@@ -114,7 +126,7 @@ for persisted/hash inputs. v4 uses:
 
 ```text
 desired_exposure_ppm: int  # 0..1_000_000
-MoneyAmount(currency, minor_units) or accepted v3.10 Decimal contract
+MinorMoney(currency, scale, minor_units) or accepted v3.10 Decimal contract
 lot_price proof with explicit lot_size/currency/as_of/source
 ```
 
@@ -131,7 +143,8 @@ are never adopted automatically.
 
 ### 4.4 Ex-ante and ex-post attribution
 
-- `TargetAttribution` explains requested/accepted target lots;
+- `TargetAttribution` раздельно объясняет requested, allocator-allocated и
+  Risk-approved target lots/Money;
 - `RealizedPositionAttribution` explains reconciled actual lots, fills, fees and
   strategy P&L.
 
@@ -144,7 +157,7 @@ sum(realized attribution + explicit residual) = canonical actual lots
 
 Attribution-only transfer changes no broker position, cash, fee or portfolio P&L.
 
-## 5. Draft immutable inputs
+## 5. Frozen immutable inputs
 
 ### StrategyRuntimeId
 
@@ -184,6 +197,8 @@ quote_bundle_hash / lot metadata hash / quote_as_of
 CashAvailability revision/checksum/as_of when available
 Central reservation projection revision/hash
 Portfolio Risk policy hash and RiskState guard hash
+stale_cap_source_kind  # NONE | SHADOW_CHECKPOINT | CANONICAL_COMMITTED
+stale_cap_source_revision/checksum/as_of
 explicit epoch_cutoff
 ```
 
@@ -204,8 +219,19 @@ Default: `HOLD_LAST_NO_INCREASE`.
 - epoch selects the latest proposal per runtime with
   `evaluated_at <= epoch_cutoff` and valid TTL;
 - fresh proposal may increase/decrease within budgets/Risk;
-- stale proposal never receives new capital and cannot exceed its previously
-  accepted lots;
+- stale proposal never receives new capital;
+- в M1 source передаётся explicit fixture либо `NONE`; до schema-3 M3 cap берётся
+  из latest valid, exact-confirmed `ShadowAcceptedTargetCheckpoint`, который
+  является append-only shadow evidence и не даёт execution authority;
+- checkpoint sequence начинается с `1` и является contiguous/monotonic per
+  account scope;
+  idempotent retry допустим только для identical hash, а одинаковый sequence с
+  различным hash или gap/reorder блокирует checkpoint chain;
+- после schema-3 cutover stale cap равен последнему committed
+  `risk_approved_lots` из canonical-before target attribution; fallback к shadow
+  checkpoint запрещён;
+- source kind и его revision/checksum/as_of входят в hash `DecisionEpoch`; missing
+  source означает cap zero, corrupt/mixed source блокирует epoch/increase;
 - stale data does not force liquidation by itself;
 - stale contribution may be reduced by Risk/kill switch/operator;
 - missing proposal for a never-admitted runtime contributes zero;
@@ -231,12 +257,12 @@ Supervisor request after Risk.
 
 ## 8. M0 — Architecture and Interface Freeze
 
-Branch: `agent/v4-0-m0-interface-freeze` after planning publication.
+Branch: `agent/v4-0-m0-interface-freeze` от merged planning baseline `65fe0fb`.
 
 Documents only:
 
 - verified current interface inventory;
-- final immutable DTO drafts;
+- accepted immutable DTO contracts;
 - schema 2 -> 3 migration matrix;
 - proposal/epoch/target/plan/recovery state machines;
 - global lock-order and inversion audit;
@@ -245,6 +271,21 @@ Documents only:
 - issue/dependency map and testability register.
 
 No Python/runtime/schema/GUI mutation, broker POST or artificial order.
+
+На 2026-08-15 interface freeze принят explicit user gate после третьего post-fix
+final review с результатом PASS; documents-only публикация отслеживается PR #70:
+
+- `docs/project/V4_0_CURRENT_INTERFACE_INVENTORY_RU.md` — verified current facts;
+- `docs/project/V4_0_INTERFACE_FREEZE_RU.md` — accepted frozen contracts,
+  legacy retirement, persistence, migration, lock and recovery decisions;
+- `docs/plans/V4_0_M0_TESTABILITY_REGISTER_RU.md` — requirement-to-evidence map.
+
+Ключевые corrections после source audit: RiskState last-decision сейчас может
+сохраниться до завершения Central mutation, а Central admission должно связывать
+canonical-before и заранее подготовленный exact canonical-after. Текущий
+`PortfolioRepository.locked_snapshot()` не позволяет save под lock. Поэтому
+будущий cutover требует transaction-linked Risk phase и отдельный
+CAS/save-while-locked primitive. Ни один из этих runtime changes не входит в M0.
 
 ## 9. M1 / alpha1 — Pure Supervisor Domain
 
@@ -276,7 +317,16 @@ M2 must explicitly retire or isolate the existing direct-target proposal route.
 
 Supervisor reads one canonical snapshot, proposal snapshot, quote bundle,
 Central projection and read-only Risk/CashAvailability inputs. It writes only
-append-only shadow evidence after exact confirmation.
+append-only shadow evidence after exact confirmation. Принятый #53 открывает
+только этот read-only CashAvailability path. После `SHADOW_RECORDED` M3 может
+записать immutable `ShadowAcceptedTargetCheckpoint` с ordered per-runtime
+`risk_approved_lots`; checkpoint имеет `acceptance_scope=SHADOW_ONLY` и
+`execution_authorized=false`, не меняет canonical/Central/Risk и не является
+authoritative fallback после schema-3 cutover.
+
+До #53 core shadow использует только explicit `MISSING_PRE_V3_10` sentinel и не
+может заявлять `V4-CASH-00` PASS. Issue #60 остаётся open до accepted #53,
+read-only cash observation и полного final acceptance evidence.
 
 Required live configuration:
 
@@ -291,7 +341,7 @@ execution authorization false and broker POST zero.
 
 ## 12. M4 / beta1 — Schema 3 and target-owner cutover
 
-Schema 3 draft:
+Frozen schema-3 interface contract:
 
 - actual lots remain broker facts;
 - approved aggregate target gains `TargetOwnership=PORTFOLIO_SUPERVISOR`;
@@ -304,8 +354,14 @@ Migration blocks on stale/unreconciled/account mismatch, external/unattributed
 position, pending/uncertain order, corrupt/missing runtime identity or target
 inconsistency. A reconciled legacy strategy target becomes one legacy target
 attribution without broker order. Cutover is stopped and rollback-qualified.
+Успешный cutover инициализирует authoritative canonical target attribution;
+с этого момента `ShadowAcceptedTargetCheckpoint` больше не является stale-cap
+source и fallback к нему запрещён.
 
 ## 13. M5 / beta2 — Authoritative target and rebalance
+
+M5 начинается только после принятого #55 и отдельной activation acceptance:
+#53 сам по себе остаётся shadow-only и не даёт authoritative cash permission.
 
 Sequence:
 
@@ -313,9 +369,9 @@ Sequence:
 DecisionEpoch
 -> requested target
 -> allocator
--> Portfolio Risk approved target
--> prepared target/plan transaction
--> locked revalidation
+-> Portfolio Risk preview / approved-target candidate
+-> prepared target/plan transaction with canonical before/after
+-> locked revalidation and transaction-linked Risk authorization
 -> Central admission
 -> canonical commit/recovery state machine
 -> dispatch-time proof reproduction
@@ -328,7 +384,9 @@ DecisionEpoch
 Because canonical/central/risk/supervisor are separate stores, M0 must specify a
 recoverable prepare/commit protocol; documentation must not claim impossible
 single-file atomicity. Failure before durable Central admission leaves the old
-canonical target authoritative. IN_FLIGHT/UNCERTAIN intent cannot be replaced.
+canonical target authoritative. A non-terminal Supervisor recovery record keeps
+the exact normalized canonical-after payload until verified close/abort; reference
+or checksum alone is insufficient. IN_FLIGHT/UNCERTAIN intent cannot be replaced.
 
 ## 14. Attribution-aware Portfolio Risk
 
@@ -392,7 +450,9 @@ strategy modules, ML/RL allocator, shorts, leverage/margin, multi-venue, crypto,
 automatic transfers/reinvestment and real-account execution. These remain v5+
 or separate branches; Issue #41 stays future research scope.
 
-## 19. Current next gate
+## 19. Next development admission
 
-Publish/review this planning baseline, then execute M0 documents-only interface
-freeze. No authoritative implementation begins from this document alone.
+Documents-only публикация M0 отслеживается PR #70 (`Closes #58`). Его merge не
+открывает M1/M2 и не даёт runtime/schema/GUI/economic mutation или execution
+authority. Следующий development admission требует принятой exact v3.9
+baseline/M6 и отдельного explicit user gate для начала M1.

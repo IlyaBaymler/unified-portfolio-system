@@ -2,7 +2,8 @@
 
 Дата: 2026-08-14
 Post-review correction: 2026-08-15
-Статус: `ISSUES #57-#68 CREATED / IMPLEMENTATION NOT STARTED`
+Acceptance: 2026-08-15
+Статус: `ISSUES #57-#68 CREATED / #58 M0 INTERFACE ACCEPTED / PUBLICATION TRACKED BY PR #70`
 
 ## Dependency graph
 
@@ -26,13 +27,13 @@ v4 umbrella
 | ID | Scope | Key dependency |
 |---|---|---|
 | [#57](https://github.com/baimleriv/unified-portfolio-system/issues/57) | v4.0 umbrella | accepted v3.9 and staged v3.10 dependencies |
-| [#58](https://github.com/baimleriv/unified-portfolio-system/issues/58) | M0 interface freeze | planning baseline |
+| [#58](https://github.com/baimleriv/unified-portfolio-system/issues/58) | M0 interface freeze | accepted after third post-fix final review; publication tracked by PR #70 |
 | [#59](https://github.com/baimleriv/unified-portfolio-system/issues/59) | alpha1 pure Supervisor domain | accepted M0 and v3.9 baseline |
 | [#40](https://github.com/baimleriv/unified-portfolio-system/issues/40) | alpha2 per-strategy runtime/scheduling | #59 + accepted v3.9 baseline; reuse synchronized existing Issue |
-| [#60](https://github.com/baimleriv/unified-portfolio-system/issues/60) | alpha3 read-only shadow | #40 |
+| [#60](https://github.com/baimleriv/unified-portfolio-system/issues/60) | alpha3 read-only shadow | #40 to start core; accepted #53 + `V4-CASH-00` required for final closure |
 | [#61](https://github.com/baimleriv/unified-portfolio-system/issues/61) | beta1 schema 3 / target-owner migration | #60 + accepted v3.10 Decimal/Money #49 |
 | [#62](https://github.com/baimleriv/unified-portfolio-system/issues/62) | Portfolio Risk attribution-aware concentration | #61 models |
-| [#63](https://github.com/baimleriv/unified-portfolio-system/issues/63) | beta2 TargetPortfolio/Rebalance/Central | #61/#62 + accepted v3.10 CashAvailability #53 |
+| [#63](https://github.com/baimleriv/unified-portfolio-system/issues/63) | beta2 TargetPortfolio/Rebalance/Central | #61/#62 + #53 shadow acceptance + accepted/activated authoritative cash context #55 |
 | [#64](https://github.com/baimleriv/unified-portfolio-system/issues/64) | recovery/idempotent target transactions | #63 state machine |
 | [#65](https://github.com/baimleriv/unified-portfolio-system/issues/65) | fill/P&L/internal transfer attribution | #61/#63 + v3.10 cash-flow interfaces |
 | [#66](https://github.com/baimleriv/unified-portfolio-system/issues/66) | GUI/reports/backup/support bundle | #61-#65 |
@@ -46,7 +47,12 @@ predecessor context, not as the active v4 alpha2 admission gate.
 
 ## Closure policy
 
-- M0 closes only after interface review; no code acceptance is inferred;
+- M0 interface contract принят 2026-08-15 после третьего post-fix final review;
+  no code acceptance is inferred;
+- issue-body synchronization is planning metadata only: it changes no
+  repository/runtime artifact and grants no acceptance or execution authority;
+- PR #70 содержит `Closes #58`; его merge публикует только принятую документацию
+  и не открывает implementation gate;
 - alpha1/alpha2/alpha3 use separate branches and PRs;
 - schema migration and authoritative activation require separate exact
   confirmations and rollback gates;

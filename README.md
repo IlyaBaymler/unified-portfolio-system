@@ -572,7 +572,10 @@ build/launch и Stable acceptance остаются отдельным gate M6.
 ## Планирование v4.0 Portfolio Supervisor
 
 Roadmap v4 reviewed 2026-08-14 и принят с архитектурными корректировками.
-Статус: `PLANNING / M0 PENDING`; authoritative implementation не начата.
+Documents-only M0 interface freeze принят explicit user gate 2026-08-15 после
+третьего post-fix final review с результатом PASS.
+Статус: `M0 INTERFACE ACCEPTED / PUBLICATION TRACKED BY PR #70 / NO RUNTIME AUTHORITY`;
+authoritative implementation не начата.
 
 Supervisor формирует один aggregate target и attribution, но не получает
 broker execution authority. `PortfolioState`, Portfolio Risk, Central queue/
@@ -580,18 +583,38 @@ reservations и ExecutionAdapter сохраняют существующие sin
 Новый contribution contract использует fixed-point/Money representations и не
 дублирует существующий direct-target `StrategyProposal`.
 
-M0 planning может быть отдельным documents-only gate. M1/M2 ждут принятую v3.9
-baseline; canonical cutover/execution дополнительно зависят от принятого
-v3.10 Decimal/Money contract (#49) и CashAvailability boundary (#53).
+Для authoritative v4 path provider POST разрешён только через ExecutionAdapter.
+Current direct POST routes в legacy `SandboxTradingBot` и explicitly confirmed
+diagnostics учтены в inventory и должны быть недостижимы из v4 modules.
+
+Source audit подтвердил legacy direct-target proposal route и выявил необходимость
+dual canonical-before/after proof плюс CAS/save-while-locked для recoverable
+target commit. Non-terminal Supervisor recovery record сохраняет exact prepared
+canonical-after payload, а единственный schema-3 target writer —
+`SupervisorTargetTransactionCoordinator`. Эти runtime изменения отложены.
+M1/M2 ждут принятые M0 и v3.9
+baseline; canonical cutover/execution дополнительно зависят от принятого v3.10
+Decimal/Money contract (#49). Принятый #53 открывает только read-only shadow
+CashAvailability interface; authoritative M5 ждёт принятый Portfolio Risk cash
+context #55 и отдельный activation gate. До schema-3 stale cap использует только
+shadow-only `ShadowAcceptedTargetCheckpoint`; после cutover — только committed
+canonical target attribution, без fallback к shadow evidence.
+Core M3 может стартовать с explicit pre-v3.10 sentinel, но Issue #60 и
+`V4-CASH-00` не закрываются до принятия #53. Acceptance M0 также не открывает M1:
+он продолжает ждать отдельную принятую exact v3.9 baseline/M6.
 
 Документы:
 
 - `docs/plans/V4_0_PORTFOLIO_SUPERVISOR_PLAN_RU.md`;
+- `docs/plans/V4_0_M0_TESTABILITY_REGISTER_RU.md`;
 - `docs/project/V4_0_ARCHITECTURE_REVIEW_2026-08-14_RU.md`;
-- `docs/project/V4_0_INTERFACE_FREEZE_DRAFT_RU.md`;
+- `docs/project/V4_0_CURRENT_INTERFACE_INVENTORY_RU.md`;
+- `docs/project/V4_0_INTERFACE_FREEZE_RU.md`;
 - `docs/project/V4_0_ISSUE_MAP_RU.md`.
 
 GitHub tracking: umbrella #57, milestone Issues #58-#68 и existing alpha2 #40.
+Публикация отслеживается PR #70 (`Closes #58`); его merge остаётся
+documents-only и не открывает M1/M2 автоматически.
 
 ## Рабочая связка ChatGPT + Codex
 

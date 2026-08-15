@@ -412,7 +412,7 @@ annotations 0. Следующий v3.9 gate — M6 Stable qualification.
 
 ## v4.0.0 — Portfolio Supervisor Foundation
 
-Статус: `PLANNING / M0 PENDING / AUTHORITATIVE IMPLEMENTATION BLOCKED`.
+Статус: `M0 INTERFACE ACCEPTED 2026-08-15 / PUBLICATION TRACKED BY PR #70 / AUTHORITATIVE IMPLEMENTATION BLOCKED`.
 
 - formal `StrategyRuntimeId = instrument + strategy + config + timeframe`;
 - versioned `StrategyContributionProposal`, без конфликта с существующим
@@ -424,22 +424,40 @@ annotations 0. Следующий v3.9 gate — M6 Stable qualification.
 - deterministic CapitalAllocator и одна net RebalanceAction на instrument;
 - Portfolio Risk остаётся mandatory hard gate;
 - Central остаётся владельцем queue/reservations/admission/dispatch proof;
+- authoritative v4 provider path проходит только через ExecutionAdapter; current
+  legacy bot/diagnostic POST routes изолируются от v4 modules;
+- pre-schema3 stale cap воспроизводится из shadow-only accepted checkpoint, а
+  после cutover — только из committed canonical target attribution;
 - attribution-only transition не создаёт intent/order/cash effect;
 - schema-3 target-owner migration только после shadow и rollback gates.
 
-M0 planning можно выполнять заранее. M1/M2 ждут принятую v3.9 baseline; M4/M5
-дополнительно зависят от принятого v3.10 Decimal/Money contract (#49) и
-CashAvailability boundary (#53). Existing
-Issue #40 используется для alpha2 runtime/scheduling и не дублируется.
+M0 source audit выполнен documents-only на baseline `65fe0fb`; принятый freeze
+добавляет verified current inventory, unique DTO/serialization contracts,
+legacy-route retirement, dual canonical-before/after target transaction,
+durable exact-after recovery record, single target-subtree writer,
+schema-2 -> 3 migration, lock order и testability register. Третий post-fix final
+review завершён с PASS, explicit user acceptance записан 2026-08-15. M1/M2 ждут
+принятые M0 и v3.9 baseline; M4/M5
+дополнительно зависят от принятого v3.10 Decimal/Money contract (#49). #53
+открывает read-only CashAvailability shadow interface; authoritative M5 ждёт
+принятый Portfolio Risk cash context #55 и отдельную activation acceptance.
+Core M3 может использовать explicit sentinel до #53, но #60 не закрывается без
+принятого CashAvailability shadow subgate. Принятие M0 не отменяет отдельный
+v3.9 M6 baseline gate для начала M1/M2.
+Existing Issue #40 используется для alpha2 runtime/scheduling и не дублируется.
 
 Подробности:
 
 - `docs/plans/V4_0_PORTFOLIO_SUPERVISOR_PLAN_RU.md`;
+- `docs/plans/V4_0_M0_TESTABILITY_REGISTER_RU.md`;
 - `docs/project/V4_0_ARCHITECTURE_REVIEW_2026-08-14_RU.md`;
-- `docs/project/V4_0_INTERFACE_FREEZE_DRAFT_RU.md`;
+- `docs/project/V4_0_CURRENT_INTERFACE_INVENTORY_RU.md`;
+- `docs/project/V4_0_INTERFACE_FREEZE_RU.md`;
 - `docs/project/V4_0_ISSUE_MAP_RU.md`.
 
 GitHub tracking: umbrella #57, milestones #58-#68 и existing alpha2 Issue #40.
+Публикация отслеживается PR #70 (`Closes #58`). Его merge является
+documents-only publication и не означает начало implementation автоматически.
 
 ## v4.1.0 — Ограниченный реальный контур
 
