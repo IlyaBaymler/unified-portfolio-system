@@ -25,7 +25,7 @@ def test_portable_path_resolution_uses_sibling_runtime(monkeypatch, tmp_path: Pa
     assert paths.backups_dir == paths.runtime_dir / "backups"
 
 
-def test_standalone_layout_verifier_accepts_expected_tree(tmp_path: Path):
+def test_standalone_layout_verifier_accepts_v3_9_stable_tree(tmp_path: Path):
     for name in ("app", "runtime", "backups", "reports", "logs", "support"):
         (tmp_path / name).mkdir()
     (tmp_path / "MOEX Research Robot.bat").write_text("launcher", encoding="utf-8")
@@ -33,7 +33,7 @@ def test_standalone_layout_verifier_accepts_expected_tree(tmp_path: Path):
     (tmp_path / "app" / "build_manifest.json").write_text(
         json.dumps(
             {
-                "software_version": "0.3.7",
+                "software_version": "0.3.9",
                 "release_channel": "stable",
                 "sandbox_only": True,
                 "real_account_execution": False,
@@ -215,7 +215,8 @@ def test_standalone_sources_are_present_and_use_portable_environment():
     launcher = (root / "portable_launcher.bat").read_text(encoding="utf-8")
     assert "desktop_gui.py" in spec
     assert "MOEXResearchRobot" in spec
-    assert "V3_7_0_STABLE_RECOVERY_RUNBOOK_RU.md" in spec
+    assert "V3_9_0_STABLE_RECOVERY_RUNBOOK_RU.md" in spec
+    assert "V3_7_0_STABLE_RECOVERY_RUNBOOK_RU.md" not in spec
     assert "V3_7_BETA1_RECOVERY_RUNBOOK_RU.md" not in spec
     assert "V3_7_ALPHA3_RECOVERY_RUNBOOK_RU.md" not in spec
     assert "PyInstaller" in builder

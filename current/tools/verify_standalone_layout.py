@@ -71,7 +71,7 @@ def _normalized_text(path: Path) -> str:
 def verify_layout(
     root: str | Path,
     *,
-    expected_version: str = "0.3.7",
+    expected_version: str = "0.3.9",
     expected_channel: str = "stable",
     minimum_risk_state_schema: int | None = None,
     allow_structural_fixture: bool = False,
@@ -190,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Verify a Sandbox-only portable layout."
     )
     parser.add_argument("--root", required=True)
-    parser.add_argument("--expected-version", default="0.3.7")
+    parser.add_argument("--expected-version", default="0.3.9")
     parser.add_argument("--expected-channel", default="stable")
     parser.add_argument("--minimum-risk-state-schema", type=int)
     parser.add_argument("--allow-structural-fixture", action="store_true")

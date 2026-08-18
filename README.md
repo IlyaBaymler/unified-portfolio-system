@@ -559,6 +559,17 @@ exact-head и post-merge GitHub Actions прошли с `774 passed`, pip check,
 critical/strict Ruff и compileall PASS, annotations 0. Фактический standalone
 build/launch и Stable acceptance остаются отдельным gate M6.
 
+M6 Stable qualification подготовлен в отдельной ветке от `main` `dd3b9a35` с
+exact implementation baseline `cddd80f3`. Candidate identity переведена в
+`0.3.9 / v3.9.0 / stable`, Risk schema 4 и Sandbox-only boundary закреплены в
+manifest. Добавлены v3.9 release docs, packaging names и read-only
+`tools/v3_9_stable_preflight.py`. Все actual standalone, recovery matrix,
+manual kill-switch, burn-in и user-acceptance flags остаются `PENDING/false`.
+Automated source/artifact gates прошли: targeted `27 + 112 + 46`, full
+regression `780 passed`, pip check, release hygiene, critical/strict Ruff и
+compileall PASS. Два source ZIP byte-identical; deterministic structure,
+manifest и private scan PASS. Следующий gate — `BUILD V3.9 M6 ACTUAL STANDALONE`.
+
 Основные документы:
 
 - `docs/plans/V3_9_PORTFOLIO_RISK_ENGINE_PLAN_RU.md`;
@@ -566,6 +577,7 @@ build/launch и Stable acceptance остаются отдельным gate M6.
 - `docs/plans/V3_9_M5_1_OPERATOR_CONTROL_RUNBOOK_RU.md`;
 - `docs/plans/V3_9_M5_2_EXTERNAL_CASH_RECOVERY_RUNBOOK_RU.md`;
 - `docs/plans/V3_9_M5_3_PERSISTENCE_STANDALONE_RUNBOOK_RU.md`;
+- `docs/plans/V3_9_M6_STABLE_QUALIFICATION_RUNBOOK_RU.md`;
 - `docs/project/V3_9_INTERFACE_FREEZE_RU.md`;
 - `docs/project/V3_9_ISSUE_PROPOSAL_RU.md`.
 

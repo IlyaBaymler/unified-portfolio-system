@@ -1,8 +1,10 @@
 # План разработки v3.9.0 — Portfolio Risk Engine
 
-Дата: 2026-08-14
-Статус: `IN DEVELOPMENT / M5.3 LOCAL ACCEPTANCE PASS / COMMIT-PUSH PENDING`
-Базовый commit: `cc02294` — squash merge PR #45 (`v3.9 M5.2`)
+Дата: 2026-08-15
+Статус: `M6 SOURCE PREFLIGHT + DETERMINISTIC ARTIFACTS PASS / MANUAL GATES PENDING`
+Implementation baseline: `cddd80f3` — squash merge PR #46 (`v3.9 M5.3`)
+Qualification branch base: `dd3b9a35` — current `main`, последующие изменения
+относительно implementation baseline относятся только к V4 documentation.
 
 План сверен с пакетом обновления
 `v3_9_portfolio_risk_codex_plan_2026-08-13.zip`, SHA-256
@@ -963,6 +965,25 @@ WAL/SHM и raw Account ID leaks 0. Исходный M5.3 runtime не измен
 identity не менялась, фактический executable не строился/не запускался.
 Proposal, Central intent, dispatch, resubmit и provider POST отсутствовали.
 
-Runbook:
-`docs/plans/V3_9_M5_3_PERSISTENCE_STANDALONE_RUNBOOK_RU.md`.
-Следующий отдельный gate — `COMMIT/PUSH M5.3`.
+M5.3 squash-merged через PR #46 в `main` (`cddd80f3`); exact-head и
+post-merge CI прошли с `774 passed`, pip check, critical/strict Ruff,
+compileall PASS и annotations 0.
+
+M6 подготовлен в отдельной ветке от current `main`: release identity переведена
+в `0.3.9 / v3.9.0 / stable / candidate`, manifest фиксирует exact
+implementation/base commits, Risk schema 4 и все ручные M6 flags как `false`.
+Добавлены v3.9 packaging/release docs, fail-closed source preflight и отдельный
+runbook. Фактический executable, standalone launch, upgrade/rollback,
+kill-switch acceptance и burn-in этой подготовкой не заявлены.
+
+Runbooks:
+
+- `docs/plans/V3_9_M5_3_PERSISTENCE_STANDALONE_RUNBOOK_RU.md`;
+- `docs/plans/V3_9_M6_STABLE_QUALIFICATION_RUNBOOK_RU.md`.
+
+Automated Gate A/B выполнен: targeted groups `27 + 112 + 46 passed`, full
+regression `780 passed`, pip check, release hygiene, critical/strict Ruff,
+compileall и candidate safety boundary — PASS. Два source ZIP byte-identical;
+archive root/order/timestamps/modes/ZIP_CONTENTS/manifest/private scan — PASS,
+hashes записаны во внешний evidence index. Следующий отдельный gate —
+`BUILD V3.9 M6 ACTUAL STANDALONE`.

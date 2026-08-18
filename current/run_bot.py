@@ -299,7 +299,7 @@ def main() -> None:
 
         if double_armed and config.max_order_lots != 1:
             raise SystemExit(
-                "v3.7.0 Sandbox Execution is limited to exactly 1 lot."
+                "v3.9.0 legacy CLI Sandbox Execution is limited to exactly 1 lot."
             )
         risk_runtime = RiskRuntimeAdapter.from_directory(
             Path(__file__).resolve().parent,

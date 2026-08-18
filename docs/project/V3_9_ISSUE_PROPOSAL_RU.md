@@ -279,7 +279,9 @@ final-review — PASS, failures 0, material hash changes 0, raw Account ID
 evidence leaks 0. Isolated `RESTORE RUNTIME` к принятому v3.8 завершён PASS:
 10/10 entries, checksum 6/6, last-good 5/5, offline inspect `IDLE`, изменения
 material/residual hashes 0, WAL/SHM и raw Account ID leaks 0. Фактический
-standalone build/launch остаётся gate M6. Следующий gate — `COMMIT/PUSH M5.3`.
+standalone build/launch остаётся gate M6. M5.3 squash-merged через PR #46 в
+`main` (`cddd80f3`); post-merge CI прошёл с `774 passed`, Ruff/compileall PASS
+и annotations 0.
 
 ## 8. `v3.9.0` — acceptance и release qualification
 
@@ -289,6 +291,14 @@ restart/disconnect/MARKET_IDLE, backup/rollback, secret scan и 24–48 h
 
 Gate: zero-count invariants выполнены, pending/uncertain отсутствуют, explicit
 user acceptance получен до tag/release/закрытия umbrella Issue.
+
+Подготовка M6 начата 2026-08-15 в отдельной ветке от `main` `dd3b9a35` при
+exact runtime implementation baseline `cddd80f3`. Candidate identity,
+packaging, release documents и read-only source preflight подготовлены; все
+manual gates намеренно остаются pending. Следующий отдельный gate —
+`BUILD V3.9 M6 ACTUAL STANDALONE`. Automated source/artifact matrix:
+`27 + 112 + 46 targeted`, `780 full`; deterministic source pair и private scan
+— PASS, exact hashes сохранены во внешнем evidence index.
 
 ## Рекомендуемые зависимости
 

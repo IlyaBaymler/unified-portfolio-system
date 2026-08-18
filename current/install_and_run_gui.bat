@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
-title MOEX Research Robot v3.7.0 - Setup
+title MOEX Research Robot v3.9.0 - Setup
 
 call prepare_environment.bat --with-dev
 if errorlevel 1 goto :error

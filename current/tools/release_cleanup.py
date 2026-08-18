@@ -6,15 +6,15 @@ import shutil
 import sys
 
 CURRENT_FILES = {
-    "CHANGELOG_V3_7_0_STABLE_RU.md",
-    "MASTER_UPDATE_2026-08-12_V3_7_0_STABLE_RU.md",
-    "RELEASE_MANIFEST_V3_7_0_STABLE.txt",
-    "UPDATE_TO_V3_7_0_STABLE.md",
-    "V3_7_0_STABLE_ARCHITECTURE_RU.md",
-    "V3_7_0_STABLE_RECOVERY_RUNBOOK_RU.md",
-    "V3_7_0_STABLE_TEST_PLAN_RU.md",
-    "VERIFY_V3_7_0_STABLE.bat",
-    "install_and_verify_v3_7_0.bat",
+    "CHANGELOG_V3_9_0_STABLE_RU.md",
+    "MASTER_UPDATE_2026-08-15_V3_9_0_STABLE_RU.md",
+    "RELEASE_MANIFEST_V3_9_0_STABLE.txt",
+    "UPDATE_TO_V3_9_0_STABLE.md",
+    "V3_9_0_STABLE_ARCHITECTURE_RU.md",
+    "V3_9_0_STABLE_RECOVERY_RUNBOOK_RU.md",
+    "V3_9_0_STABLE_TEST_PLAN_RU.md",
+    "VERIFY_V3_9_0_STABLE.bat",
+    "install_and_verify_v3_9_0.bat",
     "restore_stable_default_risk_profile.bat",
 }
 

@@ -394,6 +394,19 @@ squash-merged через PR #46 в `main` (`cddd80f3`); exact-head и post-merge
 Actions прошли с `774 passed`, pip check, critical/strict Ruff и compileall PASS,
 annotations 0. Следующий v3.9 gate — M6 Stable qualification.
 
+M6 preparation начата от `main` `dd3b9a35`; functional implementation baseline
+— `cddd80f3`, а M6 diff ограничен release identity/packaging/qualification.
+Release candidate identity —
+`0.3.9 / v3.9.0 / stable`; manifest, source/standalone builders, root release
+docs и fail-closed source preflight синхронизированы. Все manual qualification
+flags остаются false. Следующий отдельный gate —
+Automated Gate A/B прошёл: targeted `27 + 112 + 46`, full regression
+`780 passed`, pip check, release hygiene, critical/strict Ruff и compileall
+PASS. Два source ZIP byte-identical; deterministic structure/manifest/private
+scan PASS. Следующий gate — `BUILD V3.9 M6 ACTUAL STANDALONE`;
+фактический standalone, recovery matrix, kill switches и 24–48 h burn-in ещё
+не приняты.
+
 Подробности:
 
 - `docs/plans/V3_9_PORTFOLIO_RISK_ENGINE_PLAN_RU.md`;

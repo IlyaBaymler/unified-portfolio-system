@@ -1,12 +1,12 @@
 {
-  "software_version": "0.3.7",
-  "display_version": "v3.7.0",
+  "software_version": "0.3.9",
+  "display_version": "v3.9.0",
   "release_channel": "stable",
-  "build_date": "2026-08-12",
+  "build_date": "2026-08-15",
   "sandbox_only": true,
   "real_account_execution": false,
   "state_schema": 6,
-  "risk_state_schema": 2,
+  "risk_state_schema": 4,
   "recovery_protocol": "startup-recovery-v1",
   "portable_layout": "app/runtime/backups/reports/logs/support",
   "risk_block_dedup_protocol": "risk-block-v1",
@@ -29,7 +29,9 @@
     480,
     600
   ],
-  "release_basis": "accepted v3.7-beta1 qualification baseline",
+  "release_basis": "v3.9 M5.3 squash-merged implementation baseline",
+  "implementation_baseline_commit": "cddd80f3caf7191ecf2f85df9e1ccfea97af6cc4",
+  "qualification_branch_base_commit": "dd3b9a35f5d2b2dfb9e8776facb81712848e2c7d",
   "default_max_position_lots": 1,
   "default_max_orders_per_day": 4,
   "sandbox_acceptance": {
@@ -72,14 +74,33 @@
   },
   "stable_qualification": {
     "status": "candidate",
+    "automated_source_preflight_complete": true,
+    "automated_source_preflight_tests": 780,
+    "automated_source_preflight_date": "2026-08-15",
+    "deterministic_source_artifacts_complete": true,
+    "deterministic_source_artifact_protocol": "deterministic-source-pair-v1",
     "user_acceptance": false,
-    "final_burn_in_complete": false
+    "final_burn_in_complete": false,
+    "standalone_build_complete": false,
+    "standalone_launch_complete": false,
+    "upgrade_rollback_complete": false,
+    "restart_disconnect_partial_fill_complete": false,
+    "global_kill_switch_accepted": false,
+    "instrument_kill_switch_accepted": false,
+    "release_artifacts_complete": false
   },
   "portfolio_state_schema": 2,
   "portfolio_manager_protocol": "canonical-portfolio-v2",
   "portfolio_manager_mode": "canonical-only",
-  "stable_execution_path_unchanged": true,
+  "stable_execution_path_unchanged": false,
   "multi_asset_execution": false,
+  "multi_instrument_runtime": true,
+  "multi_instrument_execution": true,
+  "central_order_state_schema": 1,
+  "portfolio_risk_mode": "ENFORCED",
+  "portfolio_risk_proof_protocol": "pre-dispatch-revalidation-v1",
+  "portfolio_risk_external_cash_protocol": "explicit-resync-v1",
+  "portfolio_risk_operator_control_protocol": "exact-confirmation-v1",
   "automatic_position_adoption": false,
   "position_origin_protocol": "position-origin-v1",
   "external_close_ack_protocol": "external-close-ack-v1",
@@ -153,5 +174,13 @@
     "DEGRADED",
     "DISABLED"
   ],
-  "compatibility_shadow_blocks_canonical_readiness": false
+  "compatibility_shadow_blocks_canonical_readiness": false,
+  "v3_9_m5_3_qualification": {
+    "status": "accepted-implementation-baseline",
+    "commit": "cddd80f3caf7191ecf2f85df9e1ccfea97af6cc4",
+    "post_merge_tests": 774,
+    "persistence_final_review": "PASS",
+    "disposable_restore": "PASS",
+    "executable_launch_verified": false
+  }
 }

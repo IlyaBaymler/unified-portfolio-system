@@ -1,0 +1,47 @@
+MOEX Research Robot v3.9.0 Stable Candidate
+Python package: 0.3.9
+Release channel: stable
+Prepared: 2026-08-15
+
+Exact implementation baseline:
+- cddd80f3caf7191ecf2f85df9e1ccfea97af6cc4
+
+Qualification branch base:
+- dd3b9a35f5d2b2dfb9e8776facb81712848e2c7d
+
+Permanent safety boundary:
+- sandbox_only=true
+- real_account_execution=false
+- automatic_position_adoption=false
+- PortfolioState schema=2
+- Portfolio Risk state schema=4
+- Central order state schema=1
+
+Accepted prerequisite evidence:
+- M5.3 persistence final review: PASS
+- disposable v3.8 restore: PASS
+- post-merge CI: 774 passed, Ruff/compileall PASS, annotations 0
+
+M6 preparation status:
+- exact source identity and manifest: PREPARED
+- automated source preflight: PASS
+- targeted release/standalone/preflight/artifacts: 27 passed
+- targeted Portfolio Risk/Central: 112 passed
+- targeted persistence/recovery: 46 passed
+- full regression: 780 passed
+- pip check, release hygiene, critical/strict Ruff and compileall: PASS
+- deterministic source ZIP pair: PASS; exact hashes recorded in external evidence index
+- ZIP root/member order/timestamps/modes/ZIP_CONTENTS/private scan: PASS
+- actual PyInstaller build/layout: PENDING
+- clean install and standalone launch: PENDING
+- upgrade from accepted runtime and isolated rollback: PENDING
+- restart/disconnect/partial-fill/reconciliation matrix: PENDING
+- manual global kill switch: PENDING
+- manual instrument kill switch: PENDING
+- 2-3 instrument Sandbox burn-in 24-48 h: PENDING
+- final backup/support/secret scan: PENDING
+- explicit user acceptance: PENDING
+
+Publication:
+- GitHub tag/release: NOT AUTHORIZED
+- real-account execution: NOT IMPLEMENTED / NOT AUTHORIZED

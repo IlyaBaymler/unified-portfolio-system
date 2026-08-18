@@ -86,4 +86,4 @@ jobs:
         run: python -m compileall -q -f trading_robot tools tests
 
       - name: Run full regression suite
-        run: python -m pytest -q --basetemp .pytest-tmp-ci -p no:cacheprovider
+        run: python -m pytest -q --basetemp "$env:RUNNER_TEMP\pytest" -p no:cacheprovider

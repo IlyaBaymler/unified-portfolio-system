@@ -270,7 +270,7 @@ class SandboxTradingBot:
             and self.risk_runtime is None
         ):
             raise ValueError(
-                "Sandbox execution requires a RiskRuntimeAdapter in v3.7.0."
+                "Sandbox execution requires a RiskRuntimeAdapter in v3.9.0."
             )
         self.strategy_suite = strategy_suite_from_bot_config(config)
         self.primary_strategy: StrategyName = self.strategy_suite.primary_strategy
@@ -2379,7 +2379,7 @@ class SandboxTradingBot:
                 )
                 pending["recovery_error"] = (
                     "Broker lookup by orderRequestId returned 404. "
-                    "Automatic POST replay is forbidden in v3.7.0."
+                    "Automatic POST replay is forbidden in v3.9.0."
                 )
                 bot_state["pending_order"] = pending
                 self._save_state(root_state)

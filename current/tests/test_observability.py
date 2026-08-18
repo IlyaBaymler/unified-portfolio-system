@@ -164,7 +164,7 @@ def test_cycle_has_timing_session_and_decision_is_not_an_order(tmp_path: Path):
     bot.end_session("test_complete")
     sessions = journal.recent(category="session")
     assert {row["event_type"] for row in sessions} == {"STARTED", "STOPPED"}
-    assert all(row["payload"]["software_version"] == "0.3.7" for row in sessions)
+    assert all(row["payload"]["software_version"] == "0.3.9" for row in sessions)
 
 
 def test_recovered_retry_is_structured_and_aggregated_into_cycle(tmp_path: Path):

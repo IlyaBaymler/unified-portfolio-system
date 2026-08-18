@@ -1,26 +1,28 @@
-# Быстрый запуск MOEX Research Robot v3.7.0 Stable
+# Быстрый запуск MOEX Research Robot v3.9.0 Stable Candidate
 
-## Исходный пакет
+## Source candidate
 
 ```bat
-install_and_verify_v3_7_0.bat
+install_and_verify_v3_9_0.bat
 run_gui.bat
 ```
 
 Установщик создаёт локальную `.venv`, устанавливает зависимости и запускает
-Stable verification gate. Используйте новую папку, а runtime beta1/alpha3
-переносите только после создания backup и проверки canonical schema 2.
+автоматический M6 preflight. Runtime предыдущей версии переносите только через
+проверенный backup, preview restore и отдельную operator confirmation.
 
-## Portable package
+## Portable candidate
 
 Запустите `MOEX Research Robot.bat`. Python на целевом компьютере не требуется.
+Сам факт запуска не закрывает standalone/restart/burn-in acceptance.
 
 ## Перед Sandbox Execution
 
 - выбран правильный Sandbox account ID;
-- snapshot свежий, canonical source и `MATCHED`;
-- pending/uncertain отсутствуют;
-- Risk gate показывает `PASS`;
-- размер заявки равен 1 lot.
+- canonical snapshot свежий и `READY/FRESH/MATCHED`;
+- Central queue/reservations и pending/uncertain проверены;
+- Portfolio Risk `READY/ENFORCED`, kill switches в ожидаемом состоянии;
+- `risk_resync_required=false`;
+- увеличение риска имеет свежий dispatch proof.
 
-Real-account execution в v3.7.0 отключён.
+Real-account execution в v3.9.0 отсутствует.

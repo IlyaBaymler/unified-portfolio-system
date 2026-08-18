@@ -8,7 +8,7 @@ datas = [
     (str(ROOT / "build_manifest.json"), "."),
     (str(ROOT / "README.md"), "."),
     (str(ROOT / "START_HERE_WINDOWS.md"), "."),
-    (str(ROOT / "V3_7_0_STABLE_RECOVERY_RUNBOOK_RU.md"), "."),
+    (str(ROOT / "V3_9_0_STABLE_RECOVERY_RUNBOOK_RU.md"), "."),
 ]
 
 hiddenimports = [

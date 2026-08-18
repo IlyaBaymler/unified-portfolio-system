@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
-title MOEX Risk Profile Tool v3.7.0
+title MOEX Risk Profile Tool v3.9.0
 if not exist ".venv\Scripts\python.exe" (
     call prepare_environment.bat
     if errorlevel 1 goto :fail

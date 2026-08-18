@@ -689,7 +689,7 @@ class TradingRobotGUI(tk.Tk):
         self.notebook.add(self.risk_tab, text="Risk Dashboard")
         self.notebook.add(self.readiness_tab, text="Готовность RC")
         self.notebook.add(self.diagnostics_tab, text="Диагностика заявок")
-        self.notebook.add(self.events_tab, text="События v3.7.0")
+        self.notebook.add(self.events_tab, text="События v3.9.0")
         self.notebook.add(self.logs_tab, text="Технический журнал")
         self.notebook.add(self.help_tab, text="Как пользоваться")
 
@@ -1259,7 +1259,7 @@ class TradingRobotGUI(tk.Tk):
         ).pack(fill="x", pady=2)
 
         profile_box = ttk.LabelFrame(
-            controls, text="Профили стратегии v3.7.0", padding=10
+            controls, text="Профили стратегии v3.9.0", padding=10
         )
         profile_box.pack(fill="x", pady=(0, 8))
         self.profile_mode_combo = self._labeled_combo(
@@ -1471,7 +1471,7 @@ class TradingRobotGUI(tk.Tk):
         ).pack(anchor="w")
 
         resilience_box = ttk.LabelFrame(
-            controls, text="Устойчивость v3.7.0", padding=10
+            controls, text="Устойчивость v3.9.0", padding=10
         )
         resilience_box.pack(fill="x", pady=(0, 8))
         for label, variable in (
@@ -1541,7 +1541,7 @@ class TradingRobotGUI(tk.Tk):
             command=self._stop_robot,
         ).pack(fill="x", pady=(8, 2))
 
-        dashboard = ttk.LabelFrame(info, text="Состояние робота v3.7.0", padding=10)
+        dashboard = ttk.LabelFrame(info, text="Состояние робота v3.9.0", padding=10)
         dashboard.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         dashboard.columnconfigure(1, weight=1)
         dashboard.columnconfigure(3, weight=1)
@@ -1666,7 +1666,7 @@ class TradingRobotGUI(tk.Tk):
                 "Этот интерфейс использует только методы T-Invest Sandbox. "
                 "В проекте нет метода выставления заявок на реальном счёте.\n"
                 "Dry-run рассчитывает решение, но не отправляет даже виртуальную заявку. "
-                "В v3.7.0 Risk Engine проверяет PRIMARY и в Dry-run, и перед "
+                "В v3.9.0 Portfolio Risk проверяет account-wide state и перед "
                 "созданием Sandbox-intent. Подтверждённый fill учитывается в risk_state.json "
                 "только после portfolio reconciliation.\n"
                 "Режим исполнения требует сохранённого Sandbox risk-профиля, флажка, "
@@ -3032,7 +3032,7 @@ class TradingRobotGUI(tk.Tk):
         if configured_max_lots != 1:
             messagebox.showwarning(
                 "Beta1.1: лимит Sandbox",
-                "В v3.7.0 Sandbox Execution разрешён только при "
+                "В v3.9.0 Sandbox Execution разрешён только при "
                 "максимуме 1 лот.",
                 parent=self,
             )
@@ -6145,7 +6145,7 @@ class TradingRobotGUI(tk.Tk):
         text.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         instructions = """
-БЫСТРЫЙ СТАРТ v3.7.0
+БЫСТРЫЙ СТАРТ v3.9.0
 
 1. Сначала откройте «T-Invest Sandbox», введите токен и нажмите «Проверить подключение».
 2. Выберите виртуальный счёт. Для первичной проверки запустите один dry-run.
@@ -6155,7 +6155,7 @@ class TradingRobotGUI(tk.Tk):
 6. Для диагностической заявки нужны флажок, слово DIAGNOSTIC и отдельное подтверждение. Для робота — флажок и слово SANDBOX.
 7. DRY_RUN и SANDBOX_EXECUTION имеют отдельные профили PRIMARY/SHADOW. Перед запуском проверьте имя режима и hash активного профиля.
 8. Вкладка «Виртуальный портфель» показывает позиции, кэш, цели, ownership, pending-order и результат reconciliation.
-9. Вкладка «События v3.7.0» показывает структурированный журнал циклов, конфигураций, заявок, переходов состояния и инцидентов. Его можно экспортировать в CSV.
+9. Вкладка «События v3.9.0» показывает структурированный журнал циклов, конфигураций, заявок, переходов состояния и инцидентов. Его можно экспортировать в CSV.
 10. При закрытом или явно недоступном рынке робот переходит в MARKET_IDLE: свечи и стратегии не пересчитываются, но status-check и редкая portfolio reconciliation продолжаются.
 
 ЧТО ПРОИСХОДИТ В ОДНОМ ЦИКЛЕ

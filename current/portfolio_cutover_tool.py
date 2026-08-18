@@ -12,7 +12,7 @@ from trading_robot.portfolio_repository import PortfolioRepository
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="v3.7.0 canonical cutover tool")
+    parser = argparse.ArgumentParser(description="v3.9.0 canonical cutover tool")
     parser.add_argument("command", choices=("preview", "cutover"))
     parser.add_argument("--runtime-dir", default=".")
     parser.add_argument("--account-id", default="")
