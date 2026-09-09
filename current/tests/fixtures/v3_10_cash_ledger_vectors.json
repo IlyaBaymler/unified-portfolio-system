@@ -1,0 +1,141 @@
+{
+  "domain": "v3.10-cash-ledger-fixture",
+  "vectors": [
+    {
+      "canonical_json_ascii": "{\"amount\":\"0.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"0\",\"scale\":9,\"version\":1}",
+      "id": "money-zero",
+      "kind": "money",
+      "sha256": "3f49980f43cb256a88bc20cee7ba2617ca4d337315b0e48d8789d8335c9fba18"
+    },
+    {
+      "canonical_json_ascii": "{\"amount\":\"0.000000001\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1\",\"scale\":9,\"version\":1}",
+      "id": "money-one-nanoruble",
+      "kind": "money",
+      "sha256": "2c4512e6fcaa4f029bb59f411b5a3739e955042ac61bbba6cff5fe0871506110"
+    },
+    {
+      "canonical_json_ascii": "{\"amount\":\"0.010000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"10000000\",\"scale\":9,\"version\":1}",
+      "id": "money-one-kopeck",
+      "kind": "money",
+      "sha256": "983b0fd77a02eb787ab943ef57693430769c9bc681d7b2e24d54ddfea8d30224"
+    },
+    {
+      "canonical_json_ascii": "{\"amount\":\"-0.000000001\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1\",\"scale\":9,\"version\":1}",
+      "id": "money-negative-sub-kopeck",
+      "kind": "money",
+      "sha256": "e0e46b7ce8464a4e9aaf67cd72b0b5f769af65cc0d736403a13be4e09ab66b12"
+    },
+    {
+      "canonical_json_ascii": "{\"amount\":\"-9223372036854775808.999999999\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-9223372036854775808999999999\",\"scale\":9,\"version\":1}",
+      "id": "money-standalone-minimum",
+      "kind": "money",
+      "sha256": "8fe2167122cd969ae78635f1909c3bb18a2b6788df044933d6886421803cc96f"
+    },
+    {
+      "canonical_json_ascii": "{\"amount\":\"9223372036854775807.999999999\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"9223372036854775807999999999\",\"scale\":9,\"version\":1}",
+      "id": "money-standalone-maximum",
+      "kind": "money",
+      "sha256": "5202fff8446003310ecc069c8b65d2ec251244380cec5c1532a0bd44ffb5d862"
+    },
+    {
+      "canonical_json_ascii": "{\"amount\":\"-9223372036854775807.999999999\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-9223372036854775807999999999\",\"scale\":9,\"version\":1}",
+      "id": "money-posting-minimum",
+      "kind": "money",
+      "sha256": "bb4b767953a31a29b3937e3060f105615adea6e8d8c4ef6b502770d3504109e5"
+    },
+    {
+      "canonical_json_ascii": "{\"amount\":\"9223372036854775807.999999999\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"9223372036854775807999999999\",\"scale\":9,\"version\":1}",
+      "id": "money-posting-maximum",
+      "kind": "money",
+      "sha256": "5202fff8446003310ecc069c8b65d2ec251244380cec5c1532a0bd44ffb5d862"
+    },
+    {
+      "canonical_json_ascii": "{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1}",
+      "id": "money-one-rub",
+      "kind": "money",
+      "sha256": "84f2a0a835a9925f376b0f8deb78df59665c4f7cb66bad5b46ee7d88044050ed"
+    },
+    {
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"source_kind\":\"SYNTHETIC\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1}",
+      "id": "source-synthetic",
+      "kind": "source",
+      "sha256": "37b37643d08b5e591bf184f95542dfe20c0d627427cc4757c7e5255158d7ee20"
+    },
+    {
+      "canonical_json_ascii": "{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1},\"version\":1}",
+      "id": "posting-cash-positive",
+      "kind": "posting",
+      "sha256": "5764735e2fbb39adb0118772020e5cde8ce978497058270ecafd0613ff77fa20"
+    },
+    {
+      "canonical_json_ascii": "{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"-1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1000000000\",\"scale\":9,\"version\":1},\"version\":1}",
+      "id": "posting-external-flow-negative",
+      "kind": "posting",
+      "sha256": "811d0422e9cfa9c0b74996e576cb4661a80cfc707d878e6c688fef25c1dfb67c"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"DEPOSIT\",\"classification_version\":1,\"corrects_sha256\":null,\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:04:05.123456789Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"-1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":null,\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"source_kind\":\"SYNTHETIC\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1},\"version\":1}",
+      "economic_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"chart_version\":1,\"classification\":\"DEPOSIT\",\"classification_version\":1,\"domain\":\"v3.10-cash-ledger-economic\",\"effective_at\":\"2026-01-02T03:04:05.123456789Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"-1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"version\":1}",
+      "economic_sha256": "02f37175436a6e25fefdfc0b3750713572a486e056bb6b32cd13be959b666788",
+      "id": "transaction-deposit-original",
+      "kind": "transaction",
+      "sha256": "bb14525732cba2e2050c2743c30c07a7cbbb705ffc3ded42fa8f58368c6a7b53",
+      "source_sha256": "37b37643d08b5e591bf184f95542dfe20c0d627427cc4757c7e5255158d7ee20"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"TRADE_SETTLEMENT\",\"classification_version\":1,\"corrects_sha256\":null,\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:04:05.123456789Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"-1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"ASSET_TRADE_CLEARING\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":null,\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"source_kind\":\"SYNTHETIC_TRADE\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1},\"version\":1}",
+      "economic_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"chart_version\":1,\"classification\":\"TRADE_SETTLEMENT\",\"classification_version\":1,\"domain\":\"v3.10-cash-ledger-economic\",\"effective_at\":\"2026-01-02T03:04:05.123456789Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"-1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"ASSET_TRADE_CLEARING\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"version\":1}",
+      "economic_sha256": "c5e6406c779bf31ed2bca5181058c5f3eb744e28ea5ef765737cb173bc96921f",
+      "id": "transaction-trade-buy-like",
+      "kind": "transaction",
+      "sha256": "24f9edc793e487ee5cf7f2ac6edc98e7f7557d43fa838e91a9b24f816a388d4b",
+      "source_sha256": "c7927d94728bce14dda086cc0968b007bbed5842bf44789511f82b6a6f8c9ecf"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"REVERSAL\",\"classification_version\":1,\"corrects_sha256\":null,\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:05:00.000000000Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"-1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":\"bb14525732cba2e2050c2743c30c07a7cbbb705ffc3ded42fa8f58368c6a7b53\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"source_kind\":\"SYNTHETIC_REVERSAL\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1},\"version\":1}",
+      "economic_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"chart_version\":1,\"classification\":\"REVERSAL\",\"classification_version\":1,\"domain\":\"v3.10-cash-ledger-economic\",\"effective_at\":\"2026-01-02T03:05:00.000000000Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"-1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"version\":1}",
+      "economic_sha256": "5daf02d6d2b93687ee357ee4c5a098f8a2d20240e126a436eddba5efdb4bf917",
+      "id": "transaction-reversal",
+      "kind": "transaction",
+      "sha256": "8207bbda82b045350235f78e0a2e132f142b98c006d254ff08d25ceb39d8c86b",
+      "source_sha256": "e88ad360c2bbf59f10d2b0b2e495de2f8f4be88d837c82fe3b7221b5aedbea9f"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"DEPOSIT\",\"classification_version\":1,\"corrects_sha256\":\"bb14525732cba2e2050c2743c30c07a7cbbb705ffc3ded42fa8f58368c6a7b53\",\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:04:05.123456789Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"2.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"2000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"-2.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-2000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":null,\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"source_kind\":\"SYNTHETIC_CORRECTION\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1},\"version\":1}",
+      "economic_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"chart_version\":1,\"classification\":\"DEPOSIT\",\"classification_version\":1,\"domain\":\"v3.10-cash-ledger-economic\",\"effective_at\":\"2026-01-02T03:04:05.123456789Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"2.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"2000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"-2.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-2000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"version\":1}",
+      "economic_sha256": "eb3cb48278d60888be7fb7e13fc06d1e9ccae00a70f68b88462d70c527af9db2",
+      "id": "transaction-correction",
+      "kind": "transaction",
+      "sha256": "77b098c218c50faa4f2d205bf903ce216e6d3c45935c00805477b839d9738004",
+      "source_sha256": "6632fe836a4817a15d31dd765270cc7313035bafe54ca81fbd1b9e7f123a6bdf"
+    },
+    {
+      "canonical_json_ascii": "{\"correction_sha256\":\"77b098c218c50faa4f2d205bf903ce216e6d3c45935c00805477b839d9738004\",\"domain\":\"v3.10-cash-ledger-correction-bundle\",\"original_sha256\":\"bb14525732cba2e2050c2743c30c07a7cbbb705ffc3ded42fa8f58368c6a7b53\",\"reversal_sha256\":\"8207bbda82b045350235f78e0a2e132f142b98c006d254ff08d25ceb39d8c86b\",\"version\":1}",
+      "correction_sha256": "77b098c218c50faa4f2d205bf903ce216e6d3c45935c00805477b839d9738004",
+      "id": "bundle-known-answer",
+      "kind": "bundle",
+      "original_sha256": "bb14525732cba2e2050c2743c30c07a7cbbb705ffc3ded42fa8f58368c6a7b53",
+      "reversal_sha256": "8207bbda82b045350235f78e0a2e132f142b98c006d254ff08d25ceb39d8c86b",
+      "sha256": "73a8a1776c5f6e6262bed3a92628fc29f62b11a75d17334d47a12a702351799f"
+    },
+    {
+      "canonical_json_ascii": "{\"correction_sha256\":\"77b098c218c50faa4f2d205bf903ce216e6d3c45935c00805477b839d9738004\",\"domain\":\"v3.10-cash-ledger-correction-bundle\",\"original_sha256\":\"bb14525732cba2e2050c2743c30c07a7cbbb705ffc3ded42fa8f58368c6a7b53\",\"reversal_sha256\":\"8207bbda82b045350235f78e0a2e132f142b98c006d254ff08d25ceb39d8c86b\",\"version\":1}",
+      "correction_sha256": "77b098c218c50faa4f2d205bf903ce216e6d3c45935c00805477b839d9738004",
+      "id": "bundle-exact-duplicate",
+      "kind": "bundle",
+      "original_sha256": "bb14525732cba2e2050c2743c30c07a7cbbb705ffc3ded42fa8f58368c6a7b53",
+      "reversal_sha256": "8207bbda82b045350235f78e0a2e132f142b98c006d254ff08d25ceb39d8c86b",
+      "sha256": "73a8a1776c5f6e6262bed3a92628fc29f62b11a75d17334d47a12a702351799f"
+    },
+    {
+      "canonical_json_ascii": "{\"correction_sha256\":\"e01843be76eeb7a5e5499ca5ce005fdafc042f413a094cb443446880c502dabd\",\"domain\":\"v3.10-cash-ledger-correction-bundle\",\"original_sha256\":\"bb14525732cba2e2050c2743c30c07a7cbbb705ffc3ded42fa8f58368c6a7b53\",\"reversal_sha256\":\"8207bbda82b045350235f78e0a2e132f142b98c006d254ff08d25ceb39d8c86b\",\"version\":1}",
+      "correction_sha256": "e01843be76eeb7a5e5499ca5ce005fdafc042f413a094cb443446880c502dabd",
+      "id": "bundle-conflicting-branch",
+      "kind": "bundle",
+      "original_sha256": "bb14525732cba2e2050c2743c30c07a7cbbb705ffc3ded42fa8f58368c6a7b53",
+      "reversal_sha256": "8207bbda82b045350235f78e0a2e132f142b98c006d254ff08d25ceb39d8c86b",
+      "sha256": "db70c919c09bdd8b608b25d01522a017b2573836c8c46a953f292b22ef16ff68"
+    }
+  ],
+  "version": 1
+}
