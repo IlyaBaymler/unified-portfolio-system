@@ -262,6 +262,16 @@ def test_v310_cl1_04_money_canonical_form_and_round_trip() -> None:
             MoneyReason.CANONICAL_FORMAT_INVALID,
             lambda candidate=candidate: Money.from_canonical_dict(candidate),
         )
+    for oversized_minor_units in ("1" * 5_000, "-" + "1" * 5_000):
+        candidate = {
+            **valid,
+            "minor_units": oversized_minor_units,
+            "amount": "not-reached",
+        }
+        _assert_money_reason(
+            MoneyReason.MINOR_UNITS_OUT_OF_RANGE,
+            lambda candidate=candidate: Money.from_canonical_dict(candidate),
+        )
 
 
 def test_v310_cl1_05_source_exact_identity_privacy_and_failure_order() -> None:
@@ -316,6 +326,16 @@ def test_v310_cl1_06_posting_canonical_line_and_reversible_range() -> None:
     _assert_ledger_reason(
         LedgerReason.LINE_NUMBER_INVALID,
         lambda: LedgerPosting.from_canonical_dict(candidate),
+    )
+    oversized_line = {
+        **encoded,
+        "line_no": "1" * 5_000,
+        "account": "UNKNOWN",
+        "money": None,
+    }
+    _assert_ledger_reason(
+        LedgerReason.LINE_NUMBER_INVALID,
+        lambda: LedgerPosting.from_canonical_dict(oversized_line),
     )
     unknown_account = dict(encoded)
     unknown_account["account"] = "UNKNOWN"

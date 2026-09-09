@@ -33,6 +33,10 @@ LEDGER_POSTING_MIN_MINOR_UNITS = -MONEY_MAX_MINOR_UNITS
 LEDGER_POSTING_MAX_MINOR_UNITS = MONEY_MAX_MINOR_UNITS
 MAX_LINE_NUMBER = 2_147_483_647
 
+_MONEY_MIN_MAGNITUDE_DECIMAL = str(-MONEY_MIN_MINOR_UNITS)
+_MONEY_MAX_DECIMAL = str(MONEY_MAX_MINOR_UNITS)
+_MAX_LINE_NUMBER_DECIMAL = str(MAX_LINE_NUMBER)
+
 _MONEY_KEYS = frozenset(
     {"amount", "currency", "domain", "minor_units", "scale", "version"}
 )
@@ -168,6 +172,10 @@ def _is_plain_int(value: object) -> bool:
     return type(value) is int
 
 
+def _unsigned_decimal_exceeds(value: str, maximum: str) -> bool:
+    return len(value) > len(maximum) or (len(value) == len(maximum) and value > maximum)
+
+
 def _canonical_bytes(value: Mapping[str, Any]) -> bytes:
     return json.dumps(
         value,
@@ -254,6 +262,11 @@ class Money:
             or _CANONICAL_INTEGER_RE.fullmatch(encoded_minor_units) is None
         ):
             raise MoneyError(MoneyReason.CANONICAL_FORMAT_INVALID)
+        is_negative = encoded_minor_units.startswith("-")
+        digits = encoded_minor_units[1:] if is_negative else encoded_minor_units
+        maximum = _MONEY_MIN_MAGNITUDE_DECIMAL if is_negative else _MONEY_MAX_DECIMAL
+        if _unsigned_decimal_exceeds(digits, maximum):
+            raise MoneyError(MoneyReason.MINOR_UNITS_OUT_OF_RANGE)
         minor_units = int(encoded_minor_units)
         if not MONEY_MIN_MINOR_UNITS <= minor_units <= MONEY_MAX_MINOR_UNITS:
             raise MoneyError(MoneyReason.MINOR_UNITS_OUT_OF_RANGE)
@@ -419,6 +432,8 @@ class LedgerPosting:
             or _CANONICAL_LINE_RE.fullmatch(encoded_line_no) is None
         ):
             raise LedgerError(LedgerReason.CANONICAL_FORMAT_INVALID)
+        if _unsigned_decimal_exceeds(encoded_line_no, _MAX_LINE_NUMBER_DECIMAL):
+            raise LedgerError(LedgerReason.LINE_NUMBER_INVALID)
         line_no = int(encoded_line_no)
         if line_no > MAX_LINE_NUMBER:
             raise LedgerError(LedgerReason.LINE_NUMBER_INVALID)
