@@ -989,6 +989,7 @@ def test_v310_cl1_24_fixture_schema_bytes_hashes_and_frozen_samples() -> None:
 
     observed_ids: set[str] = set()
     by_id: dict[str, dict[str, Any]] = {}
+    trade_cash_signs: set[int] = set()
     for vector in fixture["vectors"]:
         common = {"id", "kind", "canonical_json_ascii", "sha256"}
         extra = set()
@@ -1026,6 +1027,13 @@ def test_v310_cl1_24_fixture_schema_bytes_hashes_and_frozen_samples() -> None:
             assert transaction.economic_bytes == economic_ascii.encode("ascii")
             assert transaction.economic_sha256 == vector["economic_sha256"]
             assert transaction.source_sha256 == vector["source_sha256"]
+            if transaction.classification is LedgerClassification.TRADE_SETTLEMENT:
+                cash_posting = next(
+                    posting
+                    for posting in transaction.postings
+                    if posting.account is LedgerAccount.ASSET_BROKER_CASH
+                )
+                trade_cash_signs.add(1 if cash_posting.money.minor_units > 0 else -1)
         elif vector["kind"] == "bundle":
             assert set(parsed) == {
                 "correction_sha256",
@@ -1040,6 +1048,7 @@ def test_v310_cl1_24_fixture_schema_bytes_hashes_and_frozen_samples() -> None:
         else:
             pytest.fail(f"unknown fixture kind: {vector['kind']}")
 
+    assert trade_cash_signs == {-1, 1}
     assert (
         by_id["money-one-rub"]["sha256"]
         == "84f2a0a835a9925f376b0f8deb78df59665c4f7cb66bad5b46ee7d88044050ed"
