@@ -1,0 +1,885 @@
+{
+  "domain": "v3.10-cash-ledger-persistence-fixture",
+  "scenarios": [
+    {
+      "id": "correction-distinct-and-second-branch",
+      "registry_ids": [
+        "codec-descriptor-synthetic"
+      ],
+      "steps": [
+        {
+          "expected_disposition": "OBSERVATION_STORED",
+          "expected_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+          "expected_ledger_revision": "0",
+          "expected_reason": null,
+          "expected_store_revision": "1",
+          "input_ids": [
+            "observation-original"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "0"
+        },
+        {
+          "expected_disposition": "TRANSACTION_APPENDED",
+          "expected_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+          "expected_ledger_revision": "1",
+          "expected_reason": null,
+          "expected_store_revision": "2",
+          "input_ids": [
+            "transaction-original",
+            "observation-original"
+          ],
+          "operation": "APPEND_TRANSACTION",
+          "supplied_ledger_revision": "0",
+          "supplied_store_revision": "1"
+        },
+        {
+          "expected_disposition": "OBSERVATION_STORED",
+          "expected_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+          "expected_ledger_revision": "1",
+          "expected_reason": null,
+          "expected_store_revision": "3",
+          "input_ids": [
+            "observation-reversal-distinct"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "2"
+        },
+        {
+          "expected_disposition": "OBSERVATION_STORED",
+          "expected_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+          "expected_ledger_revision": "1",
+          "expected_reason": null,
+          "expected_store_revision": "4",
+          "input_ids": [
+            "observation-correction-distinct"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "3"
+        },
+        {
+          "expected_disposition": "CORRECTION_BUNDLE_APPENDED",
+          "expected_head_sha256": "eca9f22c36030ce3e9f9a93ac375dc0a46c62be58442dd0d6db70d1292455ada",
+          "expected_ledger_revision": "2",
+          "expected_reason": null,
+          "expected_store_revision": "5",
+          "input_ids": [
+            "bundle-distinct",
+            "observation-reversal-distinct",
+            "observation-correction-distinct"
+          ],
+          "operation": "APPEND_CORRECTION_BUNDLE",
+          "supplied_ledger_revision": "1",
+          "supplied_store_revision": "4"
+        },
+        {
+          "expected_disposition": "CORRECTION_BUNDLE_ALREADY_PRESENT",
+          "expected_head_sha256": "eca9f22c36030ce3e9f9a93ac375dc0a46c62be58442dd0d6db70d1292455ada",
+          "expected_ledger_revision": "2",
+          "expected_reason": null,
+          "expected_store_revision": "5",
+          "input_ids": [
+            "bundle-distinct",
+            "observation-reversal-distinct",
+            "observation-correction-distinct"
+          ],
+          "operation": "APPEND_CORRECTION_BUNDLE",
+          "supplied_ledger_revision": "1",
+          "supplied_store_revision": "4"
+        },
+        {
+          "expected_disposition": "OBSERVATION_STORED",
+          "expected_head_sha256": "eca9f22c36030ce3e9f9a93ac375dc0a46c62be58442dd0d6db70d1292455ada",
+          "expected_ledger_revision": "2",
+          "expected_reason": null,
+          "expected_store_revision": "6",
+          "input_ids": [
+            "observation-reversal-second"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "5"
+        },
+        {
+          "expected_disposition": "OBSERVATION_STORED",
+          "expected_head_sha256": "eca9f22c36030ce3e9f9a93ac375dc0a46c62be58442dd0d6db70d1292455ada",
+          "expected_ledger_revision": "2",
+          "expected_reason": null,
+          "expected_store_revision": "7",
+          "input_ids": [
+            "observation-correction-second"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "6"
+        },
+        {
+          "expected_disposition": null,
+          "expected_head_sha256": "eca9f22c36030ce3e9f9a93ac375dc0a46c62be58442dd0d6db70d1292455ada",
+          "expected_ledger_revision": "2",
+          "expected_reason": "LINEAGE_CONFLICT",
+          "expected_store_revision": "7",
+          "input_ids": [
+            "bundle-second-branch",
+            "observation-reversal-second",
+            "observation-correction-second"
+          ],
+          "operation": "APPEND_CORRECTION_BUNDLE",
+          "supplied_ledger_revision": "2",
+          "supplied_store_revision": "7"
+        }
+      ]
+    },
+    {
+      "id": "correction-original-source-reuse",
+      "registry_ids": [
+        "codec-descriptor-synthetic"
+      ],
+      "steps": [
+        {
+          "expected_disposition": "OBSERVATION_STORED",
+          "expected_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+          "expected_ledger_revision": "0",
+          "expected_reason": null,
+          "expected_store_revision": "1",
+          "input_ids": [
+            "observation-original"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "0"
+        },
+        {
+          "expected_disposition": "TRANSACTION_APPENDED",
+          "expected_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+          "expected_ledger_revision": "1",
+          "expected_reason": null,
+          "expected_store_revision": "2",
+          "input_ids": [
+            "transaction-original",
+            "observation-original"
+          ],
+          "operation": "APPEND_TRANSACTION",
+          "supplied_ledger_revision": "0",
+          "supplied_store_revision": "1"
+        },
+        {
+          "expected_disposition": "OBSERVATION_STORED",
+          "expected_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+          "expected_ledger_revision": "1",
+          "expected_reason": null,
+          "expected_store_revision": "3",
+          "input_ids": [
+            "observation-reuse-correction"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "2"
+        },
+        {
+          "expected_disposition": "CORRECTION_BUNDLE_APPENDED",
+          "expected_head_sha256": "52a9a21d566ba51afaffdd767312d348383a911324f2b716e07ed38b7bbe5793",
+          "expected_ledger_revision": "2",
+          "expected_reason": null,
+          "expected_store_revision": "4",
+          "input_ids": [
+            "bundle-original-source-reuse",
+            "observation-original",
+            "observation-reuse-correction"
+          ],
+          "operation": "APPEND_CORRECTION_BUNDLE",
+          "supplied_ledger_revision": "1",
+          "supplied_store_revision": "3"
+        }
+      ]
+    },
+    {
+      "id": "correction-shared-new-source",
+      "registry_ids": [
+        "codec-descriptor-synthetic"
+      ],
+      "steps": [
+        {
+          "expected_disposition": "OBSERVATION_STORED",
+          "expected_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+          "expected_ledger_revision": "0",
+          "expected_reason": null,
+          "expected_store_revision": "1",
+          "input_ids": [
+            "observation-original"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "0"
+        },
+        {
+          "expected_disposition": "TRANSACTION_APPENDED",
+          "expected_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+          "expected_ledger_revision": "1",
+          "expected_reason": null,
+          "expected_store_revision": "2",
+          "input_ids": [
+            "transaction-original",
+            "observation-original"
+          ],
+          "operation": "APPEND_TRANSACTION",
+          "supplied_ledger_revision": "0",
+          "supplied_store_revision": "1"
+        },
+        {
+          "expected_disposition": "OBSERVATION_STORED",
+          "expected_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+          "expected_ledger_revision": "1",
+          "expected_reason": null,
+          "expected_store_revision": "3",
+          "input_ids": [
+            "observation-shared-new"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "2"
+        },
+        {
+          "expected_disposition": "CORRECTION_BUNDLE_APPENDED",
+          "expected_head_sha256": "c97c7e28f9e528a4513f6de115386dedcdab50edcb15d8251edcacb3f91da59c",
+          "expected_ledger_revision": "2",
+          "expected_reason": null,
+          "expected_store_revision": "4",
+          "input_ids": [
+            "bundle-shared-source",
+            "observation-shared-new",
+            "observation-shared-new"
+          ],
+          "operation": "APPEND_CORRECTION_BUNDLE",
+          "supplied_ledger_revision": "1",
+          "supplied_store_revision": "3"
+        }
+      ]
+    },
+    {
+      "id": "observation-conflict-and-stale",
+      "registry_ids": [
+        "codec-descriptor-synthetic"
+      ],
+      "steps": [
+        {
+          "expected_disposition": null,
+          "expected_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+          "expected_ledger_revision": "0",
+          "expected_reason": "REVISION_MISMATCH",
+          "expected_store_revision": "0",
+          "input_ids": [
+            "observation-original"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "1"
+        },
+        {
+          "expected_disposition": "OBSERVATION_STORED",
+          "expected_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+          "expected_ledger_revision": "0",
+          "expected_reason": null,
+          "expected_store_revision": "1",
+          "input_ids": [
+            "observation-original"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "0"
+        },
+        {
+          "expected_disposition": "OBSERVATION_ALREADY_PRESENT",
+          "expected_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+          "expected_ledger_revision": "0",
+          "expected_reason": null,
+          "expected_store_revision": "1",
+          "input_ids": [
+            "observation-original"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "0"
+        },
+        {
+          "expected_disposition": null,
+          "expected_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+          "expected_ledger_revision": "0",
+          "expected_reason": "SOURCE_CONTENT_CONFLICT",
+          "expected_store_revision": "1",
+          "input_ids": [
+            "observation-original-changed"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "1"
+        }
+      ]
+    },
+    {
+      "id": "ordinary-duplicate-conflicts",
+      "registry_ids": [
+        "codec-descriptor-synthetic"
+      ],
+      "steps": [
+        {
+          "expected_disposition": "OBSERVATION_STORED",
+          "expected_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+          "expected_ledger_revision": "0",
+          "expected_reason": null,
+          "expected_store_revision": "1",
+          "input_ids": [
+            "observation-original"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "0"
+        },
+        {
+          "expected_disposition": "TRANSACTION_APPENDED",
+          "expected_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+          "expected_ledger_revision": "1",
+          "expected_reason": null,
+          "expected_store_revision": "2",
+          "input_ids": [
+            "transaction-original",
+            "observation-original"
+          ],
+          "operation": "APPEND_TRANSACTION",
+          "supplied_ledger_revision": "0",
+          "supplied_store_revision": "1"
+        },
+        {
+          "expected_disposition": "TRANSACTION_ALREADY_PRESENT",
+          "expected_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+          "expected_ledger_revision": "1",
+          "expected_reason": null,
+          "expected_store_revision": "2",
+          "input_ids": [
+            "transaction-original",
+            "observation-original"
+          ],
+          "operation": "APPEND_TRANSACTION",
+          "supplied_ledger_revision": "0",
+          "supplied_store_revision": "1"
+        },
+        {
+          "expected_disposition": "OBSERVATION_STORED",
+          "expected_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+          "expected_ledger_revision": "1",
+          "expected_reason": null,
+          "expected_store_revision": "3",
+          "input_ids": [
+            "observation-economic"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "2"
+        },
+        {
+          "expected_disposition": null,
+          "expected_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+          "expected_ledger_revision": "1",
+          "expected_reason": "ECONOMIC_MATCH_REVIEW_REQUIRED",
+          "expected_store_revision": "3",
+          "input_ids": [
+            "transaction-economic-match",
+            "observation-economic"
+          ],
+          "operation": "APPEND_TRANSACTION",
+          "supplied_ledger_revision": "1",
+          "supplied_store_revision": "3"
+        },
+        {
+          "expected_disposition": null,
+          "expected_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+          "expected_ledger_revision": "1",
+          "expected_reason": "SOURCE_CONFLICT",
+          "expected_store_revision": "3",
+          "input_ids": [
+            "transaction-source-conflict",
+            "observation-original"
+          ],
+          "operation": "APPEND_TRANSACTION",
+          "supplied_ledger_revision": "1",
+          "supplied_store_revision": "3"
+        }
+      ]
+    },
+    {
+      "id": "status-review-duplicate",
+      "registry_ids": [
+        "codec-descriptor-synthetic"
+      ],
+      "steps": [
+        {
+          "expected_disposition": "OBSERVATION_STORED",
+          "expected_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+          "expected_ledger_revision": "0",
+          "expected_reason": null,
+          "expected_store_revision": "1",
+          "input_ids": [
+            "observation-original"
+          ],
+          "operation": "APPEND_OBSERVATION",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "0"
+        },
+        {
+          "expected_disposition": "STATUS_EVENT_APPENDED",
+          "expected_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+          "expected_ledger_revision": "0",
+          "expected_reason": null,
+          "expected_store_revision": "2",
+          "input_ids": [
+            "status-review"
+          ],
+          "operation": "APPEND_STATUS_EVENT",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "1"
+        },
+        {
+          "expected_disposition": "STATUS_EVENT_ALREADY_PRESENT",
+          "expected_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+          "expected_ledger_revision": "0",
+          "expected_reason": null,
+          "expected_store_revision": "2",
+          "input_ids": [
+            "status-review"
+          ],
+          "operation": "APPEND_STATUS_EVENT",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "1"
+        },
+        {
+          "expected_disposition": "STATUS_EVENT_APPENDED",
+          "expected_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+          "expected_ledger_revision": "0",
+          "expected_reason": null,
+          "expected_store_revision": "3",
+          "input_ids": [
+            "status-reject"
+          ],
+          "operation": "APPEND_STATUS_EVENT",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "2"
+        },
+        {
+          "expected_disposition": null,
+          "expected_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+          "expected_ledger_revision": "0",
+          "expected_reason": "STATUS_TRANSITION_INVALID",
+          "expected_store_revision": "3",
+          "input_ids": [
+            "status-invalid-after-terminal"
+          ],
+          "operation": "APPEND_STATUS_EVENT",
+          "supplied_ledger_revision": null,
+          "supplied_store_revision": "3"
+        }
+      ]
+    }
+  ],
+  "vectors": [
+    {
+      "canonical_json_ascii": "{\"domain\":\"v3.10-cash-ledger-backup-manifest\",\"export_sha256\":\"9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7\",\"files\":[{\"path\":\"export.json\",\"sha256\":\"9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7\",\"size\":\"546\"},{\"path\":\"store.sqlite3\",\"sha256\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"size\":\"4096\"}],\"ledger_head_sha256\":\"6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37\",\"ledger_revision\":\"0\",\"schema_version\":1,\"store_revision\":\"0\",\"version\":1}",
+      "export_sha256": "9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7",
+      "id": "backup-manifest-synthetic",
+      "kind": "backup_manifest",
+      "ledger_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+      "ledger_revision": "0",
+      "sha256": "f24b3bfe6ce999ea24e27802641f1710d1315305a57731d82f2e767034b8220d",
+      "store_revision": "0"
+    },
+    {
+      "canonical_json_ascii": "{\"correction_sha256\":\"10eb8e4899624c1c8c3f0542b02a2b7bbace98f06c02e62430e452b75c073dfe\",\"domain\":\"v3.10-cash-ledger-correction-bundle\",\"original_sha256\":\"2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5\",\"reversal_sha256\":\"0ff4da96b5b02a6b063770a2bb04ec989060fed9caf0fdea9f76d55e023f244a\",\"version\":1}",
+      "correction_sha256": "10eb8e4899624c1c8c3f0542b02a2b7bbace98f06c02e62430e452b75c073dfe",
+      "id": "bundle-distinct",
+      "kind": "cl1_bundle",
+      "original_sha256": "2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5",
+      "reversal_sha256": "0ff4da96b5b02a6b063770a2bb04ec989060fed9caf0fdea9f76d55e023f244a",
+      "sha256": "076a3a8bb811b0c16b963071052b3ce555b48041cd1e791293ccadaa4d09ad07"
+    },
+    {
+      "canonical_json_ascii": "{\"correction_sha256\":\"fbb5d205a38d46a1f5e40a9fead257c1eda2446ba2b25a538b81ce28fe3b2223\",\"domain\":\"v3.10-cash-ledger-correction-bundle\",\"original_sha256\":\"2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5\",\"reversal_sha256\":\"39aee73f5a5cc3349e344b49b8f0af05b447d25c8e69dec625b8cdbe02d06685\",\"version\":1}",
+      "correction_sha256": "fbb5d205a38d46a1f5e40a9fead257c1eda2446ba2b25a538b81ce28fe3b2223",
+      "id": "bundle-original-source-reuse",
+      "kind": "cl1_bundle",
+      "original_sha256": "2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5",
+      "reversal_sha256": "39aee73f5a5cc3349e344b49b8f0af05b447d25c8e69dec625b8cdbe02d06685",
+      "sha256": "2c7c53400545b9584bf5c7843c88e4e8b39558690b0b6a83d70d3b5fbf971c6e"
+    },
+    {
+      "canonical_json_ascii": "{\"correction_sha256\":\"7abf959fdb63bd4afde80c7dc65933bdadc210037a01e21da91dd9a319d36b68\",\"domain\":\"v3.10-cash-ledger-correction-bundle\",\"original_sha256\":\"2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5\",\"reversal_sha256\":\"aae89ba1e8af1ee6cfb2720a993bfd18b2cf5029a2fdb3fe5671a2f6953b6543\",\"version\":1}",
+      "correction_sha256": "7abf959fdb63bd4afde80c7dc65933bdadc210037a01e21da91dd9a319d36b68",
+      "id": "bundle-second-branch",
+      "kind": "cl1_bundle",
+      "original_sha256": "2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5",
+      "reversal_sha256": "aae89ba1e8af1ee6cfb2720a993bfd18b2cf5029a2fdb3fe5671a2f6953b6543",
+      "sha256": "6c737ef9e25eab3622eaf79ee13458b5d3119e42bdf4ada8fa351b0753c4662e"
+    },
+    {
+      "canonical_json_ascii": "{\"correction_sha256\":\"c107cc8ae8d34f6fb380bb48a217b702f6131249b799aac14078cdaa455bad70\",\"domain\":\"v3.10-cash-ledger-correction-bundle\",\"original_sha256\":\"2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5\",\"reversal_sha256\":\"e94f6126b721d2c5d0a443b87ef3c937fc57d229895e366e0d9d13f4b7ef6441\",\"version\":1}",
+      "correction_sha256": "c107cc8ae8d34f6fb380bb48a217b702f6131249b799aac14078cdaa455bad70",
+      "id": "bundle-shared-source",
+      "kind": "cl1_bundle",
+      "original_sha256": "2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5",
+      "reversal_sha256": "e94f6126b721d2c5d0a443b87ef3c937fc57d229895e366e0d9d13f4b7ef6441",
+      "sha256": "c3030ce9217331338d9d08a9dc9389ff96b4e1dba56e7f76eccad3aa29480fbf"
+    },
+    {
+      "canonical_json_ascii": "{\"codec_id\":\"SYNTHETIC_CL2\",\"codec_version\":1,\"domain\":\"v3.10-operation-inbox-codec\",\"schema_json_ascii\":\"{\\\"domain\\\":\\\"v3.10-operation-inbox-codec-schema\\\",\\\"fields\\\":[{\\\"allowed_values\\\":null,\\\"key\\\":\\\"operation_kind\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"64\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true}],\\\"version\\\":1}\",\"schema_sha256\":\"d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b\",\"version\":1}",
+      "id": "codec-descriptor-synthetic",
+      "kind": "codec_descriptor",
+      "schema_sha256": "d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b",
+      "sha256": "43d6d99e633e8806f7efc11f70816fd8236df824d775b5cdf18626c93abfa1b4"
+    },
+    {
+      "canonical_json_ascii": "{\"domain\":\"v3.10-operation-inbox-codec-schema\",\"fields\":[{\"allowed_values\":null,\"key\":\"operation_kind\",\"kind\":\"STRING\",\"max_scalars\":\"64\",\"maximum\":null,\"minimum\":null,\"required\":true}],\"version\":1}",
+      "id": "codec-schema-synthetic",
+      "kind": "codec_schema",
+      "sha256": "d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b"
+    },
+    {
+      "canonical_json_ascii": "{\"codec_registry\":[],\"correction_bundles\":[],\"domain\":\"v3.10-cash-ledger-export\",\"inbox_status_events\":[],\"ledger_head_json_ascii\":\"{\\\"domain\\\":\\\"v3.10-cash-ledger-head\\\",\\\"ledger_revision\\\":\\\"0\\\",\\\"previous_head_sha256\\\":null,\\\"transition_kind\\\":\\\"GENESIS\\\",\\\"transition_sha256\\\":null,\\\"version\\\":1}\",\"ledger_head_sha256\":\"6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37\",\"ledger_revision\":\"0\",\"ledger_transitions\":[],\"observations\":[],\"provenance_links\":[],\"schema_version\":1,\"store_revision\":\"0\",\"transactions\":[],\"version\":1}",
+      "id": "export-empty",
+      "kind": "export",
+      "ledger_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+      "ledger_revision": "0",
+      "sha256": "9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7",
+      "store_revision": "0"
+    },
+    {
+      "canonical_json_ascii": "{\"domain\":\"v3.10-cash-ledger-head\",\"ledger_revision\":\"2\",\"previous_head_sha256\":\"7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70\",\"transition_kind\":\"CORRECTION_BUNDLE\",\"transition_sha256\":\"076a3a8bb811b0c16b963071052b3ce555b48041cd1e791293ccadaa4d09ad07\",\"version\":1}",
+      "id": "head-bundle-distinct",
+      "kind": "ledger_head",
+      "ledger_revision": "2",
+      "previous_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+      "sha256": "eca9f22c36030ce3e9f9a93ac375dc0a46c62be58442dd0d6db70d1292455ada",
+      "transition_kind": "CORRECTION_BUNDLE",
+      "transition_sha256": "076a3a8bb811b0c16b963071052b3ce555b48041cd1e791293ccadaa4d09ad07"
+    },
+    {
+      "canonical_json_ascii": "{\"domain\":\"v3.10-cash-ledger-head\",\"ledger_revision\":\"2\",\"previous_head_sha256\":\"7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70\",\"transition_kind\":\"CORRECTION_BUNDLE\",\"transition_sha256\":\"2c7c53400545b9584bf5c7843c88e4e8b39558690b0b6a83d70d3b5fbf971c6e\",\"version\":1}",
+      "id": "head-bundle-original-reuse",
+      "kind": "ledger_head",
+      "ledger_revision": "2",
+      "previous_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+      "sha256": "52a9a21d566ba51afaffdd767312d348383a911324f2b716e07ed38b7bbe5793",
+      "transition_kind": "CORRECTION_BUNDLE",
+      "transition_sha256": "2c7c53400545b9584bf5c7843c88e4e8b39558690b0b6a83d70d3b5fbf971c6e"
+    },
+    {
+      "canonical_json_ascii": "{\"domain\":\"v3.10-cash-ledger-head\",\"ledger_revision\":\"2\",\"previous_head_sha256\":\"7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70\",\"transition_kind\":\"CORRECTION_BUNDLE\",\"transition_sha256\":\"c3030ce9217331338d9d08a9dc9389ff96b4e1dba56e7f76eccad3aa29480fbf\",\"version\":1}",
+      "id": "head-bundle-shared",
+      "kind": "ledger_head",
+      "ledger_revision": "2",
+      "previous_head_sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+      "sha256": "c97c7e28f9e528a4513f6de115386dedcdab50edcb15d8251edcacb3f91da59c",
+      "transition_kind": "CORRECTION_BUNDLE",
+      "transition_sha256": "c3030ce9217331338d9d08a9dc9389ff96b4e1dba56e7f76eccad3aa29480fbf"
+    },
+    {
+      "canonical_json_ascii": "{\"domain\":\"v3.10-cash-ledger-head\",\"ledger_revision\":\"0\",\"previous_head_sha256\":null,\"transition_kind\":\"GENESIS\",\"transition_sha256\":null,\"version\":1}",
+      "id": "head-genesis",
+      "kind": "ledger_head",
+      "ledger_revision": "0",
+      "previous_head_sha256": null,
+      "sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+      "transition_kind": "GENESIS",
+      "transition_sha256": null
+    },
+    {
+      "canonical_json_ascii": "{\"domain\":\"v3.10-cash-ledger-head\",\"ledger_revision\":\"1\",\"previous_head_sha256\":\"6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37\",\"transition_kind\":\"TRANSACTION\",\"transition_sha256\":\"2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5\",\"version\":1}",
+      "id": "head-original",
+      "kind": "ledger_head",
+      "ledger_revision": "1",
+      "previous_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+      "sha256": "7bf3bd4dc36a082c36febc6cb823621c5789df1b57cb9857f77d1f0442ee6b70",
+      "transition_kind": "TRANSACTION",
+      "transition_sha256": "2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5"
+    },
+    {
+      "canonical_json_ascii": "{\"domain\":\"v3.10-cash-ledger-head\",\"ledger_revision\":\"2\",\"previous_head_sha256\":\"980c7bf507e5724dd9de79492f3f1c2f5f235c1da4f9b31b512997eebc2714c2\",\"transition_kind\":\"CORRECTION_BUNDLE\",\"transition_sha256\":\"73a8a1776c5f6e6262bed3a92628fc29f62b11a75d17334d47a12a702351799f\",\"version\":1}",
+      "id": "head-sample-bundle",
+      "kind": "ledger_head",
+      "ledger_revision": "2",
+      "previous_head_sha256": "980c7bf507e5724dd9de79492f3f1c2f5f235c1da4f9b31b512997eebc2714c2",
+      "sha256": "b739f6edc1fe1d4bf6feeaf776eaeb9cc45a98fe6be90e4f5b6a27805a730b04",
+      "transition_kind": "CORRECTION_BUNDLE",
+      "transition_sha256": "73a8a1776c5f6e6262bed3a92628fc29f62b11a75d17334d47a12a702351799f"
+    },
+    {
+      "canonical_json_ascii": "{\"domain\":\"v3.10-cash-ledger-head\",\"ledger_revision\":\"1\",\"previous_head_sha256\":\"6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37\",\"transition_kind\":\"TRANSACTION\",\"transition_sha256\":\"bb14525732cba2e2050c2743c30c07a7cbbb705ffc3ded42fa8f58368c6a7b53\",\"version\":1}",
+      "id": "head-sample-transaction",
+      "kind": "ledger_head",
+      "ledger_revision": "1",
+      "previous_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+      "sha256": "980c7bf507e5724dd9de79492f3f1c2f5f235c1da4f9b31b512997eebc2714c2",
+      "transition_kind": "TRANSACTION",
+      "transition_sha256": "bb14525732cba2e2050c2743c30c07a7cbbb705ffc3ded42fa8f58368c6a7b53"
+    },
+    {
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-operation-inbox-logical-source\",\"source_kind\":\"SYNTHETIC_CORRECTION\",\"source_scope_sha256\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"version\":1}",
+      "id": "logical-correction-distinct",
+      "kind": "logical_source",
+      "sha256": "cd4c553912b12f875f1ccc773a6ab6f24bde7bf2eda304f1ec1b90fdf3bd74fb"
+    },
+    {
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-operation-inbox-logical-source\",\"source_kind\":\"SYNTHETIC_CORRECTION_2\",\"source_scope_sha256\":\"7777777777777777777777777777777777777777777777777777777777777777\",\"version\":1}",
+      "id": "logical-correction-second",
+      "kind": "logical_source",
+      "sha256": "e76ad9114bd416b9aa4feb8a2216e53deec896e54d3f2cc88a6e4861341d2276"
+    },
+    {
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-operation-inbox-logical-source\",\"source_kind\":\"SYNTHETIC_ECONOMIC\",\"source_scope_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"version\":1}",
+      "id": "logical-economic",
+      "kind": "logical_source",
+      "sha256": "15eef9f0979ca1867eb2f41ab58e330cc54426334b53f2b23ceb33ad1fb82ba2"
+    },
+    {
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-operation-inbox-logical-source\",\"source_kind\":\"SYNTHETIC\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1}",
+      "id": "logical-original",
+      "kind": "logical_source",
+      "sha256": "1a8ab1a83f42334472fa30ffa57b921ae6ff9a01702e297acf81278bbd1fba1e"
+    },
+    {
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-operation-inbox-logical-source\",\"source_kind\":\"SYNTHETIC\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1}",
+      "id": "logical-original-changed",
+      "kind": "logical_source",
+      "sha256": "1a8ab1a83f42334472fa30ffa57b921ae6ff9a01702e297acf81278bbd1fba1e"
+    },
+    {
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-operation-inbox-logical-source\",\"source_kind\":\"SYNTHETIC_REUSE_CORRECTION\",\"source_scope_sha256\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"version\":1}",
+      "id": "logical-reuse-correction",
+      "kind": "logical_source",
+      "sha256": "b16ed3381a6187f1b13b7be56b230681aface0a706fff3aa828ebc72a7e88b49"
+    },
+    {
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-operation-inbox-logical-source\",\"source_kind\":\"SYNTHETIC_REVERSAL\",\"source_scope_sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"version\":1}",
+      "id": "logical-reversal-distinct",
+      "kind": "logical_source",
+      "sha256": "aec6afb5e9c18941e6fdb383d270675cb61ac9c26fa169c595f81ac55368e411"
+    },
+    {
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-operation-inbox-logical-source\",\"source_kind\":\"SYNTHETIC_REVERSAL_2\",\"source_scope_sha256\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"version\":1}",
+      "id": "logical-reversal-second",
+      "kind": "logical_source",
+      "sha256": "35cadd05e4082184613ad413c79ab69e0bee3f06a948334b54f7b80edb411244"
+    },
+    {
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-operation-inbox-logical-source\",\"source_kind\":\"SYNTHETIC\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1}",
+      "id": "logical-section25-sample",
+      "kind": "logical_source",
+      "sha256": "1a8ab1a83f42334472fa30ffa57b921ae6ff9a01702e297acf81278bbd1fba1e"
+    },
+    {
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-operation-inbox-logical-source\",\"source_kind\":\"SYNTHETIC_SHARED\",\"source_scope_sha256\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"version\":1}",
+      "id": "logical-shared-new",
+      "kind": "logical_source",
+      "sha256": "3d4e9102fb31d5afbcd74775af7dd516d6650e93793a52156c6555dc68e44822"
+    },
+    {
+      "canonical_json_ascii": "{\"codec_id\":\"SYNTHETIC_CL2\",\"codec_schema_sha256\":\"d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b\",\"codec_version\":1,\"content_json_ascii\":\"{\\\"operation_kind\\\":\\\"CORRECTION\\\"}\",\"domain\":\"v3.10-operation-inbox-observation\",\"initial_status\":\"OBSERVED\",\"logical_source_sha256\":\"cd4c553912b12f875f1ccc773a6ab6f24bde7bf2eda304f1ec1b90fdf3bd74fb\",\"observed_at\":\"2026-01-02T03:04:05.123456789Z\",\"provenance_sha256\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"3224bc4049b6a2f8df3821e0a4338390d2f47f93f167e9af345318b2196a3b53\",\"source_kind\":\"SYNTHETIC_CORRECTION\",\"source_scope_sha256\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"version\":1},\"version\":1}",
+      "id": "observation-correction-distinct",
+      "kind": "observation",
+      "logical_source_sha256": "cd4c553912b12f875f1ccc773a6ab6f24bde7bf2eda304f1ec1b90fdf3bd74fb",
+      "sha256": "b4ccd941408a69009212d76245c967845789e70af1fc27156e6ce1193001b62b",
+      "source_sha256": "ae6881786531e705c2800070822fe2dc4ea165a484ed4c781791767fae83d07d"
+    },
+    {
+      "canonical_json_ascii": "{\"codec_id\":\"SYNTHETIC_CL2\",\"codec_schema_sha256\":\"d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b\",\"codec_version\":1,\"content_json_ascii\":\"{\\\"operation_kind\\\":\\\"CORRECTION_2\\\"}\",\"domain\":\"v3.10-operation-inbox-observation\",\"initial_status\":\"OBSERVED\",\"logical_source_sha256\":\"e76ad9114bd416b9aa4feb8a2216e53deec896e54d3f2cc88a6e4861341d2276\",\"observed_at\":\"2026-01-02T03:04:05.123456789Z\",\"provenance_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"2d8e2813816fe5604af8b52b6e71d1dce0b655ce749e49f162debafbd3345d7b\",\"source_kind\":\"SYNTHETIC_CORRECTION_2\",\"source_scope_sha256\":\"7777777777777777777777777777777777777777777777777777777777777777\",\"version\":1},\"version\":1}",
+      "id": "observation-correction-second",
+      "kind": "observation",
+      "logical_source_sha256": "e76ad9114bd416b9aa4feb8a2216e53deec896e54d3f2cc88a6e4861341d2276",
+      "sha256": "6e57b460cfcbc96ee1f82664cd92a806639c98ee46b90d5a0b645faa88d1f557",
+      "source_sha256": "3f3301173513896e98f2bbb1130dd51963c6032edb34dfa78a2fbc3a18a5afae"
+    },
+    {
+      "canonical_json_ascii": "{\"codec_id\":\"SYNTHETIC_CL2\",\"codec_schema_sha256\":\"d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b\",\"codec_version\":1,\"content_json_ascii\":\"{\\\"operation_kind\\\":\\\"ECONOMIC\\\"}\",\"domain\":\"v3.10-operation-inbox-observation\",\"initial_status\":\"OBSERVED\",\"logical_source_sha256\":\"15eef9f0979ca1867eb2f41ab58e330cc54426334b53f2b23ceb33ad1fb82ba2\",\"observed_at\":\"2026-01-02T03:04:05.123456789Z\",\"provenance_sha256\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"68dff6ca0da3a0a30b4b661d088e4cfcecf08ceafa482e96f0af5adee528fef8\",\"source_kind\":\"SYNTHETIC_ECONOMIC\",\"source_scope_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"version\":1},\"version\":1}",
+      "id": "observation-economic",
+      "kind": "observation",
+      "logical_source_sha256": "15eef9f0979ca1867eb2f41ab58e330cc54426334b53f2b23ceb33ad1fb82ba2",
+      "sha256": "a753c3da79c3b450ae5aebb07a0ec75b44ca546fadcfe26c28daabd667292319",
+      "source_sha256": "2471ff5a3b8fec99580b410338636ad5e2b9d34bd3cedcb1cdd4a183160b7aef"
+    },
+    {
+      "canonical_json_ascii": "{\"codec_id\":\"SYNTHETIC_CL2\",\"codec_schema_sha256\":\"d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b\",\"codec_version\":1,\"content_json_ascii\":\"{\\\"operation_kind\\\":\\\"ORIGINAL\\\"}\",\"domain\":\"v3.10-operation-inbox-observation\",\"initial_status\":\"OBSERVED\",\"logical_source_sha256\":\"1a8ab1a83f42334472fa30ffa57b921ae6ff9a01702e297acf81278bbd1fba1e\",\"observed_at\":\"2026-01-02T03:04:05.123456789Z\",\"provenance_sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"59e4be00b60c744280e2564839d64d7d9ccb6f08450c51fd0213d939f067e248\",\"source_kind\":\"SYNTHETIC\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1},\"version\":1}",
+      "id": "observation-original",
+      "kind": "observation",
+      "logical_source_sha256": "1a8ab1a83f42334472fa30ffa57b921ae6ff9a01702e297acf81278bbd1fba1e",
+      "sha256": "542a73d1c82d5d42cad15f78e1e715465c045870e757230785534d92b85b9a4a",
+      "source_sha256": "afe2794a32e7ab235c11df6bc56ace6fcb00ddafcbbc1e9e33628130874e7281"
+    },
+    {
+      "canonical_json_ascii": "{\"codec_id\":\"SYNTHETIC_CL2\",\"codec_schema_sha256\":\"d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b\",\"codec_version\":1,\"content_json_ascii\":\"{\\\"operation_kind\\\":\\\"CHANGED\\\"}\",\"domain\":\"v3.10-operation-inbox-observation\",\"initial_status\":\"OBSERVED\",\"logical_source_sha256\":\"1a8ab1a83f42334472fa30ffa57b921ae6ff9a01702e297acf81278bbd1fba1e\",\"observed_at\":\"2026-01-02T03:04:05.123456789Z\",\"provenance_sha256\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"79f65c7714a8c450b79b588d7360ef58f956689d58439a4bfc8f046e5bcce173\",\"source_kind\":\"SYNTHETIC\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1},\"version\":1}",
+      "id": "observation-original-changed",
+      "kind": "observation",
+      "logical_source_sha256": "1a8ab1a83f42334472fa30ffa57b921ae6ff9a01702e297acf81278bbd1fba1e",
+      "sha256": "9ec292259111bc69d809e4046c9d09bca37302d71938fd4fe2890fd51eda7c9e",
+      "source_sha256": "0ce055fe99b0f7d6faa234fc2040a5e59622e089f862278448df3def6b7a97e5"
+    },
+    {
+      "canonical_json_ascii": "{\"codec_id\":\"SYNTHETIC_CL2\",\"codec_schema_sha256\":\"d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b\",\"codec_version\":1,\"content_json_ascii\":\"{\\\"operation_kind\\\":\\\"REUSE_CORRECTION\\\"}\",\"domain\":\"v3.10-operation-inbox-observation\",\"initial_status\":\"OBSERVED\",\"logical_source_sha256\":\"b16ed3381a6187f1b13b7be56b230681aface0a706fff3aa828ebc72a7e88b49\",\"observed_at\":\"2026-01-02T03:04:05.123456789Z\",\"provenance_sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"970dacb77809c1cd2221d7ae20180130e921b73baaceea80a8e42e13aa3e998d\",\"source_kind\":\"SYNTHETIC_REUSE_CORRECTION\",\"source_scope_sha256\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"version\":1},\"version\":1}",
+      "id": "observation-reuse-correction",
+      "kind": "observation",
+      "logical_source_sha256": "b16ed3381a6187f1b13b7be56b230681aface0a706fff3aa828ebc72a7e88b49",
+      "sha256": "aaad19908182bd74e805d68c34aa877c2df39b5097bb0347b1432437aabae3ab",
+      "source_sha256": "6468292e5cf5faa7288b57e278078e26d7cb885c91c06073fb7aee9df6b7f03c"
+    },
+    {
+      "canonical_json_ascii": "{\"codec_id\":\"SYNTHETIC_CL2\",\"codec_schema_sha256\":\"d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b\",\"codec_version\":1,\"content_json_ascii\":\"{\\\"operation_kind\\\":\\\"REVERSAL\\\"}\",\"domain\":\"v3.10-operation-inbox-observation\",\"initial_status\":\"OBSERVED\",\"logical_source_sha256\":\"aec6afb5e9c18941e6fdb383d270675cb61ac9c26fa169c595f81ac55368e411\",\"observed_at\":\"2026-01-02T03:04:05.123456789Z\",\"provenance_sha256\":\"7777777777777777777777777777777777777777777777777777777777777777\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"b58f156ef64ef0ca100046ead5c62755f14279036ca4108f58d56586f1ce4edb\",\"source_kind\":\"SYNTHETIC_REVERSAL\",\"source_scope_sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"version\":1},\"version\":1}",
+      "id": "observation-reversal-distinct",
+      "kind": "observation",
+      "logical_source_sha256": "aec6afb5e9c18941e6fdb383d270675cb61ac9c26fa169c595f81ac55368e411",
+      "sha256": "c3cd989f821ffd92edc1490aba019db8b0d0fc80b3aa3cb9ff7c6c87974fe494",
+      "source_sha256": "8f96d1693b2655f875c55289fbae27127f89a41b88ca3148254becd4f51974c3"
+    },
+    {
+      "canonical_json_ascii": "{\"codec_id\":\"SYNTHETIC_CL2\",\"codec_schema_sha256\":\"d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b\",\"codec_version\":1,\"content_json_ascii\":\"{\\\"operation_kind\\\":\\\"REVERSAL_2\\\"}\",\"domain\":\"v3.10-operation-inbox-observation\",\"initial_status\":\"OBSERVED\",\"logical_source_sha256\":\"35cadd05e4082184613ad413c79ab69e0bee3f06a948334b54f7b80edb411244\",\"observed_at\":\"2026-01-02T03:04:05.123456789Z\",\"provenance_sha256\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"1b0d08f4d2bd77965ce004100f86d2904f51522a6650cfd61e34f9a274792123\",\"source_kind\":\"SYNTHETIC_REVERSAL_2\",\"source_scope_sha256\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"version\":1},\"version\":1}",
+      "id": "observation-reversal-second",
+      "kind": "observation",
+      "logical_source_sha256": "35cadd05e4082184613ad413c79ab69e0bee3f06a948334b54f7b80edb411244",
+      "sha256": "e7df3c290f8b227ce3f5474fc3843c469079adb06314327a516bea7dc8908b52",
+      "source_sha256": "516a727eebda6ffc0ad24b0e9a4d75394ad763ad73626ee9987342a498fedd80"
+    },
+    {
+      "canonical_json_ascii": "{\"codec_id\":\"SYNTHETIC_CL2\",\"codec_schema_sha256\":\"d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b\",\"codec_version\":1,\"content_json_ascii\":\"{\\\"operation_kind\\\":\\\"SYNTHETIC\\\"}\",\"domain\":\"v3.10-operation-inbox-observation\",\"initial_status\":\"OBSERVED\",\"logical_source_sha256\":\"1a8ab1a83f42334472fa30ffa57b921ae6ff9a01702e297acf81278bbd1fba1e\",\"observed_at\":\"2026-01-02T03:04:05.123456789Z\",\"provenance_sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"ed0306ea59619e88016ad6d2790594b4a5b19ccb9ec5a0a49b746c50b4dc9bc5\",\"source_kind\":\"SYNTHETIC\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1},\"version\":1}",
+      "id": "observation-section25-sample",
+      "kind": "observation",
+      "logical_source_sha256": "1a8ab1a83f42334472fa30ffa57b921ae6ff9a01702e297acf81278bbd1fba1e",
+      "sha256": "91570ebf94038110b8c3059172c448a105359296118555d7faae3511f3f1e896",
+      "source_sha256": "942e5f56c9b75137fdbedc216d38049eb59234530111cb49c57f9026a4b137b8"
+    },
+    {
+      "canonical_json_ascii": "{\"codec_id\":\"SYNTHETIC_CL2\",\"codec_schema_sha256\":\"d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b\",\"codec_version\":1,\"content_json_ascii\":\"{\\\"operation_kind\\\":\\\"SHARED\\\"}\",\"domain\":\"v3.10-operation-inbox-observation\",\"initial_status\":\"OBSERVED\",\"logical_source_sha256\":\"3d4e9102fb31d5afbcd74775af7dd516d6650e93793a52156c6555dc68e44822\",\"observed_at\":\"2026-01-02T03:04:05.123456789Z\",\"provenance_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"e553c4b72cb7b05056d7cfae24aed60ef72eca000e9ebf11bd020d04a493d8d7\",\"source_kind\":\"SYNTHETIC_SHARED\",\"source_scope_sha256\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"version\":1},\"version\":1}",
+      "id": "observation-shared-new",
+      "kind": "observation",
+      "logical_source_sha256": "3d4e9102fb31d5afbcd74775af7dd516d6650e93793a52156c6555dc68e44822",
+      "sha256": "d48b63c3588c748b4bafd67e3c6e16cade2b4728672c619118cdd825a330b762",
+      "source_sha256": "b26b3891e370de214c4c57e3f23f1d149e73230a74da0a26465d91ac9ef29083"
+    },
+    {
+      "canonical_json_ascii": "{\"domain\":\"v3.10-operation-inbox-status-event\",\"event_no\":\"3\",\"from_status\":\"REJECTED\",\"observation_sha256\":\"542a73d1c82d5d42cad15f78e1e715465c045870e757230785534d92b85b9a4a\",\"reason\":\"INVALID_OBSERVATION\",\"related_bundle_sha256\":null,\"related_transaction_sha256\":null,\"to_status\":\"REJECTED\",\"version\":1}",
+      "event_no": "3",
+      "from_status": "REJECTED",
+      "id": "status-invalid-after-terminal",
+      "kind": "status_event",
+      "observation_sha256": "542a73d1c82d5d42cad15f78e1e715465c045870e757230785534d92b85b9a4a",
+      "sha256": "3a0ea4459d82f4222ce594a14d2c88f9398bb60cd408a2e198464d9d56780386",
+      "to_status": "REJECTED"
+    },
+    {
+      "canonical_json_ascii": "{\"domain\":\"v3.10-operation-inbox-status-event\",\"event_no\":\"2\",\"from_status\":\"REVIEW_REQUIRED\",\"observation_sha256\":\"542a73d1c82d5d42cad15f78e1e715465c045870e757230785534d92b85b9a4a\",\"reason\":\"NOT_LEDGER_RELEVANT\",\"related_bundle_sha256\":null,\"related_transaction_sha256\":null,\"to_status\":\"REJECTED\",\"version\":1}",
+      "event_no": "2",
+      "from_status": "REVIEW_REQUIRED",
+      "id": "status-reject",
+      "kind": "status_event",
+      "observation_sha256": "542a73d1c82d5d42cad15f78e1e715465c045870e757230785534d92b85b9a4a",
+      "sha256": "b39fbd8a2e4c3213ead3a05e3cff70119e6b78b9f19e268ba24a0c422afdbe6f",
+      "to_status": "REJECTED"
+    },
+    {
+      "canonical_json_ascii": "{\"domain\":\"v3.10-operation-inbox-status-event\",\"event_no\":\"1\",\"from_status\":\"OBSERVED\",\"observation_sha256\":\"542a73d1c82d5d42cad15f78e1e715465c045870e757230785534d92b85b9a4a\",\"reason\":\"REVIEW_REQUIRED\",\"related_bundle_sha256\":null,\"related_transaction_sha256\":null,\"to_status\":\"REVIEW_REQUIRED\",\"version\":1}",
+      "event_no": "1",
+      "from_status": "OBSERVED",
+      "id": "status-review",
+      "kind": "status_event",
+      "observation_sha256": "542a73d1c82d5d42cad15f78e1e715465c045870e757230785534d92b85b9a4a",
+      "sha256": "a139a82040c7886a57b7bc984cd70fec221f8d8ec2b7258e19d0a5712c225feb",
+      "to_status": "REVIEW_REQUIRED"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"DEPOSIT\",\"classification_version\":1,\"corrects_sha256\":\"2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5\",\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:06:00.000000000Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"2.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"2000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"-2.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-2000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":null,\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"3224bc4049b6a2f8df3821e0a4338390d2f47f93f167e9af345318b2196a3b53\",\"source_kind\":\"SYNTHETIC_CORRECTION\",\"source_scope_sha256\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"version\":1},\"version\":1}",
+      "economic_sha256": "8239af22ecb175b5fcaff0608145edb99860e63cf89b33025117f2ef6dcfad50",
+      "id": "transaction-correction-distinct",
+      "kind": "cl1_transaction",
+      "sha256": "10eb8e4899624c1c8c3f0542b02a2b7bbace98f06c02e62430e452b75c073dfe",
+      "source_sha256": "ae6881786531e705c2800070822fe2dc4ea165a484ed4c781791767fae83d07d"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"DEPOSIT\",\"classification_version\":1,\"corrects_sha256\":\"2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5\",\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:12:00.000000000Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"6.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"6000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"-6.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-6000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":null,\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"970dacb77809c1cd2221d7ae20180130e921b73baaceea80a8e42e13aa3e998d\",\"source_kind\":\"SYNTHETIC_REUSE_CORRECTION\",\"source_scope_sha256\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"version\":1},\"version\":1}",
+      "economic_sha256": "6df2169c3a5ffdd382545d1593db08d522a5694e5aa06c07e166a894ac8bef80",
+      "id": "transaction-correction-original-reuse",
+      "kind": "cl1_transaction",
+      "sha256": "fbb5d205a38d46a1f5e40a9fead257c1eda2446ba2b25a538b81ce28fe3b2223",
+      "source_sha256": "6468292e5cf5faa7288b57e278078e26d7cb885c91c06073fb7aee9df6b7f03c"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"DEPOSIT\",\"classification_version\":1,\"corrects_sha256\":\"2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5\",\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:08:00.000000000Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"4.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"4000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"-4.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-4000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":null,\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"2d8e2813816fe5604af8b52b6e71d1dce0b655ce749e49f162debafbd3345d7b\",\"source_kind\":\"SYNTHETIC_CORRECTION_2\",\"source_scope_sha256\":\"7777777777777777777777777777777777777777777777777777777777777777\",\"version\":1},\"version\":1}",
+      "economic_sha256": "46d6b2097de234f44c01a22cedeff297d29df054e308f7bf0e8f88709252c19f",
+      "id": "transaction-correction-second",
+      "kind": "cl1_transaction",
+      "sha256": "7abf959fdb63bd4afde80c7dc65933bdadc210037a01e21da91dd9a319d36b68",
+      "source_sha256": "3f3301173513896e98f2bbb1130dd51963c6032edb34dfa78a2fbc3a18a5afae"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"DEPOSIT\",\"classification_version\":1,\"corrects_sha256\":\"2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5\",\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:10:00.000000000Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"5.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"5000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"-5.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-5000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":null,\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"e553c4b72cb7b05056d7cfae24aed60ef72eca000e9ebf11bd020d04a493d8d7\",\"source_kind\":\"SYNTHETIC_SHARED\",\"source_scope_sha256\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"version\":1},\"version\":1}",
+      "economic_sha256": "f620bc18af5778f90c3fef1fdbbfdb1a9a222251d486756ca69fd9f41ccd7d49",
+      "id": "transaction-correction-shared",
+      "kind": "cl1_transaction",
+      "sha256": "c107cc8ae8d34f6fb380bb48a217b702f6131249b799aac14078cdaa455bad70",
+      "source_sha256": "b26b3891e370de214c4c57e3f23f1d149e73230a74da0a26465d91ac9ef29083"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"DEPOSIT\",\"classification_version\":1,\"corrects_sha256\":null,\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:04:05.123456789Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"-1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":null,\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"68dff6ca0da3a0a30b4b661d088e4cfcecf08ceafa482e96f0af5adee528fef8\",\"source_kind\":\"SYNTHETIC_ECONOMIC\",\"source_scope_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"version\":1},\"version\":1}",
+      "economic_sha256": "02f37175436a6e25fefdfc0b3750713572a486e056bb6b32cd13be959b666788",
+      "id": "transaction-economic-match",
+      "kind": "cl1_transaction",
+      "sha256": "36946043a5b7df4447ed0a5bf8accceb3f4a688aa73cf676c661c063897a91e5",
+      "source_sha256": "2471ff5a3b8fec99580b410338636ad5e2b9d34bd3cedcb1cdd4a183160b7aef"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"DEPOSIT\",\"classification_version\":1,\"corrects_sha256\":null,\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:04:05.123456789Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"-1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":null,\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"59e4be00b60c744280e2564839d64d7d9ccb6f08450c51fd0213d939f067e248\",\"source_kind\":\"SYNTHETIC\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1},\"version\":1}",
+      "economic_sha256": "02f37175436a6e25fefdfc0b3750713572a486e056bb6b32cd13be959b666788",
+      "id": "transaction-original",
+      "kind": "cl1_transaction",
+      "sha256": "2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5",
+      "source_sha256": "afe2794a32e7ab235c11df6bc56ace6fcb00ddafcbbc1e9e33628130874e7281"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"REVERSAL\",\"classification_version\":1,\"corrects_sha256\":null,\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:05:00.000000000Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"-1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":\"2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"b58f156ef64ef0ca100046ead5c62755f14279036ca4108f58d56586f1ce4edb\",\"source_kind\":\"SYNTHETIC_REVERSAL\",\"source_scope_sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"version\":1},\"version\":1}",
+      "economic_sha256": "5daf02d6d2b93687ee357ee4c5a098f8a2d20240e126a436eddba5efdb4bf917",
+      "id": "transaction-reversal-distinct",
+      "kind": "cl1_transaction",
+      "sha256": "0ff4da96b5b02a6b063770a2bb04ec989060fed9caf0fdea9f76d55e023f244a",
+      "source_sha256": "8f96d1693b2655f875c55289fbae27127f89a41b88ca3148254becd4f51974c3"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"REVERSAL\",\"classification_version\":1,\"corrects_sha256\":null,\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:11:00.000000000Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"-1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":\"2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"59e4be00b60c744280e2564839d64d7d9ccb6f08450c51fd0213d939f067e248\",\"source_kind\":\"SYNTHETIC\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1},\"version\":1}",
+      "economic_sha256": "37569db16f66537392523719419b67dc3905e13965dd511b7b474bb21be5e78c",
+      "id": "transaction-reversal-original-reuse",
+      "kind": "cl1_transaction",
+      "sha256": "39aee73f5a5cc3349e344b49b8f0af05b447d25c8e69dec625b8cdbe02d06685",
+      "source_sha256": "afe2794a32e7ab235c11df6bc56ace6fcb00ddafcbbc1e9e33628130874e7281"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"REVERSAL\",\"classification_version\":1,\"corrects_sha256\":null,\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:07:00.000000000Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"-1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":\"2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"1b0d08f4d2bd77965ce004100f86d2904f51522a6650cfd61e34f9a274792123\",\"source_kind\":\"SYNTHETIC_REVERSAL_2\",\"source_scope_sha256\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"version\":1},\"version\":1}",
+      "economic_sha256": "ecbdce00cdbe6ce76115c775ba9284414006aeb756424708f8ba73d36a10ec5b",
+      "id": "transaction-reversal-second",
+      "kind": "cl1_transaction",
+      "sha256": "aae89ba1e8af1ee6cfb2720a993bfd18b2cf5029a2fdb3fe5671a2f6953b6543",
+      "source_sha256": "516a727eebda6ffc0ad24b0e9a4d75394ad763ad73626ee9987342a498fedd80"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"REVERSAL\",\"classification_version\":1,\"corrects_sha256\":null,\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:09:00.000000000Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"-1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-1000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"1.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"1000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":\"2982e7aa1648d5626ccc345ef7b38c1543c03c9793477a685d6bd3c283c735b5\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"e553c4b72cb7b05056d7cfae24aed60ef72eca000e9ebf11bd020d04a493d8d7\",\"source_kind\":\"SYNTHETIC_SHARED\",\"source_scope_sha256\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"version\":1},\"version\":1}",
+      "economic_sha256": "147b3654fcc7403f5ff45e18f71d7fd1892eadac71673958844dac726aa8c71c",
+      "id": "transaction-reversal-shared",
+      "kind": "cl1_transaction",
+      "sha256": "e94f6126b721d2c5d0a443b87ef3c937fc57d229895e366e0d9d13f4b7ef6441",
+      "source_sha256": "b26b3891e370de214c4c57e3f23f1d149e73230a74da0a26465d91ac9ef29083"
+    },
+    {
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"DEPOSIT\",\"classification_version\":1,\"corrects_sha256\":null,\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T04:00:00.000000000Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"3.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"3000000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_EXTERNAL_FLOW\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"-3.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-3000000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":null,\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"59e4be00b60c744280e2564839d64d7d9ccb6f08450c51fd0213d939f067e248\",\"source_kind\":\"SYNTHETIC\",\"source_scope_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"version\":1},\"version\":1}",
+      "economic_sha256": "a75c1c9be3cdfe14b7882f0ecae1c985611e2ff4abb302cffe717368c607854c",
+      "id": "transaction-source-conflict",
+      "kind": "cl1_transaction",
+      "sha256": "af21269917da7ef82e3d57068f94a4baaa198c4d4c8677b85c29a5f6970c7c76",
+      "source_sha256": "afe2794a32e7ab235c11df6bc56ace6fcb00ddafcbbc1e9e33628130874e7281"
+    }
+  ],
+  "version": 1
+}
