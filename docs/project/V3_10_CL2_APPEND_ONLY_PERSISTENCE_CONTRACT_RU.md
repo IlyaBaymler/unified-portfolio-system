@@ -1,6 +1,6 @@
 # v3.10 CL2 — Append-only persistence + OperationInbox contract
 
-Status: `CL2 CONTRACT CANDIDATE / IMPLEMENTATION BLOCKED`.
+Status: `CL2 CONTRACT CORRECTION CANDIDATE / CL2-R1-01..04 / IMPLEMENTATION BLOCKED`.
 
 Parent program: Issue #144.
 
@@ -144,28 +144,83 @@ The authoritative relations remain exactly the CL1 `IdentityRelation` values:
 
 ## 9. Codec registry and sanitized-content boundary
 
-An observation may use only a codec registered explicitly before store creation/open. A registered codec is a pure validator/canonicalizer plus this exact descriptor:
+An observation may use only a descriptor registered explicitly before store creation/open. CL2 interprets the descriptor's declarative schema itself; the registry cannot supply or replace validation code. The exact descriptor keyset is:
 
 ```text
-{"codec_id":"<TOKEN>","codec_version":1,"domain":"v3.10-operation-inbox-codec","schema_sha256":"<lowercase-sha256>","version":1}
+{"codec_id":"<TOKEN>","codec_version":1,"domain":"v3.10-operation-inbox-codec","schema_json_ascii":"<exact canonical schema JSON text>","schema_sha256":"<lowercase-sha256>","version":1}
 ```
 
-The descriptor SHA is SHA-256 of those canonical bytes. `schema_sha256` binds the codec's declarative sanitized schema; it is not a hash of executable code. Re-registering the same `(codec_id, codec_version)` with different descriptor bytes is `CODEC_UNSUPPORTED`.
+`schema_json_ascii` is the complete schema preimage. `schema_sha256` must equal `SHA256(ASCII(schema_json_ascii))`; descriptor SHA is SHA-256 of the complete descriptor canonical bytes. The store persists the complete descriptor used by every accepted observation.
 
-The store persists every descriptor used by an accepted observation. Opening, exporting, backing up or restoring a store requires a supplied registry containing byte-identical descriptors for all stored codecs. Missing, newer or changed descriptors fail `CODEC_UNSUPPORTED`; no opaque pass-through is allowed.
+The version-1 schema is a canonical JSON object with exact keyset `domain`, `fields`, `version`:
 
-Every codec must enforce all of the following before persistence:
+```json
+{
+  "domain": "v3.10-operation-inbox-codec-schema",
+  "fields": [
+    {
+      "allowed_values": null,
+      "key": "operation_kind",
+      "kind": "STRING",
+      "maximum": null,
+      "max_scalars": "64",
+      "minimum": null,
+      "required": true
+    }
+  ],
+  "version": 1
+}
+```
 
-- top-level sanitized content is a JSON object;
-- allowed keys, types and nesting are finite and exact in the codec schema;
-- only JSON object/array/string/Boolean/null and plain integers in `[-9007199254740991, 9007199254740991]` are permitted;
-- JSON float, NaN, infinity and negative zero representations are forbidden;
-- canonical content is at most `65536` bytes, nesting depth at most `16`, aggregate array/object members at most `1024`, and each string at most `4096` Unicode scalar values;
-- keys matching, after ASCII lowercase, `account_id`, `broker_account_id`, `token`, `access_token`, `refresh_token`, `authorization`, `cookie`, `set_cookie`, `headers`, `raw_payload`, `provider_payload`, `secret`, `password`, `api_key` or `credential` are forbidden at every depth;
-- raw provider payloads, credentials, transport headers, raw broker Account ID and unbounded provider text are forbidden regardless of key spelling;
-- the validator performs no I/O and does not read time, environment or credentials.
+Schema rules are exact:
 
-The structural denylist is a minimum defense. The registered codec remains responsible for proving that every allowed field is sanitized and bounded. The CL2 production module contains no provider or test codec; acceptance tests supply one public synthetic registry entry and validator. Provider codecs belong to later reviewed scope.
+- `schema_json_ascii` is at most `65536` ASCII bytes; `fields` has `1..256` entries ordered by strictly increasing ASCII `key`;
+- every entry has exactly `allowed_values`, `key`, `kind`, `maximum`, `max_scalars`, `minimum`, `required`;
+- `key` matches `[a-z][a-z0-9_]{0,63}` and is unique;
+- `required` is a JSON Boolean;
+- `kind` is exactly `STRING`, `INTEGER`, `BOOLEAN` or `NULL`;
+- for `STRING`, `max_scalars` is a minimal decimal string in `1..4096`, `minimum`/`maximum` are null, and `allowed_values` is null or an array of `1..256` unique strings ordered by each value's canonical JSON-string ASCII bytes; each value contains only Unicode scalar values and respects the same scalar limit;
+- for `INTEGER`, `minimum` and `maximum` are minimal decimal strings in `[-9007199254740991,9007199254740991]` with `minimum <= maximum`, while `max_scalars` and `allowed_values` are null;
+- for `BOOLEAN` and `NULL`, all four constraint fields are null;
+- no other schema domain/version, key, kind, constraint combination or field order is accepted.
+
+Sanitized content is one flat JSON object. Its keys are exactly all required schema keys plus any subset of optional keys; undeclared keys and missing required keys fail. Values must match the declared JSON primitive type and constraints exactly. Strings contain Unicode scalar values with no normalization; lone surrogates are invalid. Arrays, nested objects, JSON float, NaN, infinity, negative-zero number text and integers outside the safe range are forbidden. Canonical content is at most `65536` ASCII bytes.
+
+The following schema keys are forbidden after ASCII lowercase comparison: `account_id`, `broker_account_id`, `token`, `access_token`, `refresh_token`, `authorization`, `cookie`, `set_cookie`, `headers`, `raw_payload`, `provider_payload`, `secret`, `password`, `api_key`, `credential`. Raw provider payloads, credentials, transport headers, raw broker Account ID and unbounded provider text remain forbidden regardless of key spelling; later provider contract review must prove that its finite field schema contains only sanitized values.
+
+Opening, exporting, backing up or restoring requires a supplied registry containing byte-identical complete descriptors for every stored codec. CL2 first validates the stored and supplied schema bytes/hash itself and then evaluates content through the generic rules above. Missing, newer, changed or internally inconsistent descriptors fail closed; repeating the claimed hash string without its exact preimage cannot pass.
+
+The CL2 production module contains no provider or test codec. Acceptance tests supply one public synthetic descriptor. Provider descriptors belong to later reviewed scope.
+
+Frozen synthetic schema bytes:
+
+```text
+{"domain":"v3.10-operation-inbox-codec-schema","fields":[{"allowed_values":null,"key":"operation_kind","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true}],"version":1}
+```
+
+Schema SHA-256:
+
+`d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b`
+
+Frozen `SYNTHETIC_CL2` descriptor bytes:
+
+```text
+{"codec_id":"SYNTHETIC_CL2","codec_version":1,"domain":"v3.10-operation-inbox-codec","schema_json_ascii":"{\"domain\":\"v3.10-operation-inbox-codec-schema\",\"fields\":[{\"allowed_values\":null,\"key\":\"operation_kind\",\"kind\":\"STRING\",\"max_scalars\":\"64\",\"maximum\":null,\"minimum\":null,\"required\":true}],\"version\":1}","schema_sha256":"d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b","version":1}
+```
+
+Descriptor SHA-256:
+
+`43d6d99e633e8806f7efc11f70816fd8236df824d775b5cdf18626c93abfa1b4`
+
+Frozen sanitized content bytes:
+
+```text
+{"operation_kind":"SYNTHETIC"}
+```
+
+Content SHA-256:
+
+`ed0306ea59619e88016ad6d2790594b4a5b19ccb9ec5a0a49b746c50b4dc9bc5`
 
 ## 10. OperationInbox canonical objects
 
@@ -217,7 +272,7 @@ An `InboxObservationV1` exact keyset is:
 Validation additionally requires:
 
 1. descriptor fields match a registered codec byte-for-byte;
-2. `content_json_ascii` is ASCII text containing exactly the codec-reproduced canonical bytes;
+2. `content_json_ascii` is ASCII text containing exactly the schema-validated canonical bytes reproduced by CL2;
 3. `SHA256(ASCII(content_json_ascii)) == source.source_content_sha256`;
 4. recomputed logical-source bytes/SHA equal `logical_source_sha256`;
 5. `initial_status` is exactly `OBSERVED`;
@@ -258,9 +313,9 @@ Closed reason set and exact transition constraints:
 | `NOT_LEDGER_RELEVANT` | `OBSERVED/REVIEW_REQUIRED -> REJECTED` | both null |
 | `INVALID_OBSERVATION` | `OBSERVED/REVIEW_REQUIRED -> REJECTED` | both null |
 | `LEDGER_TRANSACTION_ACCEPTED` | `OBSERVED/REVIEW_REQUIRED -> LEDGER_LINKED` | transaction non-null, bundle null |
-| `LEDGER_CORRECTION_ACCEPTED` | `OBSERVED/REVIEW_REQUIRED -> LEDGER_LINKED` | transaction and bundle non-null |
+| `LEDGER_CORRECTION_ACCEPTED` | `OBSERVED/REVIEW_REQUIRED -> LEDGER_LINKED` | transaction null, bundle non-null |
 
-`event_no` starts at `1` and is contiguous per observation. `LEDGER_LINKED` and `REJECTED` are terminal. Event SHA is SHA-256 of its canonical bytes. A transaction/correction-linked event may be created only atomically by the corresponding ledger operation; the generic status API cannot forge it.
+`event_no` starts at `1` and is contiguous per observation. `LEDGER_LINKED` and `REJECTED` are terminal. Event SHA is SHA-256 of its canonical bytes. A transaction/correction-linked event may be created only atomically by the corresponding ledger operation; the generic status API cannot forge it. A correction event names the bundle because the same observation may evidence both of its new transactions; exact transaction links remain in the provenance-link table. If a correction component reuses the original transaction's already `LEDGER_LINKED` observation, the bundle adds its provenance link but no second terminal status event.
 
 An observation is evidence. `OBSERVED` or `REVIEW_REQUIRED` status has no economic effect.
 
@@ -337,23 +392,25 @@ Reversal or correction transactions are never accepted through ordinary append. 
 
 ## 14. Atomic correction bundle
 
-The bundle operation accepts one validated CL1 `LedgerCorrectionBundle`, existing observation SHA values for its reversal and correction, and both expected revisions.
+The bundle operation accepts one validated CL1 `LedgerCorrectionBundle`, ordered existing observation SHA values for its reversal and correction, and both expected revisions. The two SHA values may be equal.
 
 Before mutation it requires:
 
 1. the exact original transaction is already present as an ordinary accepted ledger transition;
 2. the stored original bytes equal the bundle's original bytes;
 3. neither reversal nor correction is already present outside the same exact committed bundle;
-4. both new observations exist, are linkable, and exactly match the respective transaction sources;
+4. both referenced observations exist and exactly match the respective transaction sources;
 5. the accepted CL1 finite bundle-set invariant remains valid;
-6. all source/economic comparisons against trusted transactions are conflict-free except the exact original relationship required by the bundle.
+6. all source/economic comparisons against transactions trusted before this bundle are conflict-free except the exact original relationship required by the bundle.
+
+Reversal and correction are compared as components of their already validated CL1 bundle, not as two independent append candidates. If their SourceIdentity canonical bytes are equal, both must reference the same observation. If their sources differ, each must reference its own matching observation. A referenced observation must be `OBSERVED`/`REVIEW_REQUIRED`, or it may already be `LEDGER_LINKED` only when its existing provenance link is exclusively to this bundle's original transaction. `REJECTED` and every other pre-linked state fail. This bundle path is the only case in which one observation may evidence more than one transaction.
 
 One successful call atomically inserts:
 
 - the reversal transaction and its postings;
 - the correction transaction and its postings;
 - both provenance links;
-- two `LEDGER_CORRECTION_ACCEPTED` status events referring to the same bundle;
+- one `LEDGER_CORRECTION_ACCEPTED` status event per distinct referenced observation that was not already `LEDGER_LINKED` through the original, each referring to the bundle and no individual transaction;
 - one immutable bundle row;
 - one ledger-transition row;
 - one store-revision and one ledger-revision advancement;
@@ -510,6 +567,9 @@ Semantic checks include at least:
 - exact posting projection from each transaction;
 - exactly one provenance observation per transaction;
 - provenance source bytes equal transaction source bytes;
+- exactly one transaction-linked status event for an ordinary append and one bundle-linked status event per newly linked distinct correction observation;
+- a correction observation already linked exclusively to the original gains no second terminal event; every other pre-linked correction observation is invalid;
+- shared correction observation occurs only when reversal/correction source bytes are equal and its additional links are exactly the applicable transactions in one bundle;
 - no ordinary append containing correction lineage;
 - complete two-transaction correction bundles and one bundle per original;
 - contiguous ledger revisions, valid transition kind/target and complete head chain;
@@ -670,20 +730,68 @@ No-clobber failure, interruption or verification failure leaves the source backu
 
 CL1 `MoneyError`/`LedgerError` reasons propagate unchanged while parsing supplied CL1 objects before persistence. SQLite/OS exception text, locale, path text and errno are not authoritative reason values.
 
-Common deterministic decision order is:
+The following tables are normative ordered decision oracles. Rows run top-to-bottom; checks separated by `->` inside a row run left-to-right. The first failing check is the only primary reason.
 
-1. direct Python type/range/path shape;
-2. exact canonical keyset/JSON grammar/hash;
-3. version;
-4. codec and sanitized-content policy;
-5. store existence/header/schema/physical integrity;
-6. semantic integrity/replay;
-7. lock acquisition;
-8. exact duplicate recognition;
-9. expected revisions;
-10. missing references/status;
-11. source/economic/lineage conflicts;
-12. transactional I/O/commit.
+### 23.1 Canonical and codec inputs
+
+| ordered check | exact failure |
+|---|---|
+| wrong outer Python type, Boolean where integer is required, non-string text/bytes | `TYPE_INVALID` |
+| malformed JSON, duplicate/missing/extra keys, non-canonical JSON text, invalid token/decimal/timestamp grammar | `CANONICAL_FORMAT_INVALID` |
+| syntactically invalid lowercase SHA field | `HASH_INVALID` |
+| recognized object with unsupported domain or version | `VERSION_UNSUPPORTED` |
+| nested CL1 object invalid | propagate the first exact CL1 reason |
+| codec schema/descriptor non-canonical or internally inconsistent | `CANONICAL_FORMAT_INVALID` |
+| schema/descriptor SHA mismatch | `HASH_INVALID` |
+| descriptor absent from registry or registered bytes differ | `CODEC_UNSUPPORTED` |
+| forbidden schema/content key or explicit private/raw-content negative vector | `SENSITIVE_CONTENT_FORBIDDEN` |
+| content keyset/type/value/size violates the verified schema or global bound | `SANITIZED_CONTENT_INVALID` |
+| sanitized content SHA or logical-source SHA does not reproduce its declared value | `HASH_INVALID` |
+
+Observation parsing executes this whole table before any store access. Status-event parsing uses the first four rows; transition semantics are checked later as `STATUS_TRANSITION_INVALID`.
+
+### 23.2 Store/path startup
+
+| ordered check | exact failure |
+|---|---|
+| path type/absolute-local grammar/safe-parent/link/reparse/hard-link rule | `PATH_INVALID` |
+| create/backup/restore target or exact staging name already exists | `PATH_COLLISION` |
+| required open/backup source root or database is absent | `STORE_MISSING` |
+| forbidden/orphan/inconsistent sidecar or rollback-journal envelope | `WAL_SIDECAR_INCONSISTENT` |
+| SQLite header cannot be parsed as a database | `INTEGRITY_FAILURE` |
+| application ID, `user_version`, application schema version or required SQLite capability is unsupported | `VERSION_UNSUPPORTED` |
+| application schema objects or fingerprint differ | `SCHEMA_INVALID` |
+| `integrity_check` is not exactly one `ok` row | `INTEGRITY_FAILURE` |
+| `foreign_key_check` is non-empty | `SEMANTIC_INTEGRITY_FAILURE` |
+| stored codec descriptor missing from registry or byte-different | `CODEC_UNSUPPORTED` |
+| canonical row, relation, revision or replay invariant fails | `SEMANTIC_INTEGRITY_FAILURE` |
+| other filesystem/SQLite I/O failure before a lock is requested | `IO_FAILURE` |
+
+Opening through an already closed repository handle is `STORE_CLOSED` before any SQLite action. Startup validation always completes before mutation/duplicate/CAS checks.
+
+### 23.3 Mutators after successful startup/input validation
+
+All mutators first attempt `BEGIN IMMEDIATE`; timeout/lock loss is `STORE_BUSY`. They then apply the following operation-specific order:
+
+| operation | ordered decision after lock |
+|---|---|
+| observation | exact committed bytes -> duplicate disposition; expected store revision mismatch -> `REVISION_MISMATCH`; same logical source with different bytes -> `SOURCE_CONTENT_CONFLICT`; exhausted store revision -> `REVISION_EXHAUSTED`; write/commit failure -> `IO_FAILURE` |
+| non-ledger status event | exact committed event at the same observation/event number -> duplicate disposition; expected store revision mismatch -> `REVISION_MISMATCH`; observation absent -> `OBSERVATION_NOT_FOUND`; current/from/event-number/reason/reference/terminal rule invalid -> `STATUS_TRANSITION_INVALID`; exhausted store revision -> `REVISION_EXHAUSTED`; write/commit failure -> `IO_FAILURE` |
+| ordinary transaction | exact committed transaction and identical observation link -> duplicate disposition; expected store then ledger revision mismatch -> `REVISION_MISMATCH`; observation absent -> `OBSERVATION_NOT_FOUND`; reversal/correction lineage presented through ordinary append -> `LINEAGE_CONFLICT`; observation/transaction source bytes differ or trusted source relation conflicts -> `SOURCE_CONFLICT`; trusted economic relation matches -> `ECONOMIC_MATCH_REVIEW_REQUIRED`; observation status not linkable -> `STATUS_TRANSITION_INVALID`; either revision exhausted -> `REVISION_EXHAUSTED`; write/commit failure -> `IO_FAILURE` |
+| correction bundle | exact committed bundle and identical ordered links -> duplicate disposition; expected store then ledger revision mismatch -> `REVISION_MISMATCH`; original transaction absent -> `TRANSACTION_NOT_FOUND`; either referenced observation absent -> `OBSERVATION_NOT_FOUND`; stored original/bundle lineage or second branch invalid -> `LINEAGE_CONFLICT`; observation/transaction source mismatch or conflict with a pre-existing trusted non-original transaction -> `SOURCE_CONFLICT`; economic match with a pre-existing trusted non-original transaction -> `ECONOMIC_MATCH_REVIEW_REQUIRED`; a distinct observation is neither linkable nor already linked exclusively to the original -> `STATUS_TRANSITION_INVALID`; either revision exhausted -> `REVISION_EXHAUSTED`; write/commit failure -> `IO_FAILURE` |
+
+An injected pre-commit fault maps to `INTERRUPTED_TRANSACTION` instead of `IO_FAILURE` and rolls back. An injected post-commit/pre-return fault reports `INTERRUPTED_TRANSACTION`, but the committed retry is subsequently recognized as the exact duplicate before CAS.
+
+### 23.4 Backup and restore
+
+| ordered check | exact failure |
+|---|---|
+| source/target path checks | the exact path reason from section 23.2 |
+| backup directory child set, manifest canonical form/version, file size or file SHA invalid | `BACKUP_MANIFEST_INVALID` |
+| verified backup database startup/integrity/codec/semantic validation fails | propagate the exact section 23.2 reason |
+| verified database export differs from stored `export.json` | `SEMANTIC_INTEGRITY_FAILURE` |
+| restore staging or promoted copy differs from the already verified backup identity/export | `RESTORE_VERIFICATION_FAILED` |
+| other copy/write/fsync/rename failure | `IO_FAILURE` |
 
 An earlier failure wins. A failure never repairs rows, drops observations, rewrites CL1 bytes, rounds Money, coerces versions, advances a revision/head, creates an economic effect, deletes a sidecar/staging path or overwrites a target.
 
@@ -704,21 +812,51 @@ Top-level exact keyset:
 - `domain`: `v3.10-cash-ledger-persistence-fixture`;
 - `version`: plain integer `1`;
 - `vectors`: JSON array;
-- `decision_cases`: JSON array.
+- `scenarios`: JSON array.
 
 Every vector has common keys `id`, `kind`, `canonical_json_ascii`, `sha256` plus exactly these kind-specific keys:
 
 | kind | additional keys |
 |---|---|
-| `codec` | none |
+| `codec_schema` | none |
+| `codec_descriptor` | `schema_sha256` |
 | `logical_source` | none |
 | `observation` | `logical_source_sha256`, `source_sha256` |
 | `status_event` | `event_no`, `from_status`, `observation_sha256`, `to_status` |
+| `cl1_transaction` | `economic_sha256`, `source_sha256` |
+| `cl1_bundle` | `correction_sha256`, `original_sha256`, `reversal_sha256` |
 | `ledger_head` | `ledger_revision`, `previous_head_sha256`, `transition_kind`, `transition_sha256` |
 | `export` | `ledger_head_sha256`, `ledger_revision`, `store_revision` |
 | `backup_manifest` | `export_sha256`, `ledger_head_sha256`, `ledger_revision`, `store_revision` |
 
-Every decision case has exact keys `expected_disposition`, `expected_head_sha256`, `expected_ledger_revision`, `expected_reason`, `expected_store_revision`, `id`, `input_ids`, `operation`. `input_ids` is an ordered array of vector IDs. `operation` is one of `APPEND_OBSERVATION`, `APPEND_STATUS_EVENT`, `APPEND_TRANSACTION`, `APPEND_CORRECTION_BUNDLE`. Exactly one of `expected_disposition` and `expected_reason` is non-null. Expected revisions are decimal strings and the head is a lowercase SHA. Unknown keys, kinds, operations or referenced IDs fail fixture verification.
+Vector `id` matches `[a-z0-9][a-z0-9_-]{0,127}`, is unique, and vectors are ordered by strictly increasing ASCII `id`. Each `canonical_json_ascii` independently parses, reproduces byte-identically and hashes to its `sha256`; all additional identities must reproduce from those canonical bytes or from the accepted CL1 parser.
+
+Every scenario has exact keys `id`, `registry_ids`, `steps`. Scenario IDs follow the same grammar, are unique and ASCII-sorted. `registry_ids` is an ASCII-sorted unique array of `codec_descriptor` vector IDs. Every scenario starts from a newly created empty schema-1 store with revisions `0/0` and the frozen genesis head, then executes `steps` strictly in array order.
+
+Every step has exactly:
+
+- `expected_disposition`: one section-11 value or null;
+- `expected_head_sha256`: current head after the step;
+- `expected_ledger_revision`: decimal ledger revision after the step;
+- `expected_reason`: one section-23 reason or null;
+- `expected_store_revision`: decimal store revision after the step;
+- `input_ids`: ordered vector references;
+- `operation`: one closed operation token;
+- `supplied_ledger_revision`: decimal CAS input or null;
+- `supplied_store_revision`: decimal CAS input.
+
+Exactly one of `expected_disposition` and `expected_reason` is non-null. Failure steps repeat the exact pre-step revisions/head. `supplied_ledger_revision` is null for inbox-only operations and non-null for ledger operations.
+
+Closed operation/input order:
+
+| operation | exact `input_ids` |
+|---|---|
+| `APPEND_OBSERVATION` | `[observation]` |
+| `APPEND_STATUS_EVENT` | `[status_event]` |
+| `APPEND_TRANSACTION` | `[cl1_transaction, observation]` |
+| `APPEND_CORRECTION_BUNDLE` | `[cl1_bundle, reversal_observation, correction_observation]` |
+
+For a bundle, the last two IDs may be identical exactly when both new CL1 transaction sources are identical. Unknown keys, kinds, operations, referenced IDs, wrong vector kinds, wrong CAS nullability or a step whose declared post-state does not follow from the preceding state fail fixture verification.
 
 The fixture reuses the exact public synthetic CL1 values and hashes. For account scope `11..11`, source scope `22..22` and source kind `SYNTHETIC`, exact logical-source bytes are:
 
@@ -730,7 +868,17 @@ SHA-256:
 
 `1a8ab1a83f42334472fa30ffa57b921ae6ff9a01702e297acf81278bbd1fba1e`
 
-It must also reproduce the three exact head vectors from section 15 and bind at least one valid observation, status chain, ordinary append, exact retry, source conflict, economic match, correction bundle, backup manifest and restored export.
+Using the frozen `SYNTHETIC_CL2` codec/content, timestamp `2026-01-02T03:04:05.123456789Z`, provenance `44..44` and that logical source, exact observation bytes are:
+
+```text
+{"codec_id":"SYNTHETIC_CL2","codec_schema_sha256":"d21206b6c54576f60fa9923817bc4b59f8b8ed04942be4a53ca5c3eb304e858b","codec_version":1,"content_json_ascii":"{\"operation_kind\":\"SYNTHETIC\"}","domain":"v3.10-operation-inbox-observation","initial_status":"OBSERVED","logical_source_sha256":"1a8ab1a83f42334472fa30ffa57b921ae6ff9a01702e297acf81278bbd1fba1e","observed_at":"2026-01-02T03:04:05.123456789Z","provenance_sha256":"4444444444444444444444444444444444444444444444444444444444444444","source":{"account_scope_sha256":"1111111111111111111111111111111111111111111111111111111111111111","domain":"v3.10-cash-ledger-source","source_content_sha256":"ed0306ea59619e88016ad6d2790594b4a5b19ccb9ec5a0a49b746c50b4dc9bc5","source_kind":"SYNTHETIC","source_scope_sha256":"2222222222222222222222222222222222222222222222222222222222222222","version":1},"version":1}
+```
+
+Observation SHA-256:
+
+`91570ebf94038110b8c3059172c448a105359296118555d7faae3511f3f1e896`
+
+Every `codec_descriptor` schema hash must resolve to exactly one `codec_schema` vector. Every `cl1_bundle` vector's three hashes must resolve to exactly one `cl1_transaction` vector each. The fixture must also reproduce the three exact head vectors from section 15 and bind at least one valid observation, status chain, ordinary append, exact retry, stale CAS, source conflict, economic match, distinct-source correction bundle, shared-new-source/shared-observation bundle, original-source/previously-linked-observation reuse, second-branch lineage conflict, backup manifest and restored export.
 
 ## 26. Fixed acceptance matrix
 
@@ -739,8 +887,8 @@ The future implementation acceptance suite is frozen to:
 - `V310-CL2-01`: import has no I/O/runtime/provider side effect and static dependency boundary passes;
 - `V310-CL2-02`: exact clean create, application/schema version, object allowlist and schema fingerprint;
 - `V310-CL2-03`: no create-on-open, unknown/older/newer/partial schema and extra objects fail closed;
-- `V310-CL2-04`: codec descriptor exact bytes/hash/registration collision and unknown-codec refusal;
-- `V310-CL2-05`: sanitized content size/depth/member/string bounds, forbidden keys and raw/private negative vectors;
+- `V310-CL2-04`: codec schema/descriptor exact bytes/preimage/hash, generic evaluation, registration collision and unknown-codec refusal;
+- `V310-CL2-05`: flat sanitized content key/type/value/string/total-size bounds, forbidden keys and raw/private negative vectors;
 - `V310-CL2-06`: logical-source and observation canonical keysets/bytes/SHA known answers;
 - `V310-CL2-07`: exact observation duplicate no-op, changed same logical source conflict, distinct append;
 - `V310-CL2-08`: status-event exact transitions, contiguous numbering, terminal rules, duplicate no-op;
@@ -749,7 +897,7 @@ The future implementation acceptance suite is frozen to:
 - `V310-CL2-11`: transaction exact retry no-op, source conflict and economic-match review refusal;
 - `V310-CL2-12`: stale store/ledger CAS, duplicate-before-CAS retry, exhaustion and no mutation on failure;
 - `V310-CL2-13`: exact genesis/transaction/bundle head bytes/SHA and deterministic replay;
-- `V310-CL2-14`: valid correction bundle is one atomic revision/head transition;
+- `V310-CL2-14`: distinct-source, shared-new-source and original-source-reuse valid correction bundles each form one atomic revision/head transition with status events only for newly linked distinct observations;
 - `V310-CL2-15`: reversal/correction missing evidence, partial/pre-existing rows and ordinary lineage append rejected;
 - `V310-CL2-16`: exact bundle retry idempotent and second distinct branch `LINEAGE_CONFLICT`;
 - `V310-CL2-17`: physical integrity, foreign keys and every semantic invariant detect tampering;
@@ -762,7 +910,7 @@ The future implementation acceptance suite is frozen to:
 - `V310-CL2-24`: tampered/missing/extra backup evidence fails read-only verification;
 - `V310-CL2-25`: isolated restore exact revision/head/export equivalence, no source mutation and target no-clobber;
 - `V310-CL2-26`: create/backup/restore interruption never promotes partial state and never deletes staging evidence;
-- `V310-CL2-27`: all closed failure reasons and representative multi-invalid priority vectors;
+- `V310-CL2-27`: all closed failure reasons and operation-specific multi-invalid priority vectors reproduce section 23 exactly;
 - `V310-CL2-28`: exact three-path implementation delta, immutable CL1 contract/domain/tests/fixture and complete regression suite.
 
 No vector requires network, provider credentials, private data, GUI, runtime startup, current time, random identity or experiment execution.
@@ -791,34 +939,58 @@ Issue #79 is evidence for explicit version identity, deterministic head, transac
 
 Neither issue, its branch, implementation, schema numbering, fixture bytes nor ancestry is normative for this clean line. In particular, historical mixed MoneyV1/MoneyV2 history and schema migration are excluded.
 
-## 29. Contract review and acceptance protocol
+## 29. Bounded review and correction protocol
 
-The first candidate must receive a separate independent/adversarial read-only review against:
+The independent/adversarial read-only review of initial exact candidate `8f351feadaec6bbaec9c86d02971779eb0d091f3` / tree `fa6ef5bd15f1908dcadf67e2fd339353893ab9b8` produced the fixed material set:
 
-- exact predecessor/head/tree and one-file cumulative diff;
-- completeness and internal consistency of sections 7–24;
-- preservation of exact CL1 identities and authority;
-- deterministic duplicate/CAS/revision/head outcomes;
-- atomic correction and crash/restart behavior;
-- privacy, codec, path, WAL, corruption, backup and restore negative cases;
-- feasibility within the proposed three-file implementation allowlist;
-- the fixed acceptance matrix.
+- `CL2-R1-01 / BLOCKER_CORRECTION_PROVENANCE_CARDINALITY`;
+- `CL2-R1-02 / BLOCKER_CODEC_SCHEMA_CUSTODY_UNBOUND`;
+- `CL2-R1-03 / BLOCKER_FAILURE_ORACLE_UNFROZEN`;
+- `CL2-R1-04 / BLOCKER_FIXTURE_STATE_MODEL_UNREPRODUCIBLE`.
 
-The review disposition is either:
+This document is the one authorized bounded correction batch for exactly that set. No second CL2 contract correction batch is authorized.
 
-- `PASS/APPROVE / MATERIAL FINDINGS 0`; or
-- a finite named material finding set requiring one separately authorized bounded correction.
+The closure review is restricted to `CL2-R1-01..04`. It may return only:
 
-Contract acceptance is a later explicit decision binding one exact commit and tree. Review PASS does not itself authorize implementation. Issue/PR text is status evidence, not canonical contract authority.
+- `PASS / CL2-R1-01..04 CLOSED / MATERIAL FINDINGS 0`; or
+- `RESCOPE` if any one of those four findings remains material.
 
-Only after explicit acceptance may a separate implementation branch be created from the exact accepted contract head under section 4. Publication, Draft/Ready transition and merge remain later separate decisions.
+No unrelated finding may be introduced into this closure cycle. A separate future concern is deferred unless it proves that one of the four fixed blockers was not actually closed.
+
+### 29.1 `CL2-R1-01 / BLOCKER_CORRECTION_PROVENANCE_CARDINALITY`
+
+Correction: sections 10.3, 14, 19, 25 and 26 now permit identical ordered observation references for reversal/correction when their exact CL1 SourceIdentity bytes are equal, and permit reuse of the original's already linked observation when a component has that source. Bundle persistence writes one provenance link per transaction and one terminal bundle-linked status event per newly linked distinct observation. The pair is validated as one CL1 bundle rather than two independent append candidates.
+
+Closure condition: distinct-source/two-observation, shared-new-source/shared-observation and original-source/pre-linked-observation CL1-valid bundles each have one deterministic atomic persistence result, revision transition, status projection and exact retry behavior.
+
+### 29.2 `CL2-R1-02 / BLOCKER_CODEC_SCHEMA_CUSTODY_UNBOUND`
+
+Correction: section 9 adds the canonical schema preimage to the exact descriptor, freezes its SHA formula and a finite flat schema language, and requires CL2's generic evaluator to validate the preimage and content. The supplied registry can authorize descriptor identities but cannot inject validator code or repeat a hash without the exact schema bytes.
+
+Closure condition: an independent implementation can reproduce schema/descriptor bytes and SHA, reject a changed/missing descriptor, and revalidate every stored/exported/restored observation without trusting an unbound executable validator.
+
+### 29.3 `CL2-R1-03 / BLOCKER_FAILURE_ORACLE_UNFROZEN`
+
+Correction: section 23 now contains ordered per-boundary decision tables for canonical/codec input, startup/path, each mutator, backup and restore, including tie-breaking and exact reason propagation.
+
+Closure condition: representative multi-invalid cases select one exact primary reason without implementation-specific ordering, including hash/content, schema/version, unknown-codec/private-content, duplicate/CAS, missing-reference/conflict and backup/restore combinations.
+
+### 29.4 `CL2-R1-04 / BLOCKER_FIXTURE_STATE_MODEL_UNREPRODUCIBLE`
+
+Correction: section 25 adds codec-schema/descriptor and CL1 transaction/bundle vector kinds plus ordered fresh-store scenarios. Every step freezes input object order, supplied CAS revisions, disposition/reason and exact post-state revisions/head.
+
+Closure condition: the fixture can independently encode and replay exact duplicate, stale CAS, source/economic conflict, distinct/shared-source correction, second-branch lineage and deterministic final-state cases with no implicit setup.
+
+Contract acceptance, if separately granted after closure PASS, binds one exact correction commit and tree. Review PASS does not itself authorize implementation. Issue/PR text is status evidence, not canonical contract authority.
+
+Only after explicit acceptance may a separate implementation branch be created from the exact accepted correction head under section 4. Publication, Draft/Ready transition and merge remain later separate decisions.
 
 ## 30. Contract exit state
 
 Current authority:
 
-`CL2 CONTRACT CANDIDATE / ONE-FILE CONTRACT DELTA / IMPLEMENTATION BLOCKED`.
+`CL2 CONTRACT CORRECTION CANDIDATE / CL2-R1-01..04 / ONE-FILE CONTRACT DELTA / IMPLEMENTATION BLOCKED`.
 
 This contract candidate performs no implementation, test/fixture creation, database creation, persistence mutation, provider observation, runtime action, experiment, publication, merge or CL3 work.
 
-Next permitted gate: create one exact local contract candidate commit, then conduct an independent final read-only review of that exact predecessor-to-candidate range. Implementation remains blocked until separate explicit CL2 contract acceptance.
+Next permitted gate: create one exact local bounded correction commit, then conduct a finding-scoped read-only closure review of `CL2-R1-01..04` against that exact successor head. Implementation remains blocked until separate explicit CL2 contract acceptance.
