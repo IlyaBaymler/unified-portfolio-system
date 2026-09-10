@@ -345,8 +345,6 @@ def _validate_schema(schema_json_ascii: str) -> tuple[dict[str, object], ...]:
         if previous_key is not None and key <= previous_key:
             _fail(PersistenceReason.CANONICAL_FORMAT_INVALID)
         previous_key = key
-        if key.lower() in _FORBIDDEN_CONTENT_KEYS:
-            _fail(PersistenceReason.SENSITIVE_CONTENT_FORBIDDEN)
         if not isinstance(field["required"], bool):
             _fail(PersistenceReason.CANONICAL_FORMAT_INVALID)
         kind = field["kind"]
@@ -390,6 +388,13 @@ def _validate_schema(schema_json_ascii: str) -> tuple[dict[str, object], ...]:
     return tuple(validated)
 
 
+def _reject_forbidden_schema_fields(
+    fields: tuple[dict[str, object], ...],
+) -> None:
+    if any(field["key"].lower() in _FORBIDDEN_CONTENT_KEYS for field in fields):
+        _fail(PersistenceReason.SENSITIVE_CONTENT_FORBIDDEN)
+
+
 @dataclass(frozen=True, slots=True)
 class CodecDescriptor:
     codec_id: str
@@ -413,9 +418,10 @@ class CodecDescriptor:
             schema_bytes = self.schema_json_ascii.encode("ascii")
         except (AttributeError, UnicodeEncodeError) as exc:
             raise PersistenceError(PersistenceReason.CANONICAL_FORMAT_INVALID) from exc
-        _validate_schema(self.schema_json_ascii)
+        fields = _validate_schema(self.schema_json_ascii)
         if sha256_hex(schema_bytes) != self.schema_sha256:
             _fail(PersistenceReason.HASH_INVALID)
+        _reject_forbidden_schema_fields(fields)
 
     @classmethod
     def from_canonical_bytes(cls, value: object) -> CodecDescriptor:
@@ -457,7 +463,9 @@ class CodecDescriptor:
 
     @property
     def fields(self) -> tuple[dict[str, object], ...]:
-        return _validate_schema(self.schema_json_ascii)
+        fields = _validate_schema(self.schema_json_ascii)
+        _reject_forbidden_schema_fields(fields)
+        return fields
 
     def validate_content(self, content_json_ascii: object) -> bytes:
         if not isinstance(content_json_ascii, str):
@@ -982,6 +990,41 @@ def _require_absent_target(path: Path, staging: Path) -> None:
         _fail(PersistenceReason.PATH_COLLISION)
 
 
+def _reject_overlapping_roots(source: Path, *destinations: Path) -> None:
+    try:
+        source_resolved = source.resolve(strict=False)
+        destination_roots = tuple(
+            destination.resolve(strict=False) for destination in destinations
+        )
+    except OSError as exc:
+        raise PersistenceError(PersistenceReason.PATH_INVALID) from exc
+    for destination in destination_roots:
+        if (
+            destination == source_resolved
+            or source_resolved in destination.parents
+            or destination in source_resolved.parents
+        ):
+            _fail(PersistenceReason.PATH_INVALID)
+
+
+def _promote_staging(staging: Path, target: Path) -> None:
+    _validate_target_parent(target)
+    if _is_reparse_or_symlink(target):
+        _fail(PersistenceReason.PATH_INVALID)
+    if target.exists():
+        _fail(PersistenceReason.PATH_COLLISION)
+    if _is_reparse_or_symlink(staging) or not staging.is_dir():
+        _fail(PersistenceReason.PATH_INVALID)
+    try:
+        os.rename(staging, target)
+    except OSError as exc:
+        if _is_reparse_or_symlink(target):
+            raise PersistenceError(PersistenceReason.PATH_INVALID) from exc
+        if target.exists():
+            raise PersistenceError(PersistenceReason.PATH_COLLISION) from exc
+        raise
+
+
 def _validate_database_file(path: Path) -> None:
     if _is_reparse_or_symlink(path) or not path.is_file():
         _fail(PersistenceReason.PATH_INVALID)
@@ -1009,7 +1052,17 @@ def _wal_checksum(
     return first, second
 
 
-def _validate_wal(database: Path, wal: Path) -> None:
+@dataclass(frozen=True, slots=True)
+class _WalMetadata:
+    data: bytes
+    page_size: int
+    magic: int
+    page_numbers: tuple[int, ...]
+    frame_checksums: tuple[tuple[int, int], ...]
+    commit_sizes: tuple[int, ...]
+
+
+def _validate_wal(database: Path, wal: Path) -> _WalMetadata | None:
     try:
         with database.open("rb") as handle:
             database_header = handle.read(100)
@@ -1017,7 +1070,7 @@ def _validate_wal(database: Path, wal: Path) -> None:
     except OSError as exc:
         raise PersistenceError(PersistenceReason.WAL_SIDECAR_INCONSISTENT) from exc
     if not data:
-        return
+        return None
     if len(data) < 32:
         _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
     magic = int.from_bytes(data[0:4], "big")
@@ -1043,12 +1096,18 @@ def _validate_wal(database: Path, wal: Path) -> None:
         _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
     salts = data[16:24]
     offset = 32
+    page_numbers: list[int] = []
+    frame_checksums: list[tuple[int, int]] = []
+    commit_sizes: list[int] = []
     while offset < len(data):
         frame_header = data[offset : offset + 24]
         page = data[offset + 24 : offset + 24 + page_size]
+        page_number = int.from_bytes(frame_header[:4], "big")
+        commit_size = int.from_bytes(frame_header[4:8], "big")
         if (
-            int.from_bytes(frame_header[:4], "big") == 0
+            page_number == 0
             or frame_header[8:16] != salts
+            or (commit_size != 0 and page_number > commit_size)
         ):
             _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
         checksum = _wal_checksum(
@@ -1058,7 +1117,186 @@ def _validate_wal(database: Path, wal: Path) -> None:
         )
         if checksum != struct.unpack(">II", frame_header[16:24]):
             _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+        page_numbers.append(page_number)
+        frame_checksums.append(checksum)
+        commit_sizes.append(commit_size)
         offset += page_size + 24
+    if not any(commit_sizes):
+        _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+    return _WalMetadata(
+        data=data,
+        page_size=page_size,
+        magic=magic,
+        page_numbers=tuple(page_numbers),
+        frame_checksums=tuple(frame_checksums),
+        commit_sizes=tuple(commit_sizes),
+    )
+
+
+def _validate_shm(metadata: _WalMetadata, shared_memory: Path) -> None:
+    try:
+        data = shared_memory.read_bytes()
+    except OSError as exc:
+        raise PersistenceError(PersistenceReason.WAL_SIDECAR_INCONSISTENT) from exc
+    if len(data) < 32_768 or len(data) % 32_768:
+        _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+    header = data[:48]
+    if header != data[48:96]:
+        _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+    try:
+        (
+            version,
+            unused,
+            _change,
+            is_initialized,
+            big_endian_checksum,
+            encoded_page_size,
+            max_frame,
+            database_pages,
+            frame_checksum_1,
+            frame_checksum_2,
+            _salt_1,
+            _salt_2,
+            header_checksum_1,
+            header_checksum_2,
+        ) = struct.unpack("=IIIBBHIIIIIIII", header)
+    except struct.error as exc:
+        raise PersistenceError(PersistenceReason.WAL_SIDECAR_INCONSISTENT) from exc
+    native_little_endian = struct.pack("=I", 1)[0] == 1
+    decoded_page_size = 65_536 if encoded_page_size == 1 else encoded_page_size
+    if (
+        version != 3_007_000
+        or unused != 0
+        or is_initialized != 1
+        or big_endian_checksum != (metadata.magic & 1)
+        or decoded_page_size != metadata.page_size
+        or max_frame == 0
+        or max_frame > len(metadata.page_numbers)
+        or database_pages == 0
+        or data[32:40] != metadata.data[16:24]
+        or _wal_checksum(
+            header[:40], little_endian=native_little_endian
+        )
+        != (header_checksum_1, header_checksum_2)
+        or metadata.frame_checksums[max_frame - 1]
+        != (frame_checksum_1, frame_checksum_2)
+        or metadata.commit_sizes[max_frame - 1] != database_pages
+    ):
+        _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+    try:
+        checkpoint = struct.unpack("=I5I8sII", data[96:136])
+    except struct.error as exc:
+        raise PersistenceError(PersistenceReason.WAL_SIDECAR_INCONSISTENT) from exc
+    n_backfill, *checkpoint_tail = checkpoint
+    read_marks = checkpoint_tail[:5]
+    lock_bytes = checkpoint_tail[5]
+    n_backfill_attempted = checkpoint_tail[6]
+    unused_checkpoint = checkpoint_tail[7]
+    if (
+        n_backfill > max_frame
+        or any(mark != 0xFFFFFFFF and mark > max_frame for mark in read_marks)
+        or lock_bytes != b"\x00" * 8
+        or n_backfill_attempted > max_frame
+        or unused_checkpoint != 0
+    ):
+        _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+
+    block_count = 1 + max(0, max_frame - 4_062 + 4_095) // 4_096
+    if len(data) < block_count * 32_768:
+        _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+    for block in range(block_count):
+        first_frame = 1 if block == 0 else 4_063 + (block - 1) * 4_096
+        frame_limit = min(max_frame, 4_062 if block == 0 else first_frame + 4_095)
+        frame_zero = 0 if block == 0 else first_frame - 1
+        block_offset = block * 32_768
+        page_array_offset = 136 if block == 0 else block_offset
+        page_capacity = 4_062 if block == 0 else 4_096
+        hash_offset = block_offset + 16_384
+        expected_hash = [0] * 8_192
+        for frame_number in range(first_frame, frame_limit + 1):
+            page_number = metadata.page_numbers[frame_number - 1]
+            page_index = frame_number - first_frame
+            actual_page = struct.unpack_from(
+                "=I", data, page_array_offset + page_index * 4
+            )[0]
+            if actual_page != page_number:
+                _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+            slot = (page_number * 383) & 8_191
+            while expected_hash[slot]:
+                slot = (slot + 1) & 8_191
+            expected_hash[slot] = frame_number - frame_zero
+        actual_hash = struct.unpack_from("=8192H", data, hash_offset)
+        if tuple(expected_hash) != actual_hash:
+            _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+        if frame_limit - first_frame + 1 > page_capacity:
+            _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+
+
+def _validate_empty_shm(database: Path, shared_memory: Path) -> None:
+    try:
+        data = shared_memory.read_bytes()
+        with database.open("rb") as handle:
+            database_header = handle.read(100)
+    except OSError as exc:
+        raise PersistenceError(PersistenceReason.WAL_SIDECAR_INCONSISTENT) from exc
+    if len(data) < 32_768 or len(data) % 32_768 or data[:48] != data[48:96]:
+        _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+    header = data[:48]
+    try:
+        fields = struct.unpack("=IIIBBHIIIIIIII", header)
+        checkpoint = struct.unpack("=I5I8sII", data[96:136])
+    except struct.error as exc:
+        raise PersistenceError(PersistenceReason.WAL_SIDECAR_INCONSISTENT) from exc
+    database_page_size = int.from_bytes(database_header[16:18], "big")
+    if database_page_size == 1:
+        database_page_size = 65_536
+    encoded_page_size = fields[5]
+    decoded_page_size = 65_536 if encoded_page_size == 1 else encoded_page_size
+    native_little_endian = struct.pack("=I", 1)[0] == 1
+    read_marks = checkpoint[1:6]
+    if (
+        fields[0] != 3_007_000
+        or fields[1] != 0
+        or fields[3] != 1
+        or decoded_page_size not in {0, database_page_size}
+        or fields[6] != 0
+        or _wal_checksum(header[:40], little_endian=native_little_endian)
+        != fields[12:14]
+        or checkpoint[0] != 0
+        or any(mark not in {0, 0xFFFFFFFF} for mark in read_marks)
+        or checkpoint[6] != b"\x00" * 8
+        or checkpoint[7] != 0
+        or checkpoint[8] != 0
+    ):
+        _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+    for block in range(len(data) // 32_768):
+        block_offset = block * 32_768
+        page_array_offset = 136 if block == 0 else block_offset
+        page_capacity = 4_062 if block == 0 else 4_096
+        actual_hash = struct.unpack_from(
+            "=8192H", data, block_offset + 16_384
+        )
+        occupied = sorted(value for value in actual_hash if value)
+        if not occupied:
+            continue
+        entry_count = occupied[-1]
+        if entry_count > page_capacity or occupied != list(
+            range(1, entry_count + 1)
+        ):
+            _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+        page_numbers = struct.unpack_from(
+            f"={entry_count}I", data, page_array_offset
+        )
+        if any(page_number == 0 for page_number in page_numbers):
+            _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
+        expected_hash = [0] * 8_192
+        for entry, page_number in enumerate(page_numbers, 1):
+            slot = (page_number * 383) & 8_191
+            while expected_hash[slot]:
+                slot = (slot + 1) & 8_191
+            expected_hash[slot] = entry
+        if tuple(expected_hash) != actual_hash:
+            _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
 
 
 def _validate_busy_timeout(value: object) -> int:
@@ -1079,7 +1317,12 @@ def _validate_live_root(root: Path) -> Path:
     if not database.exists():
         _fail(PersistenceReason.STORE_MISSING)
     _validate_database_file(database)
-    allowed = {"store.sqlite3", "store.sqlite3-wal", "store.sqlite3-shm"}
+    allowed = {
+        "store.sqlite3",
+        "store.sqlite3-wal",
+        "store.sqlite3-shm",
+        "store.sqlite3-journal",
+    }
     try:
         children = {child.name for child in root.iterdir()}
     except OSError as exc:
@@ -1089,7 +1332,7 @@ def _validate_live_root(root: Path) -> Path:
     wal = root / "store.sqlite3-wal"
     shared_memory = root / "store.sqlite3-shm"
     journal = root / "store.sqlite3-journal"
-    if journal.exists() or (shared_memory.exists() and not wal.exists()):
+    if journal.exists() or (shared_memory.exists() != wal.exists()):
         _fail(PersistenceReason.WAL_SIDECAR_INCONSISTENT)
     for sidecar in (wal, shared_memory):
         if sidecar.exists():
@@ -1103,7 +1346,11 @@ def _validate_live_root(root: Path) -> Path:
                     PersistenceReason.WAL_SIDECAR_INCONSISTENT
                 ) from exc
     if wal.exists():
-        _validate_wal(database, wal)
+        metadata = _validate_wal(database, wal)
+        if metadata is None:
+            _validate_empty_shm(database, shared_memory)
+        else:
+            _validate_shm(metadata, shared_memory)
     return database
 
 
@@ -1151,7 +1398,7 @@ def _connect(database: Path, busy_timeout_ms: int) -> sqlite3.Connection:
 def _schema_rows(connection: sqlite3.Connection) -> tuple[dict[str, object], ...]:
     rows = connection.execute(
         "SELECT type,name,tbl_name,sql FROM sqlite_schema "
-        "WHERE type IN ('table','index') ORDER BY type,name,tbl_name"
+        "ORDER BY type,name,tbl_name"
     ).fetchall()
     allowed_tables = {
         name for object_type, name, _, _ in _SCHEMA_STATEMENTS if object_type == "table"
@@ -1216,8 +1463,11 @@ def _transaction_kind(transaction: LedgerTransaction) -> str:
 
 
 def _sqlite_reason(exc: sqlite3.Error) -> PersistenceReason:
-    message = str(exc).lower()
-    if "locked" in message or "busy" in message:
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(error_code, int) and error_code & 0xFF in {
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+    }:
         return PersistenceReason.STORE_BUSY
     return PersistenceReason.IO_FAILURE
 
@@ -1297,7 +1547,7 @@ class CashLedgerStore:
                 connection.close()
             if fault_injector is not None:
                 fault_injector("create.before_promote")
-            os.replace(staging, path)
+            _promote_staging(staging, path)
         except InjectedFault as exc:
             raise PersistenceError(PersistenceReason.INTERRUPTED_TRANSACTION) from exc
         except PersistenceError:
@@ -1385,6 +1635,7 @@ class CashLedgerStore:
 
     def validate(self) -> StoreSnapshot:
         self._ensure_open()
+        _validate_live_root(self._root)
         _validate_connection(self._connection, self._registry)
         return self.snapshot()
 
@@ -2022,12 +2273,14 @@ class CashLedgerStore:
 
     def backup(self, destination: object) -> BackupVerification:
         self._ensure_open()
+        _validate_live_root(self._root)
+        _validate_connection(self._connection, self._registry)
         target = _path_from(destination)
         _validate_target_parent(target)
         staging = target.with_name(f"{target.name}.cl2-backup-staging")
         _require_absent_target(target, staging)
+        _reject_overlapping_roots(self._root, target, staging)
         try:
-            _validate_connection(self._connection, self._registry)
             staging.mkdir()
             self._fault("backup.after_staging")
             database = staging / "store.sqlite3"
@@ -2057,7 +2310,9 @@ class CashLedgerStore:
                 busy_timeout_ms=self._busy_timeout_ms,
             )
             self._fault("backup.before_promote")
-            os.replace(staging, target)
+            _validate_live_root(self._root)
+            _validate_connection(self._connection, self._registry)
+            _promote_staging(staging, target)
             return BackupVerification(
                 path=target,
                 store_revision=verification.store_revision,
@@ -2861,15 +3116,16 @@ def restore_backup(
     fault_injector: Callable[[str], None] | None = None,
 ) -> CashLedgerStore:
     source = _path_from(backup_path)
-    target = _path_from(target_root)
     timeout = _validate_busy_timeout(busy_timeout_ms)
     registry = normalize_codec_registry(codec_registry)
-    _validate_target_parent(target)
-    staging = target.with_name(f"{target.name}.cl2-restore-staging")
-    _require_absent_target(target, staging)
     verification = verify_backup(
         source, registry.values(), busy_timeout_ms=timeout
     )
+    target = _path_from(target_root)
+    _validate_target_parent(target)
+    staging = target.with_name(f"{target.name}.cl2-restore-staging")
+    _require_absent_target(target, staging)
+    _reject_overlapping_roots(source, target, staging)
     try:
         source_export = (source / "export.json").read_bytes()
         source_manifest_sha256 = sha256_hex(
@@ -2892,6 +3148,8 @@ def restore_backup(
             os.fsync(writer.fileno())
         if fault_injector is not None:
             fault_injector("restore.after_copy")
+        if _file_identity(destination_database) != source_database_identity:
+            _fail(PersistenceReason.RESTORE_VERIFICATION_FAILED)
         repeated_verification = verify_backup(
             source, registry.values(), busy_timeout_ms=timeout
         )
@@ -2926,9 +3184,26 @@ def restore_backup(
         finally:
             if restored is not None:
                 restored.close()
+        if _file_identity(destination_database) != source_database_identity:
+            _fail(PersistenceReason.RESTORE_VERIFICATION_FAILED)
         if fault_injector is not None:
             fault_injector("restore.before_promote")
-        os.replace(staging, target)
+        final_verification = verify_backup(
+            source, registry.values(), busy_timeout_ms=timeout
+        )
+        if (
+            final_verification != verification
+            or (source / "export.json").read_bytes() != source_export
+            or sha256_hex((source / "manifest.json").read_bytes())
+            != source_manifest_sha256
+            or _file_identity(source / "store.sqlite3") != source_database_identity
+            or _file_identity(destination_database) != source_database_identity
+        ):
+            _fail(PersistenceReason.RESTORE_VERIFICATION_FAILED)
+        _promote_staging(staging, target)
+        promoted_database = target / "store.sqlite3"
+        if _file_identity(promoted_database) != source_database_identity:
+            _fail(PersistenceReason.RESTORE_VERIFICATION_FAILED)
         promoted: CashLedgerStore | None = None
         try:
             promoted = CashLedgerStore.open(
@@ -2938,6 +3213,8 @@ def restore_backup(
                 fault_injector=fault_injector,
             )
             if promoted.export_bytes() != source_export:
+                _fail(PersistenceReason.RESTORE_VERIFICATION_FAILED)
+            if _file_identity(promoted_database) != source_database_identity:
                 _fail(PersistenceReason.RESTORE_VERIFICATION_FAILED)
         except PersistenceError as exc:
             if promoted is not None:

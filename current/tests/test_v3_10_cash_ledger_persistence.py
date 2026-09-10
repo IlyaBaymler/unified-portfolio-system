@@ -249,8 +249,9 @@ def test_v310_cl2_02_clean_create_schema_allowlist_and_fingerprint(
         )
         rows = connection.execute(
             "SELECT type,name,tbl_name,sql FROM sqlite_schema "
-            "WHERE type IN ('table','index') ORDER BY type,name,tbl_name"
+            "ORDER BY type,name,tbl_name"
         ).fetchall()
+        assert {row[0] for row in rows} == {"index", "table"}
         application = [
             {"name": row[1], "sql": row[3], "tbl_name": row[2], "type": row[0]}
             for row in rows
@@ -295,6 +296,22 @@ def test_v310_cl2_03_open_never_creates_and_schema_versions_fail_closed(
         connection.execute("CREATE TABLE unexpected(value TEXT)")
     with _reason(PersistenceReason.SCHEMA_INVALID):
         CashLedgerStore.open(extra_schema, [descriptor])
+    for name, statement in (
+        ("extra-view", "CREATE VIEW unexpected_view AS SELECT * FROM cl2_meta"),
+        (
+            "extra-trigger",
+            (
+                "CREATE TRIGGER unexpected_trigger AFTER UPDATE OF store_revision "
+                "ON cl2_meta BEGIN DELETE FROM cl2_observation; END"
+            ),
+        ),
+    ):
+        unexpected_object = tmp_path / name
+        CashLedgerStore.create(unexpected_object, [descriptor]).close()
+        with sqlite3.connect(unexpected_object / "store.sqlite3") as connection:
+            connection.execute(statement)
+        with _reason(PersistenceReason.SCHEMA_INVALID):
+            CashLedgerStore.open(unexpected_object, [descriptor])
     hard_linked = tmp_path / "hard-linked"
     CashLedgerStore.create(hard_linked, [descriptor]).close()
     hard_link = tmp_path / "second-link.sqlite3"
@@ -387,6 +404,23 @@ def test_v310_cl2_05_generic_flat_sanitized_content_validation() -> None:
             forbidden_schema,
             sha256_hex(forbidden_schema.encode("ascii")),
         )
+    malformed_forbidden_fields = [dict(field) for field in forbidden_field]
+    malformed_forbidden_fields[0]["required"] = 1
+    malformed_forbidden_schema = canonical_json_bytes(
+        {
+            "domain": "v3.10-operation-inbox-codec-schema",
+            "fields": malformed_forbidden_fields,
+            "version": 1,
+        }
+    ).decode("ascii")
+    with _reason(PersistenceReason.CANONICAL_FORMAT_INVALID):
+        CodecDescriptor(
+            "PRIVATE",
+            malformed_forbidden_schema,
+            sha256_hex(malformed_forbidden_schema.encode("ascii")),
+        )
+    with _reason(PersistenceReason.HASH_INVALID):
+        CodecDescriptor("PRIVATE", forbidden_schema, "0" * 64)
 
 
 def test_v310_cl2_06_logical_source_and_observation_known_answers(
@@ -704,13 +738,16 @@ def test_v310_cl2_18_committed_wal_recovery_and_corrupt_sidecar_refusal(
 ) -> None:
     root = tmp_path / "store"
     first = CashLedgerStore.create(root, [descriptor])
+    database_bytes = (root / "store.sqlite3").read_bytes()
     wal_bytes: bytes
+    shm_bytes: bytes
     try:
         first.append_observation(
             _observation(vectors, descriptor, "observation-original"),
             expected_store_revision=0,
         )
         wal_bytes = (root / "store.sqlite3-wal").read_bytes()
+        shm_bytes = (root / "store.sqlite3-shm").read_bytes()
         assert len(wal_bytes) > 32
         second = CashLedgerStore.open(root, [descriptor])
         try:
@@ -719,11 +756,85 @@ def test_v310_cl2_18_committed_wal_recovery_and_corrupt_sidecar_refusal(
             second.close()
     finally:
         first.close()
+
+    valid_recovery = tmp_path / "valid-recovery"
+    valid_recovery.mkdir()
+    (valid_recovery / "store.sqlite3").write_bytes(database_bytes)
+    (valid_recovery / "store.sqlite3-wal").write_bytes(wal_bytes)
+    (valid_recovery / "store.sqlite3-shm").write_bytes(shm_bytes)
+    recovered = CashLedgerStore.open(valid_recovery, [descriptor])
+    try:
+        assert recovered.snapshot().store_revision == 1
+    finally:
+        recovered.close()
+
+    corrupt_wal_root = tmp_path / "corrupt-wal"
+    corrupt_wal_root.mkdir()
     corrupted = wal_bytes[:-1] + bytes([wal_bytes[-1] ^ 1])
-    (root / "store.sqlite3-wal").write_bytes(corrupted)
+    (corrupt_wal_root / "store.sqlite3").write_bytes(database_bytes)
+    (corrupt_wal_root / "store.sqlite3-wal").write_bytes(corrupted)
+    (corrupt_wal_root / "store.sqlite3-shm").write_bytes(shm_bytes)
     with _reason(PersistenceReason.WAL_SIDECAR_INCONSISTENT):
-        CashLedgerStore.open(root, [descriptor])
-    assert (root / "store.sqlite3-wal").read_bytes() == corrupted
+        CashLedgerStore.open(corrupt_wal_root, [descriptor])
+    assert (corrupt_wal_root / "store.sqlite3-wal").read_bytes() == corrupted
+
+    corrupt_shm_root = tmp_path / "corrupt-shm"
+    corrupt_shm_root.mkdir()
+    corrupted_shm = shm_bytes[:-1] + bytes([shm_bytes[-1] ^ 1])
+    (corrupt_shm_root / "store.sqlite3").write_bytes(database_bytes)
+    (corrupt_shm_root / "store.sqlite3-wal").write_bytes(wal_bytes)
+    (corrupt_shm_root / "store.sqlite3-shm").write_bytes(corrupted_shm)
+    with _reason(PersistenceReason.WAL_SIDECAR_INCONSISTENT):
+        CashLedgerStore.open(corrupt_shm_root, [descriptor])
+    assert (corrupt_shm_root / "store.sqlite3-shm").read_bytes() == corrupted_shm
+
+    orphan_wal_root = tmp_path / "orphan-wal"
+    orphan_wal_root.mkdir()
+    (orphan_wal_root / "store.sqlite3").write_bytes(database_bytes)
+    (orphan_wal_root / "store.sqlite3-wal").write_bytes(wal_bytes)
+    with _reason(PersistenceReason.WAL_SIDECAR_INCONSISTENT):
+        CashLedgerStore.open(orphan_wal_root, [descriptor])
+    assert (orphan_wal_root / "store.sqlite3-wal").read_bytes() == wal_bytes
+
+    other_root = tmp_path / "other-store"
+    other = CashLedgerStore.create(other_root, [descriptor])
+    try:
+        other.append_observation(
+            _observation(vectors, descriptor, "observation-economic"),
+            expected_store_revision=0,
+        )
+        other_shm = (other_root / "store.sqlite3-shm").read_bytes()
+    finally:
+        other.close()
+    mismatched_root = tmp_path / "mismatched-sidecars"
+    mismatched_root.mkdir()
+    (mismatched_root / "store.sqlite3").write_bytes(database_bytes)
+    (mismatched_root / "store.sqlite3-wal").write_bytes(wal_bytes)
+    (mismatched_root / "store.sqlite3-shm").write_bytes(other_shm)
+    with _reason(PersistenceReason.WAL_SIDECAR_INCONSISTENT):
+        CashLedgerStore.open(mismatched_root, [descriptor])
+
+    journal_root = tmp_path / "rollback-journal"
+    journal_root.mkdir()
+    (journal_root / "store.sqlite3").write_bytes(database_bytes)
+    journal = journal_root / "store.sqlite3-journal"
+    journal.write_bytes(b"suspect-evidence")
+    with _reason(PersistenceReason.WAL_SIDECAR_INCONSISTENT):
+        CashLedgerStore.open(journal_root, [descriptor])
+    assert journal.read_bytes() == b"suspect-evidence"
+
+    empty_root = tmp_path / "empty-shm"
+    empty = CashLedgerStore.create(empty_root, [descriptor])
+    empty_wal = (empty_root / "store.sqlite3-wal").read_bytes()
+    empty_shm = (empty_root / "store.sqlite3-shm").read_bytes()
+    assert empty_wal == b""
+    empty.close()
+    corrupted_empty_shm = empty_shm[:-1] + bytes([empty_shm[-1] ^ 1])
+    (empty_root / "store.sqlite3-wal").write_bytes(empty_wal)
+    (empty_root / "store.sqlite3-shm").write_bytes(corrupted_empty_shm)
+    with _reason(PersistenceReason.WAL_SIDECAR_INCONSISTENT):
+        CashLedgerStore.open(empty_root, [descriptor])
+    assert (empty_root / "store.sqlite3-shm").read_bytes() == corrupted_empty_shm
 
 
 def test_v310_cl2_19_two_writer_busy_stale_writer_and_snapshot_consistency(
@@ -1001,6 +1112,19 @@ def test_v310_cl2_23_online_backup_manifest_identity_and_no_clobber(
         with _reason(PersistenceReason.PATH_COLLISION):
             store.backup(backup)
         assert store.export_bytes() == before
+        with _reason(PersistenceReason.PATH_INVALID):
+            store.backup(root / "nested-backup")
+        assert not (root / "nested-backup").exists()
+        unexpected = root / "unexpected-child"
+        unexpected.write_text("custody", encoding="ascii")
+        try:
+            with _reason(PersistenceReason.PATH_INVALID):
+                store.validate()
+            with _reason(PersistenceReason.PATH_INVALID):
+                store.backup(tmp_path / "blocked-backup")
+            assert not (tmp_path / "blocked-backup").exists()
+        finally:
+            unexpected.unlink()
     finally:
         store.close()
 
@@ -1047,6 +1171,9 @@ def test_v310_cl2_25_isolated_restore_exact_export_and_no_clobber(
             restored.close()
         with _reason(PersistenceReason.PATH_COLLISION):
             restore_backup(backup, tmp_path / "restored", [descriptor])
+        with _reason(PersistenceReason.PATH_INVALID):
+            restore_backup(backup, backup / "nested-restore", [descriptor])
+        assert not (backup / "nested-restore").exists()
         assert verify_backup(backup, [descriptor]).export_sha256 == sha256_hex(
             source_export
         )
@@ -1060,9 +1187,7 @@ def test_v310_cl2_25_isolated_restore_exact_export_and_no_clobber(
                     / "corrupt-target.cl2-restore-staging"
                     / "store.sqlite3"
                 )
-                data = bytearray(database.read_bytes())
-                data[100] ^= 0xFF
-                database.write_bytes(data)
+                database.write_bytes(database.read_bytes() + b"\x00" * 4096)
 
         with _reason(PersistenceReason.RESTORE_VERIFICATION_FAILED):
             restore_backup(
@@ -1092,6 +1217,22 @@ def test_v310_cl2_26_create_backup_restore_interruptions_never_promote(
     assert not create_target.exists()
     assert (tmp_path / "create-target.cl2-create-staging").exists()
 
+    create_collision_target = tmp_path / "create-collision-target"
+
+    def create_collision(point: str) -> None:
+        if point == "create.before_promote":
+            create_collision_target.mkdir()
+            (create_collision_target / "sentinel").write_text("owned", encoding="ascii")
+
+    with _reason(PersistenceReason.PATH_COLLISION):
+        CashLedgerStore.create(
+            create_collision_target,
+            [descriptor],
+            fault_injector=create_collision,
+        )
+    assert (create_collision_target / "sentinel").read_text(encoding="ascii") == "owned"
+    assert (tmp_path / "create-collision-target.cl2-create-staging").exists()
+
     store = CashLedgerStore.create(tmp_path / "source", [descriptor])
     try:
         def backup_fault(point: str) -> None:
@@ -1104,6 +1245,40 @@ def test_v310_cl2_26_create_backup_restore_interruptions_never_promote(
             store.backup(backup_target)
         assert not backup_target.exists()
         assert (tmp_path / "backup-target.cl2-backup-staging").exists()
+
+        backup_collision_target = tmp_path / "backup-collision-target"
+
+        def backup_collision(point: str) -> None:
+            if point == "backup.before_promote":
+                backup_collision_target.mkdir()
+                (backup_collision_target / "sentinel").write_text(
+                    "owned", encoding="ascii"
+                )
+
+        store._fault_injector = backup_collision
+        with _reason(PersistenceReason.PATH_COLLISION):
+            store.backup(backup_collision_target)
+        assert (
+            backup_collision_target / "sentinel"
+        ).read_text(encoding="ascii") == "owned"
+        assert (tmp_path / "backup-collision-target.cl2-backup-staging").exists()
+
+        source_drift_target = tmp_path / "source-drift-target"
+        source_extra = store.root / "unexpected-during-backup"
+
+        def backup_source_drift(point: str) -> None:
+            if point == "backup.before_promote":
+                source_extra.write_text("evidence", encoding="ascii")
+
+        store._fault_injector = backup_source_drift
+        try:
+            with _reason(PersistenceReason.PATH_INVALID):
+                store.backup(source_drift_target)
+            assert source_extra.read_text(encoding="ascii") == "evidence"
+            assert not source_drift_target.exists()
+            assert (tmp_path / "source-drift-target.cl2-backup-staging").exists()
+        finally:
+            source_extra.unlink()
         store._fault_injector = None
         backup = tmp_path / "backup"
         store.backup(backup)
@@ -1124,6 +1299,48 @@ def test_v310_cl2_26_create_backup_restore_interruptions_never_promote(
         assert not restore_target.exists()
         assert (tmp_path / "restore-target.cl2-restore-staging").exists()
         assert sha256_hex((backup / "manifest.json").read_bytes()) == source_identity
+
+        restore_drift_target = tmp_path / "restore-drift-target"
+        backup_extra = backup / "unexpected-during-restore"
+
+        def restore_source_drift(point: str) -> None:
+            if point == "restore.before_promote":
+                backup_extra.write_text("evidence", encoding="ascii")
+
+        try:
+            with _reason(PersistenceReason.BACKUP_MANIFEST_INVALID):
+                restore_backup(
+                    backup,
+                    restore_drift_target,
+                    [descriptor],
+                    fault_injector=restore_source_drift,
+                )
+            assert backup_extra.read_text(encoding="ascii") == "evidence"
+            assert not restore_drift_target.exists()
+            assert (tmp_path / "restore-drift-target.cl2-restore-staging").exists()
+        finally:
+            backup_extra.unlink()
+
+        restore_collision_target = tmp_path / "restore-collision-target"
+
+        def restore_collision(point: str) -> None:
+            if point == "restore.before_promote":
+                restore_collision_target.mkdir()
+                (restore_collision_target / "sentinel").write_text(
+                    "owned", encoding="ascii"
+                )
+
+        with _reason(PersistenceReason.PATH_COLLISION):
+            restore_backup(
+                backup,
+                restore_collision_target,
+                [descriptor],
+                fault_injector=restore_collision,
+            )
+        assert (
+            restore_collision_target / "sentinel"
+        ).read_text(encoding="ascii") == "owned"
+        assert (tmp_path / "restore-collision-target.cl2-restore-staging").exists()
     finally:
         store.close()
 
@@ -1168,6 +1385,12 @@ def test_v310_cl2_27_closed_reasons_and_ordered_multi_invalid_priority(
         InboxObservation.from_canonical_bytes(123, [])
     with _reason(PersistenceReason.CANONICAL_FORMAT_INVALID):
         InboxObservation.from_canonical_bytes("{}", [])
+    busy = sqlite3.OperationalError("translated contention message")
+    busy.sqlite_errorcode = sqlite3.SQLITE_BUSY | (5 << 8)
+    assert persistence._sqlite_reason(busy) is PersistenceReason.STORE_BUSY
+    misleading = sqlite3.OperationalError("database is locked")
+    misleading.sqlite_errorcode = sqlite3.SQLITE_IOERR
+    assert persistence._sqlite_reason(misleading) is PersistenceReason.IO_FAILURE
     store = CashLedgerStore.create(tmp_path / "store", [descriptor])
     changed = _observation(vectors, descriptor, "observation-original-changed")
     original = _observation(vectors, descriptor, "observation-original")
@@ -1196,11 +1419,22 @@ def test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files() -> None:
         "current/tests/test_v3_10_cash_ledger_persistence.py",
         "current/tests/fixtures/v3_10_cash_ledger_persistence_vectors.json",
     }
-    status_exit, status_text = _git_output("status", "--porcelain")
-    assert status_exit == 0
-    status = status_text.splitlines()
-    changed = {line[3:].replace("\\", "/") for line in status}
+    diff_exit, diff_text = _git_output(
+        "diff", "--name-only", f"{ACCEPTED_CONTRACT_HEAD}..HEAD"
+    )
+    assert diff_exit == 0
+    changed = {line.replace("\\", "/") for line in diff_text.splitlines()}
     assert changed == allowed
+    ancestry_exit, ancestry_text = _git_output(
+        "rev-list", "--left-right", "--count", f"{ACCEPTED_CONTRACT_HEAD}...HEAD"
+    )
+    assert ancestry_exit == 0
+    assert ancestry_text.split() == ["0", "2"]
+    accepted_merge_exit, accepted_merge_base = _git_output(
+        "merge-base", ACCEPTED_CONTRACT_HEAD, "HEAD"
+    )
+    assert accepted_merge_exit == 0
+    assert accepted_merge_base.strip() == ACCEPTED_CONTRACT_HEAD
     for path in (
         "docs/project/V3_10_CL2_APPEND_ONLY_PERSISTENCE_CONTRACT_RU.md",
         "current/trading_robot/cash_ledger_domain.py",
@@ -1215,3 +1449,11 @@ def test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files() -> None:
     assert merge_exit == 0
     merge_base = merge_base.strip()
     assert merge_base == CL1_PREDECESSOR
+    cumulative_exit, cumulative_text = _git_output(
+        "diff", "--name-only", f"{CL1_PREDECESSOR}..HEAD"
+    )
+    assert cumulative_exit == 0
+    assert {line.replace("\\", "/") for line in cumulative_text.splitlines()} == {
+        "docs/project/V3_10_CL2_APPEND_ONLY_PERSISTENCE_CONTRACT_RU.md",
+        *allowed,
+    }
