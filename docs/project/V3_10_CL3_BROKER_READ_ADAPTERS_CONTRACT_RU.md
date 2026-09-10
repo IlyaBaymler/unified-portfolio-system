@@ -1,6 +1,6 @@
 # V3.10 CL3 — Broker read adapters + deterministic classification: bounded contract freeze
 
-Статус документа: `CL3 CONTRACT CORRECTION CANDIDATE / CL3-R1-01..04`.
+Статус документа: `CL3 CONTRACT CORRECTION CANDIDATE / CL3-R1-01..04 / CL3-R2-01`.
 
 Этот документ замораживает только наблюдаемое поведение CL3. Он не является
 разрешением на реализацию, runtime adoption, сетевой запуск, запись в CL2,
@@ -152,8 +152,8 @@ normalize_provider_timestamp(value: object) -> str
 collect_tbank_operations(request: BrokerReadRequest) -> BrokerReadBatch
 ```
 
-`BrokerReadBatch` имеет только поля `decisions: tuple[BrokerDecision, ...]` и
-`watermark: CompletenessWatermark`.
+`BrokerReadBatch` immutable и имеет только поля
+`decisions: tuple[BrokerDecision, ...]` и `watermark: CompletenessWatermark`.
 
 ## 9. Injected read transport
 
@@ -441,13 +441,14 @@ Identity key rotation меняет все keyed identities. Caller обязан 
 Exact `schema_json_ascii`:
 
 ```json
-{"domain":"v3.10-operation-inbox-codec-schema","fields":[{"allowed_values":null,"key":"child_operation_count","kind":"INTEGER","max_scalars":null,"maximum":"256","minimum":"0","required":true},{"allowed_values":null,"key":"commission_minor_units","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true},{"allowed_values":["PAYMENT"],"key":"component","kind":"STRING","max_scalars":"16","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"effective_at","kind":"STRING","max_scalars":"30","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"has_parent_operation","kind":"BOOLEAN","max_scalars":null,"maximum":null,"minimum":null,"required":true},{"allowed_values":["OPERATION_STATE_CANCELED","OPERATION_STATE_EXECUTED","OPERATION_STATE_PROGRESS","OPERATION_STATE_UNSPECIFIED"],"key":"operation_state","kind":"STRING","max_scalars":"32","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"operation_type","kind":"STRING","max_scalars":"96","maximum":null,"minimum":null,"required":true},{"allowed_values":["RUB"],"key":"payment_currency","kind":"STRING","max_scalars":"3","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"payment_minor_units","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"quantity","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"quantity_done","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"quantity_rest","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true}],"version":1}
+{"domain":"v3.10-operation-inbox-codec-schema","fields":[{"allowed_values":null,"key":"child_operation_count","kind":"INTEGER","max_scalars":null,"maximum":"256","minimum":"0","required":true},{"allowed_values":null,"key":"commission_minor_units","kind":"STRING","max_scalars":"29","maximum":null,"minimum":null,"required":true},{"allowed_values":["PAYMENT"],"key":"component","kind":"STRING","max_scalars":"16","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"effective_at","kind":"STRING","max_scalars":"30","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"has_parent_operation","kind":"BOOLEAN","max_scalars":null,"maximum":null,"minimum":null,"required":true},{"allowed_values":["OPERATION_STATE_CANCELED","OPERATION_STATE_EXECUTED","OPERATION_STATE_PROGRESS","OPERATION_STATE_UNSPECIFIED"],"key":"operation_state","kind":"STRING","max_scalars":"32","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"operation_type","kind":"STRING","max_scalars":"96","maximum":null,"minimum":null,"required":true},{"allowed_values":["RUB"],"key":"payment_currency","kind":"STRING","max_scalars":"3","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"payment_minor_units","kind":"STRING","max_scalars":"29","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"quantity","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"quantity_done","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"quantity_rest","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true}],"version":1}
 ```
 
 `schema_sha256` и descriptor known answer заморожены в section 25.
 
 Sanitized content имеет exact keyset этих двенадцати полей. `payment_minor_units` и
-`commission_minor_units` — exact CL1 Money `minor_units` как canonical decimal.
+`commission_minor_units` — exact CL1 Money `minor_units` как canonical decimal;
+обе strings допускают до 29 scalars, включая знак полного CL1 wire range.
 `quantity`, `quantity_done/rest` — validated provider int64 decimal strings.
 `has_parent_operation` — bool, полученный только из presence/nonempty parent ID.
 `source_content_sha256` равен plain SHA-256 exact ASCII sanitized content.
@@ -674,7 +675,8 @@ Final `CompletenessWatermark` canonical keyset:
 {"account_scope_sha256":"<account scope>","complete":true,"domain":"v3.10-cl3-completeness-watermark","from_inclusive":"<timestamp>","item_count":"<nonnegative decimal>","page_chain_sha256":"<sha256>","page_count":"<positive decimal>","request_fingerprint_sha256":"<sha256>","to_exclusive":"<timestamp>","version":1}
 ```
 
-`watermark.sha256` — plain SHA-256 canonical bytes. `BrokerReadBatch` содержит
+`CompletenessWatermark` immutable, предоставляет exact `canonical_bytes` и
+`sha256`. `watermark.sha256` — plain SHA-256 canonical bytes. `BrokerReadBatch` содержит
 tuple decisions в provider order и final watermark.
 
 `complete=true` означает только: CL3 дошёл до terminal page exact provider
@@ -792,21 +794,21 @@ Normalized sanitized content:
 Frozen outputs (filled only by reproducible canonical calculation):
 
 ```text
-schema_sha256 = 2b3b7acb6ce2aec48d3c6eda4137a1ca9e9ad5368b961fd556a72767699dd7b9
-descriptor_sha256 = 69d60a18b2048c6472fc0b39587ce5332e86d592012c1c8f52ce4183c1342748
+schema_sha256 = 5e84067595ee002c35593fe52232ef577debba4be64092711f3d4ddc96b85794
+descriptor_sha256 = 15137d069b332f5b197709cf5a4cbac784ac42ac56096c7dcc720b4e60adaf48
 account_scope_sha256 = 2f46c3b5dae3b72dd6b0582b4f5f79d8a0479dc93936330f7cd9985b9f63195d
 source_scope_sha256 = 29fefc017c4da1d1297bae79d973a0dc2eb24908f3ebafa6adefd5b9b4e1b6e0
 source_content_sha256 = 6e58d8b7c4c4acdf6985d43ecd2f0d3494930777b846db041953f0039345a60e
 provenance_sha256 = dc7f1830431237411ce8421c08ff8d71303f57803e170173f781a75825383fad
 logical_source_sha256 = ee13c8446357e495798e066b8639248f86b47b2faec143fa38e4725895bf4fc6
-observation_sha256 = 2bda0a4e13ad9fd415da2c7bcdec5cc1de19179c720f50c4d413cdc6d1e166af
+observation_sha256 = 9946e4a9c446ee7c149a47a1d86eae459c274a0ae8a10a717136fbd41d9178fa
 transaction_sha256 = 475affc6fdee262946fee31ac5e1a2eeaceb3a6ca866cefe7367fb72ad913cf3
 request_fingerprint_sha256 = a6bfa48de9ef2c52005e136d329d15d1fcf3dbf32d499a0f0e5c893404ee2a5b
 initial_request_cursor_evidence_sha256 = 8b4c0aaf5231d284e95d32fb8d66d12f2a10521d349c712ebf713367547a3eb7
 terminal_next_cursor_evidence_sha256 = 9e756e87f5f547972ac4908a4ec53ff031d869829f40d1a2492f2f53d9724d4a
 item_cursor_evidence_sha256 = 1bf84e1169ffda5a960e4d27a6f1865ddc43e0ad1fb118fd542656327fe02976
-page_chain_sha256 = a1e8523aadecc2d0e83a8fbca1ce2b3ffca7e6da52064cf061e18c1a443b8c06
-watermark_sha256 = 5a29828e93e2a0038bcf00609acca7dcf413ecfeb98463ed1ac70f239aba7f00
+page_chain_sha256 = 9a2f64726a7aea0dfd2706dafd48ba4d6b6267542a15d13e7961cefe6ced601a
+watermark_sha256 = b9a0c437bafa020fcd53e603781f8743ee0a621b67f8246234f5fc0cc333baf9
 ```
 
 Transaction proposal: `DEPOSIT`, cash `+1.567890000`, external equity
@@ -887,6 +889,11 @@ Initial exact candidate `bf78b15c62f6a29ec7a6789a708cdd07d04915f9`
 operation, отсутствие local half-open-window check и избыточное утверждение о
 provider filter semantics. Этот документ содержит bounded corrections; closure
 и acceptance относятся только к exact successor commit/tree.
+
+Первый correction head `457c6235ec79d84842930fed9db63e2f0da9d0c9`
+получил `CL3-R2-01`: CL2 schema ошибочно ограничивала derived CL1 minor-units
+strings 20 scalars вместо полного 29-scalar signed range. Текущий successor
+исправляет только два scalar bounds и зависящие known-answer hashes.
 
 ## 29. Contract acceptance и exit state
 
