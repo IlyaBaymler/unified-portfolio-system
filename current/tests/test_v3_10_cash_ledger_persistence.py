@@ -1385,6 +1385,26 @@ def test_v310_cl2_27_closed_reasons_and_ordered_multi_invalid_priority(
         InboxObservation.from_canonical_bytes(123, [])
     with _reason(PersistenceReason.CANONICAL_FORMAT_INVALID):
         InboxObservation.from_canonical_bytes("{}", [])
+    with _reason(PersistenceReason.PATH_INVALID):
+        CashLedgerStore.open(f"{tmp_path / 'embedded-nul'}\x00", [])
+    oversized_event = canonical_json_bytes(
+        {
+            "domain": "v3.10-operation-inbox-status-event",
+            "event_no": "1" * 5000,
+            "from_status": "OBSERVED",
+            "observation_sha256": "0" * 64,
+            "reason": "REVIEW_REQUIRED",
+            "related_bundle_sha256": None,
+            "related_transaction_sha256": None,
+            "to_status": "REVIEW_REQUIRED",
+            "version": 1,
+        }
+    )
+    with _reason(PersistenceReason.CANONICAL_FORMAT_INVALID):
+        InboxStatusEvent.from_canonical_bytes(oversized_event)
+    nested_depth = sys.getrecursionlimit() + 100
+    with _reason(PersistenceReason.CANONICAL_FORMAT_INVALID):
+        parse_canonical_json("[" * nested_depth + "0" + "]" * nested_depth)
     busy = sqlite3.OperationalError("translated contention message")
     busy.sqlite_errorcode = sqlite3.SQLITE_BUSY | (5 << 8)
     assert persistence._sqlite_reason(busy) is PersistenceReason.STORE_BUSY
@@ -1436,7 +1456,7 @@ def test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files() -> None:
             f"{ACCEPTED_CONTRACT_HEAD}...HEAD",
         )
         assert ancestry_exit == 0
-        assert ancestry_text.split() == ["0", "3"]
+        assert ancestry_text.split() == ["0", "4"]
         accepted_merge_exit, accepted_merge_base = _git_output(
             "merge-base", ACCEPTED_CONTRACT_HEAD, "HEAD"
         )
@@ -1454,7 +1474,7 @@ def test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files() -> None:
         assert pull_request["head"]["repo"]["full_name"] == (
             "baimleriv/unified-portfolio-system"
         )
-        assert pull_request["commits"] == 3
+        assert pull_request["commits"] == 4
         assert pull_request["changed_files"] == len(allowed)
         current_exit, current_head = _git_output("rev-parse", "HEAD")
         commit_exit, commit_text = _git_output("cat-file", "-p", "HEAD")

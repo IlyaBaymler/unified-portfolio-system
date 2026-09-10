@@ -234,8 +234,8 @@ def _reject_float_or_surrogate(value: object) -> None:
 
 
 def canonical_json_bytes(value: object) -> bytes:
-    _reject_float_or_surrogate(value)
     try:
+        _reject_float_or_surrogate(value)
         return json.dumps(
             value,
             sort_keys=True,
@@ -243,7 +243,9 @@ def canonical_json_bytes(value: object) -> bytes:
             ensure_ascii=True,
             allow_nan=False,
         ).encode("ascii")
-    except (TypeError, ValueError, UnicodeError) as exc:
+    except PersistenceError:
+        raise
+    except (RecursionError, TypeError, ValueError, UnicodeError) as exc:
         raise PersistenceError(PersistenceReason.CANONICAL_FORMAT_INVALID) from exc
 
 
@@ -279,9 +281,8 @@ def parse_canonical_json(value: object) -> object:
             object_pairs_hook=_pairs_without_duplicates,
             parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)),
         )
-    except (json.JSONDecodeError, _DuplicateKey, ValueError) as exc:
+    except (json.JSONDecodeError, _DuplicateKey, RecursionError, ValueError) as exc:
         raise PersistenceError(PersistenceReason.CANONICAL_FORMAT_INVALID) from exc
-    _reject_float_or_surrogate(parsed)
     if canonical_json_bytes(parsed) != supplied:
         _fail(PersistenceReason.CANONICAL_FORMAT_INVALID)
     return parsed
@@ -313,7 +314,10 @@ def _parse_decimal(value: object, *, positive: bool = False) -> int:
     pattern = _POSITIVE_DECIMAL_RE if positive else _DECIMAL_RE
     if pattern.fullmatch(value) is None:
         _fail(PersistenceReason.CANONICAL_FORMAT_INVALID)
-    return int(value)
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise PersistenceError(PersistenceReason.CANONICAL_FORMAT_INVALID) from exc
 
 
 def _validate_schema(schema_json_ascii: str) -> tuple[dict[str, object], ...]:
@@ -948,6 +952,7 @@ def _path_from(value: object) -> Path:
     text = str(path)
     if (
         not path.is_absolute()
+        or "\x00" in text
         or text.startswith(("\\\\", "//"))
         or "://" in text
         or any(":" in part for part in path.parts[1:])
@@ -3019,10 +3024,13 @@ def _parse_manifest(value: bytes) -> dict[str, object]:
             or set(item) != {"path", "sha256", "size"}
             or item["path"] != expected_path
             or not _is_sha256(item["sha256"])
-            or not isinstance(item["size"], str)
-            or _DECIMAL_RE.fullmatch(item["size"]) is None
-            or int(item["size"]) < 0
         ):
+            _fail(PersistenceReason.BACKUP_MANIFEST_INVALID)
+        try:
+            size = _parse_decimal(item["size"])
+        except PersistenceError as exc:
+            raise PersistenceError(PersistenceReason.BACKUP_MANIFEST_INVALID) from exc
+        if size < 0:
             _fail(PersistenceReason.BACKUP_MANIFEST_INVALID)
     if files[0]["sha256"] != parsed["export_sha256"]:
         _fail(PersistenceReason.BACKUP_MANIFEST_INVALID)
