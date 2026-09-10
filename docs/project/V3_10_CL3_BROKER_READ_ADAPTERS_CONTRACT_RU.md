@@ -1,6 +1,6 @@
 # V3.10 CL3 — Broker read adapters + deterministic classification: bounded contract freeze
 
-Статус документа: `CL3 CONTRACT CANDIDATE`.
+Статус документа: `CL3 CONTRACT CORRECTION CANDIDATE / CL3-R1-01..04`.
 
 Этот документ замораживает только наблюдаемое поведение CL3. Он не является
 разрешением на реализацию, runtime adoption, сетевой запуск, запись в CL2,
@@ -223,8 +223,9 @@ Provider payload каждой страницы имеет exact keys:
 Для первой страницы `cursor` — empty string; затем exact `nextCursor` предыдущей
 страницы. Остальные поля неизменны; `limit` равен request limit.
 
-Пустой `operationTypes` и все три `without* = false` обязательны: CL3 не может
-скрыть комиссии, сделки или overnight events фильтром.
+Пустой `operationTypes` и exact значения трёх `without*` обязательны. Watermark
+связывает эти bits, но не приписывает им недокументированную completeness или
+economic-finality семантику провайдера.
 
 ## 11. RetryPolicy и абсолютный deadline
 
@@ -318,6 +319,12 @@ parentOperationId, positionUid, price, ticker, tradesInfo, yield, yieldRelative
 - `childOperations`: finite list длиной `0..256`;
 - `date`: timestamp по section 14;
 - `payment`, `commission`: exact `MoneyValue` по section 13.
+
+Optional `parentOperationId` может отсутствовать или быть string длиной 0..4096.
+Непустое значение проецируется только как `has_parent_operation = true`; сам ID
+никогда не выходит из ephemeral item. После normalization `effective_at` должен
+удовлетворять `from_inclusive <= effective_at < to_exclusive`, иначе весь batch
+завершается `ITEM_OUTSIDE_WINDOW` без partial result.
 
 Contents `childOperations`, `tradesInfo` и optional nested fields не читаются,
 не хешируются и не логируются. Непустой `childOperations` делает event ambiguous.
@@ -434,15 +441,16 @@ Identity key rotation меняет все keyed identities. Caller обязан 
 Exact `schema_json_ascii`:
 
 ```json
-{"domain":"v3.10-operation-inbox-codec-schema","fields":[{"allowed_values":null,"key":"child_operation_count","kind":"INTEGER","max_scalars":null,"maximum":"256","minimum":"0","required":true},{"allowed_values":null,"key":"commission_minor_units","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true},{"allowed_values":["PAYMENT"],"key":"component","kind":"STRING","max_scalars":"16","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"effective_at","kind":"STRING","max_scalars":"30","maximum":null,"minimum":null,"required":true},{"allowed_values":["OPERATION_STATE_CANCELED","OPERATION_STATE_EXECUTED","OPERATION_STATE_PROGRESS","OPERATION_STATE_UNSPECIFIED"],"key":"operation_state","kind":"STRING","max_scalars":"32","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"operation_type","kind":"STRING","max_scalars":"96","maximum":null,"minimum":null,"required":true},{"allowed_values":["RUB"],"key":"payment_currency","kind":"STRING","max_scalars":"3","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"payment_minor_units","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"quantity_done","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"quantity_rest","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true}],"version":1}
+{"domain":"v3.10-operation-inbox-codec-schema","fields":[{"allowed_values":null,"key":"child_operation_count","kind":"INTEGER","max_scalars":null,"maximum":"256","minimum":"0","required":true},{"allowed_values":null,"key":"commission_minor_units","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true},{"allowed_values":["PAYMENT"],"key":"component","kind":"STRING","max_scalars":"16","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"effective_at","kind":"STRING","max_scalars":"30","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"has_parent_operation","kind":"BOOLEAN","max_scalars":null,"maximum":null,"minimum":null,"required":true},{"allowed_values":["OPERATION_STATE_CANCELED","OPERATION_STATE_EXECUTED","OPERATION_STATE_PROGRESS","OPERATION_STATE_UNSPECIFIED"],"key":"operation_state","kind":"STRING","max_scalars":"32","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"operation_type","kind":"STRING","max_scalars":"96","maximum":null,"minimum":null,"required":true},{"allowed_values":["RUB"],"key":"payment_currency","kind":"STRING","max_scalars":"3","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"payment_minor_units","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"quantity","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"quantity_done","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"quantity_rest","kind":"STRING","max_scalars":"20","maximum":null,"minimum":null,"required":true}],"version":1}
 ```
 
 `schema_sha256` и descriptor known answer заморожены в section 25.
 
-Sanitized content имеет exact keyset этих десяти полей. `payment_minor_units` и
+Sanitized content имеет exact keyset этих двенадцати полей. `payment_minor_units` и
 `commission_minor_units` — exact CL1 Money `minor_units` как canonical decimal.
-`quantity_done/rest` — validated provider int64 decimal strings. `source_content_sha256`
-равен plain SHA-256 exact ASCII sanitized content.
+`quantity`, `quantity_done/rest` — validated provider int64 decimal strings.
+`has_parent_operation` — bool, полученный только из presence/nonempty parent ID.
+`source_content_sha256` равен plain SHA-256 exact ASCII sanitized content.
 
 Raw IDs/cursors, names/descriptions, instrument identifiers, nested trades,
 parent/child bodies и provider payload bytes не входят в sanitized content.
@@ -573,9 +581,10 @@ observation and one decision. Decision object не создаёт CL2 status eve
 4. state не из frozen четырёх -> hard `ENUM_TOKEN_INVALID`;
 5. unknown type -> `REVIEW_REQUIRED / UNKNOWN_OPERATION_TYPE`;
 6. known unsupported type -> `REVIEW_REQUIRED / UNSUPPORTED_OPERATION_TYPE`;
-7. nonempty child operations или nonzero commission ->
+7. nonempty child operations, nonempty parent operation ID или nonzero commission ->
    `REVIEW_REQUIRED / MULTI_COMPONENT_AMBIGUOUS`;
-8. BUY/SELL group с `quantityDone <= 0` или `quantityRest != 0` ->
+8. BUY/SELL group, если `quantity <= 0`, `quantityDone != quantity` или
+   `quantityRest != 0` ->
    `REVIEW_REQUIRED / PARTIAL_EXECUTION_AMBIGUOUS`;
 9. zero payment -> `REVIEW_REQUIRED / ZERO_CASH_EFFECT`;
 10. знак payment не соответствует table ->
@@ -591,8 +600,8 @@ Classification table:
 | `DIVIDEND` | positive | `DIVIDEND` | `INCOME_DIVIDEND` |
 | `COUPON` | positive | `COUPON` | `INCOME_COUPON` |
 | `OVERNIGHT`, `OVER_INCOME` | positive | `INTEREST` | `INCOME_INTEREST` |
-| `SERVICE_FEE`, `MARGIN_FEE`, `BROKER_FEE`, `SUCCESS_FEE`, `TRACK_MFEE`, `TRACK_PFEE`, `CASH_FEE`, `OUT_FEE`, `OUT_STAMP_DUTY`, `OUTPUT_PENALTY`, `ADVICE_FEE`, `OVER_COM` | negative | `COMMISSION` | `EXPENSE_COMMISSION` |
-| `BOND_TAX`, `TAX`, `DIVIDEND_TAX`, `BENEFIT_TAX`, `TAX_PROGRESSIVE`, `BOND_TAX_PROGRESSIVE`, `DIVIDEND_TAX_PROGRESSIVE`, `BENEFIT_TAX_PROGRESSIVE`, `TAX_REPO_PROGRESSIVE`, `TAX_REPO`, `TAX_REPO_HOLD`, `TAX_REPO_HOLD_PROGRESSIVE` | negative | `TAX` | `EXPENSE_TAX` |
+| `SERVICE_FEE`, `MARGIN_FEE`, `BROKER_FEE`, `SUCCESS_FEE`, `TRACK_MFEE`, `TRACK_PFEE`, `CASH_FEE`, `OUT_FEE`, `OUTPUT_PENALTY`, `ADVICE_FEE`, `OVER_COM` | negative | `COMMISSION` | `EXPENSE_COMMISSION` |
+| `BOND_TAX`, `TAX`, `DIVIDEND_TAX`, `BENEFIT_TAX`, `TAX_PROGRESSIVE`, `BOND_TAX_PROGRESSIVE`, `DIVIDEND_TAX_PROGRESSIVE`, `BENEFIT_TAX_PROGRESSIVE`, `TAX_REPO_PROGRESSIVE`, `TAX_REPO`, `TAX_REPO_HOLD`, `TAX_REPO_HOLD_PROGRESSIVE`, `OUT_STAMP_DUTY` | negative | `TAX` | `EXPENSE_TAX` |
 | `TAX_CORRECTION`, `TAX_CORRECTION_PROGRESSIVE`, `TAX_REPO_REFUND`, `TAX_REPO_REFUND_PROGRESSIVE`, `TAX_CORRECTION_COUPON` | positive | `REFUND` | `EXPENSE_TAX` |
 | `BUY`, `BUY_MARGIN`, `DELIVERY_BUY` | negative | `TRADE_SETTLEMENT` | `ASSET_TRADE_CLEARING` |
 | `SELL`, `SELL_MARGIN`, `DELIVERY_SELL` | positive | `TRADE_SETTLEMENT` | `ASSET_TRADE_CLEARING` |
@@ -698,6 +707,7 @@ ITEM_LIMIT_EXCEEDED
 PAGINATION_INVARIANT_VIOLATION
 DUPLICATE_ITEM
 ACCOUNT_MISMATCH
+ITEM_OUTSIDE_WINDOW
 OPERATION_ID_INVALID
 CURSOR_INVALID
 ENUM_TOKEN_INVALID
@@ -747,13 +757,14 @@ Item порядок:
 3. raw operation/item cursor grammar;
 4. state/type token grammar;
 5. timestamp;
-6. payment then commission MoneyValue;
-7. quantity, quantityDone, quantityRest;
-8. childOperations bound;
-9. identities and sanitized content;
-10. CL2 observation construction;
-11. classification;
-12. optional CL1 proposal construction.
+6. exact request-window membership;
+7. payment then commission MoneyValue;
+8. quantity, quantityDone, quantityRest;
+9. parent/child operation bounds;
+10. identities and sanitized content;
+11. CL2 observation construction;
+12. classification;
+13. optional CL1 proposal construction.
 
 При нескольких дефектах возвращается только первая reason этого порядка.
 
@@ -775,27 +786,27 @@ Provider operation:
 Normalized sanitized content:
 
 ```json
-{"child_operation_count":0,"commission_minor_units":"0","component":"PAYMENT","effective_at":"2026-01-02T03:04:05.123000000Z","operation_state":"OPERATION_STATE_EXECUTED","operation_type":"OPERATION_TYPE_INPUT","payment_currency":"RUB","payment_minor_units":"1567890000","quantity_done":"0","quantity_rest":"0"}
+{"child_operation_count":0,"commission_minor_units":"0","component":"PAYMENT","effective_at":"2026-01-02T03:04:05.123000000Z","has_parent_operation":false,"operation_state":"OPERATION_STATE_EXECUTED","operation_type":"OPERATION_TYPE_INPUT","payment_currency":"RUB","payment_minor_units":"1567890000","quantity":"0","quantity_done":"0","quantity_rest":"0"}
 ```
 
 Frozen outputs (filled only by reproducible canonical calculation):
 
 ```text
-schema_sha256 = b424c03f386803d0ee872782c8d397e1f4202ab51c0657e3c74e30764977312e
-descriptor_sha256 = 5e077ce2b72feb4c9ed3b1e738895d5dfa0a2856deb3b48cb30a73c05384184b
+schema_sha256 = 2b3b7acb6ce2aec48d3c6eda4137a1ca9e9ad5368b961fd556a72767699dd7b9
+descriptor_sha256 = 69d60a18b2048c6472fc0b39587ce5332e86d592012c1c8f52ce4183c1342748
 account_scope_sha256 = 2f46c3b5dae3b72dd6b0582b4f5f79d8a0479dc93936330f7cd9985b9f63195d
 source_scope_sha256 = 29fefc017c4da1d1297bae79d973a0dc2eb24908f3ebafa6adefd5b9b4e1b6e0
-source_content_sha256 = a03d54715038a82a01f1bdefb7551f45630fec0b715a4efcf84243019009325d
-provenance_sha256 = 9c676572c2bedcdbe27501f981a2a87fe45b3ae1babe9fbb0ed044727ce4d0cf
+source_content_sha256 = 6e58d8b7c4c4acdf6985d43ecd2f0d3494930777b846db041953f0039345a60e
+provenance_sha256 = dc7f1830431237411ce8421c08ff8d71303f57803e170173f781a75825383fad
 logical_source_sha256 = ee13c8446357e495798e066b8639248f86b47b2faec143fa38e4725895bf4fc6
-observation_sha256 = 9b174a5e10bca40a2e05e8bd31b82571fc56bbeb053c33a1d631c5701b7b73ad
-transaction_sha256 = aaf55e8b643db44d2bd37cfa38e10bdd705b6a1a20a7e7a967212b4f699f077d
+observation_sha256 = 2bda0a4e13ad9fd415da2c7bcdec5cc1de19179c720f50c4d413cdc6d1e166af
+transaction_sha256 = 475affc6fdee262946fee31ac5e1a2eeaceb3a6ca866cefe7367fb72ad913cf3
 request_fingerprint_sha256 = a6bfa48de9ef2c52005e136d329d15d1fcf3dbf32d499a0f0e5c893404ee2a5b
 initial_request_cursor_evidence_sha256 = 8b4c0aaf5231d284e95d32fb8d66d12f2a10521d349c712ebf713367547a3eb7
 terminal_next_cursor_evidence_sha256 = 9e756e87f5f547972ac4908a4ec53ff031d869829f40d1a2492f2f53d9724d4a
 item_cursor_evidence_sha256 = 1bf84e1169ffda5a960e4d27a6f1865ddc43e0ad1fb118fd542656327fe02976
-page_chain_sha256 = 23991259cfb85731dae8ec632f9551a52261ff2a5acc6d25717a16ca7ff891cf
-watermark_sha256 = 08540d213650b22820b09d54bd2fde3e1e549c7f6f33d623d178541e2e45aaba
+page_chain_sha256 = a1e8523aadecc2d0e83a8fbca1ce2b3ffca7e6da52064cf061e18c1a443b8c06
+watermark_sha256 = 5a29828e93e2a0038bcf00609acca7dcf413ecfeb98463ed1ac70f239aba7f00
 ```
 
 Transaction proposal: `DEPOSIT`, cash `+1.567890000`, external equity
@@ -814,7 +825,8 @@ Transaction proposal: `DEPOSIT`, cash `+1.567890000`, external equity
 - `V310-CL3-06`: every supported type/sign -> exact CL1 proposal/postings;
 - `V310-CL3-07`: unknown, unsupported, pending, unspecified, canceled outcomes;
 - `V310-CL3-08`: embedded commission/children and partial trade ambiguity;
-- `V310-CL3-09`: response keysets/types/account mismatch/error priority;
+- `V310-CL3-09`: response bounds/keysets/types, parent operation, account/window
+  mismatch и error priority;
 - `V310-CL3-10`: multi-page order, cursor progress, duplicates and caps;
 - `V310-CL3-11`: retry status table, attempts/backoff and no invalid retry;
 - `V310-CL3-12`: absolute deadline before call/wait/next page;
@@ -869,6 +881,12 @@ Reviewer обязан подтвердить:
 Finding должен ссылаться на exact candidate и именоваться `CL3-R1-NN`.
 Correction требует отдельного bounded successor commit в том же однофайловом
 allowlist и finding-scoped closure review successor head.
+
+Initial exact candidate `bf78b15c62f6a29ec7a6789a708cdd07d04915f9`
+получил `CL3-R1-01..04`: incomplete trade quantity invariant, неучтённый parent
+operation, отсутствие local half-open-window check и избыточное утверждение о
+provider filter semantics. Этот документ содержит bounded corrections; closure
+и acceptance относятся только к exact successor commit/tree.
 
 ## 29. Contract acceptance и exit state
 
