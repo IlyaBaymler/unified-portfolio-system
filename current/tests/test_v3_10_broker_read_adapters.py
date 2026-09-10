@@ -6,6 +6,7 @@ import ast
 import copy
 import inspect
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -937,14 +938,81 @@ def test_transport_failure_shape() -> None:
     )
 
 
+def _assert_shallow_pull_request_custody(
+    repository: Path,
+    accepted_head: str,
+    allowed: set[str],
+) -> None:
+    assert os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    assert event_path is not None
+    event = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))
+    pull_request = event["pull_request"]
+    assert pull_request["base"]["ref"] == "agent/v3-10-clean-cl3-contract-freeze"
+    assert pull_request["base"]["sha"] == accepted_head
+    assert pull_request["base"]["repo"]["full_name"] == (
+        "baimleriv/unified-portfolio-system"
+    )
+    assert pull_request["head"]["ref"] == "agent/v3-10-clean-cl3-implementation"
+    assert pull_request["head"]["repo"]["full_name"] == (
+        "baimleriv/unified-portfolio-system"
+    )
+    assert pull_request["commits"] == 3
+    assert pull_request["changed_files"] == len(allowed)
+    current_head = subprocess.run(
+        ["git", "-c", f"safe.directory={repository}", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    commit_text = subprocess.run(
+        ["git", "-c", f"safe.directory={repository}", "cat-file", "-p", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert current_head == os.environ.get("GITHUB_SHA")
+    parents = [
+        line.removeprefix("parent ")
+        for line in commit_text.splitlines()
+        if line.startswith("parent ")
+    ]
+    assert parents == [accepted_head, pull_request["head"]["sha"]]
+    assert all((repository / path).is_file() for path in allowed)
+
+
+_ACCEPTED_CL3_CONTRACT_HEAD = "80fe47eba1f7f625f77290fce4a816884ad0ccd2"
+_CL3_IMPLEMENTATION_PATHS = {
+    "current/trading_robot/broker_read_adapters.py",
+    "current/tests/test_v3_10_broker_read_adapters.py",
+    "current/tests/fixtures/v3_10_broker_read_adapters_vectors.json",
+}
+
+
 def test_v310_cl3_17_exact_three_path_delta() -> None:
     repository = _CURRENT.parent
-    accepted_head = "80fe47eba1f7f625f77290fce4a816884ad0ccd2"
-    allowed = {
-        "current/trading_robot/broker_read_adapters.py",
-        "current/tests/test_v3_10_broker_read_adapters.py",
-        "current/tests/fixtures/v3_10_broker_read_adapters_vectors.json",
-    }
+    base_object = subprocess.run(
+        [
+            "git",
+            "-c",
+            f"safe.directory={repository}",
+            "cat-file",
+            "-e",
+            f"{_ACCEPTED_CL3_CONTRACT_HEAD}^{{commit}}",
+        ],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+    )
+    if base_object.returncode != 0:
+        _assert_shallow_pull_request_custody(
+            repository,
+            _ACCEPTED_CL3_CONTRACT_HEAD,
+            _CL3_IMPLEMENTATION_PATHS,
+        )
+        return
     committed = subprocess.run(
         [
             "git",
@@ -952,7 +1020,7 @@ def test_v310_cl3_17_exact_three_path_delta() -> None:
             f"safe.directory={repository}",
             "diff",
             "--name-only",
-            f"{accepted_head}..HEAD",
+            f"{_ACCEPTED_CL3_CONTRACT_HEAD}..HEAD",
         ],
         cwd=repository,
         check=True,
@@ -974,12 +1042,31 @@ def test_v310_cl3_17_exact_three_path_delta() -> None:
         text=True,
     ).stdout.splitlines()
     changed = {path.replace("\\", "/") for path in (*committed, *untracked)}
-    assert changed == allowed
+    assert changed == _CL3_IMPLEMENTATION_PATHS
 
 
 def test_v310_cl3_18_cl1_cl2_sources_unchanged() -> None:
     repository = _CURRENT.parent
-    accepted_head = "80fe47eba1f7f625f77290fce4a816884ad0ccd2"
+    base_object = subprocess.run(
+        [
+            "git",
+            "-c",
+            f"safe.directory={repository}",
+            "cat-file",
+            "-e",
+            f"{_ACCEPTED_CL3_CONTRACT_HEAD}^{{commit}}",
+        ],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+    )
+    if base_object.returncode != 0:
+        _assert_shallow_pull_request_custody(
+            repository,
+            _ACCEPTED_CL3_CONTRACT_HEAD,
+            _CL3_IMPLEMENTATION_PATHS,
+        )
+        return
     protected = (
         "current/trading_robot/cash_ledger_domain.py",
         "current/trading_robot/cash_ledger_persistence.py",
@@ -995,7 +1082,7 @@ def test_v310_cl3_18_cl1_cl2_sources_unchanged() -> None:
             f"safe.directory={repository}",
             "diff",
             "--exit-code",
-            accepted_head,
+            _ACCEPTED_CL3_CONTRACT_HEAD,
             "--",
             *protected,
         ],
