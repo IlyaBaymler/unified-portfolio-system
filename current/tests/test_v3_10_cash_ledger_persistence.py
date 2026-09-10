@@ -1439,6 +1439,10 @@ def test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files() -> None:
         "current/tests/test_v3_10_cash_ledger_persistence.py",
         "current/tests/fixtures/v3_10_cash_ledger_persistence_vectors.json",
     }
+    cumulative_allowed = {
+        "docs/project/V3_10_CL2_APPEND_ONLY_PERSISTENCE_CONTRACT_RU.md",
+        *allowed,
+    }
     base_object_exit, _ = _git_output(
         "cat-file", "-e", f"{ACCEPTED_CONTRACT_HEAD}^{{commit}}"
     )
@@ -1456,7 +1460,7 @@ def test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files() -> None:
             f"{ACCEPTED_CONTRACT_HEAD}...HEAD",
         )
         assert ancestry_exit == 0
-        assert ancestry_text.split() == ["0", "4"]
+        assert ancestry_text.split() == ["0", "5"]
         accepted_merge_exit, accepted_merge_base = _git_output(
             "merge-base", ACCEPTED_CONTRACT_HEAD, "HEAD"
         )
@@ -1468,14 +1472,14 @@ def test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files() -> None:
         assert event_path is not None
         event = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))
         pull_request = event["pull_request"]
-        assert pull_request["base"]["ref"] == "agent/v3-10-clean-cl2-contract-freeze"
-        assert pull_request["base"]["sha"] == ACCEPTED_CONTRACT_HEAD
+        assert pull_request["base"]["ref"] == "program/v3-10-v4-stable-line"
+        assert pull_request["base"]["sha"] == CL1_PREDECESSOR
         assert pull_request["head"]["ref"] == "agent/v3-10-clean-cl2-implementation"
         assert pull_request["head"]["repo"]["full_name"] == (
             "baimleriv/unified-portfolio-system"
         )
-        assert pull_request["commits"] == 4
-        assert pull_request["changed_files"] == len(allowed)
+        assert pull_request["commits"] == 7
+        assert pull_request["changed_files"] == len(cumulative_allowed)
         current_exit, current_head = _git_output("rev-parse", "HEAD")
         commit_exit, commit_text = _git_output("cat-file", "-p", "HEAD")
         assert current_exit == commit_exit == 0
@@ -1486,10 +1490,10 @@ def test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files() -> None:
             if line.startswith("parent ")
         ]
         assert parents == [
-            ACCEPTED_CONTRACT_HEAD,
+            CL1_PREDECESSOR,
             pull_request["head"]["sha"],
         ]
-        assert all((ROOT / path).is_file() for path in allowed)
+        assert all((ROOT / path).is_file() for path in cumulative_allowed)
     for path in (
         "docs/project/V3_10_CL2_APPEND_ONLY_PERSISTENCE_CONTRACT_RU.md",
         "current/trading_robot/cash_ledger_domain.py",
@@ -1510,7 +1514,6 @@ def test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files() -> None:
             "diff", "--name-only", f"{CL1_PREDECESSOR}..HEAD"
         )
         assert cumulative_exit == 0
-        assert {line.replace("\\", "/") for line in cumulative_text.splitlines()} == {
-            "docs/project/V3_10_CL2_APPEND_ONLY_PERSISTENCE_CONTRACT_RU.md",
-            *allowed,
-        }
+        assert {
+            line.replace("\\", "/") for line in cumulative_text.splitlines()
+        } == cumulative_allowed
