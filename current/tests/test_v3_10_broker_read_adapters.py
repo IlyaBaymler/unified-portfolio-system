@@ -8,6 +8,7 @@ import inspect
 import json
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 _CURRENT = Path(__file__).resolve().parents[1]
@@ -489,6 +490,56 @@ def test_v310_cl3_09_response_schema_bounds_and_item_priority() -> None:
             ),
             cl3.BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED,
         )
+
+    class _HostileDict(dict[str, object]):
+        calls = 0
+
+        def __getitem__(self, key: object) -> object:
+            self.calls += 1
+            raise RuntimeError("RAW-PROVIDER-SENTINEL")
+
+    hostile_item = _HostileDict(_item())
+    batch = cl3.collect_tbank_operations(
+        _request(transport=lambda payload, timeout_ns: _response([hostile_item]))
+    )
+    assert len(batch.decisions) == 1
+    assert hostile_item.calls == 0
+
+    class _HostileList(list[object]):
+        calls = 0
+
+        def __len__(self) -> int:
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("RAW-LIST-SENTINEL")
+            return list.__len__(self)
+
+    hostile_items = _HostileList([_item()])
+    batch = cl3.collect_tbank_operations(
+        _request(transport=lambda payload, timeout_ns: _response(hostile_items))
+    )
+    assert len(batch.decisions) == 1
+    assert hostile_items.calls == 0
+
+    class _ExplodingMapping(Mapping[str, object]):
+        def __getitem__(self, key: str) -> object:
+            raise RuntimeError("RAW-MAPPING-SENTINEL")
+
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            raise RuntimeError("RAW-MAPPING-SENTINEL")
+
+        def __len__(self) -> int:
+            return 3
+
+        def items(self):  # type: ignore[no-untyped-def]
+            raise RuntimeError("RAW-MAPPING-SENTINEL")
+
+    _error(
+        lambda: cl3.collect_tbank_operations(
+            _request(transport=lambda payload, timeout_ns: _ExplodingMapping())
+        ),
+        cl3.BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED,
+    )
     _error(
         lambda: _batch_for(_item(extra="x")),
         cl3.BrokerReadReason.RESPONSE_SCHEMA_INVALID,

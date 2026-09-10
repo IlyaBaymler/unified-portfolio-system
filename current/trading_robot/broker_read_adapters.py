@@ -768,54 +768,90 @@ for _types, _sign, _classification, _counterpart in (
 del _types, _sign, _classification, _counterpart, _operation_type
 
 
-def _response_preflight(value: object) -> None:
+def _response_preflight(value: object) -> object:
     unexpected_failure = False
     try:
-        stack: list[tuple[object, int]] = [(value, 0)]
+        root: list[object] = [None]
+        stack: list[tuple[object, int, list[object] | dict[str, object], int | str]] = [
+            (value, 0, root, 0)
+        ]
         seen_containers: set[int] = set()
         nodes = 0
         while stack:
-            current, depth = stack.pop()
+            current, depth, parent, slot = stack.pop()
             nodes += 1
             if nodes > 200_000 or depth > 16:
                 _raise(BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED)
             if current is None or isinstance(current, bool) or type(current) is int:
+                parent[slot] = current
                 continue
             if isinstance(current, str):
-                if len(current) > 16_384 or _contains_surrogate(current):
+                plain_string = str.__str__(current)
+                if str.__len__(plain_string) > 16_384 or _contains_surrogate(
+                    plain_string
+                ):
                     _raise(BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED)
+                parent[slot] = plain_string
                 continue
             if isinstance(current, _Mapping):
                 identity = id(current)
                 if identity in seen_containers:
                     _raise(BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED)
                 seen_containers.add(identity)
-                size = len(current)
+                if isinstance(current, dict):
+                    size = dict.__len__(current)
+                    source_items = dict.items(current)
+                else:
+                    size = len(current)
+                    source_items = current.items()
                 if size > 10_000:
                     _raise(BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED)
-                items: list[tuple[object, object]] = []
-                for index, pair in enumerate(current.items()):
+                items: list[tuple[str, object]] = []
+                keys: set[str] = set()
+                for index, pair in enumerate(source_items):
                     if index >= 10_000:
                         _raise(BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED)
                     key, item = pair
                     if not isinstance(key, str):
                         _raise(BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED)
-                    items.append((key, item))
+                    nodes += 1
+                    if nodes > 200_000 or depth + 1 > 16:
+                        _raise(BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED)
+                    plain_key = str.__str__(key)
+                    if (
+                        str.__len__(plain_key) > 16_384
+                        or _contains_surrogate(plain_key)
+                        or plain_key in keys
+                    ):
+                        _raise(BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED)
+                    keys.add(plain_key)
+                    items.append((plain_key, item))
                 if len(items) != size:
                     _raise(BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED)
+                snapshot: dict[str, object] = {key: None for key, _ in items}
+                parent[slot] = snapshot
                 for key, item in reversed(items):
-                    stack.append((item, depth + 1))
-                    stack.append((key, depth + 1))
+                    stack.append((item, depth + 1, snapshot, key))
                 continue
             if isinstance(current, list):
                 identity = id(current)
                 if identity in seen_containers:
                     _raise(BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED)
                 seen_containers.add(identity)
-                if len(current) > 10_000:
+                size = list.__len__(current)
+                if size > 10_000:
                     _raise(BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED)
-                for item in reversed(current):
-                    stack.append((item, depth + 1))
+                snapshot_list: list[object] = [None] * size
+                parent[slot] = snapshot_list
+                for index in range(size - 1, -1, -1):
+                    stack.append(
+                        (
+                            list.__getitem__(current, index),
+                            depth + 1,
+                            snapshot_list,
+                            index,
+                        )
+                    )
                 continue
             _raise(BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED)
     except BrokerReadError:
@@ -824,6 +860,7 @@ def _response_preflight(value: object) -> None:
         unexpected_failure = True
     if unexpected_failure:
         raise BrokerReadError(BrokerReadReason.RESPONSE_BOUNDS_EXCEEDED) from None
+    return root[0]
 
 
 def _require_short_string(value: object, reason: BrokerReadReason) -> str:
@@ -1265,8 +1302,7 @@ def collect_tbank_operations(request: BrokerReadRequest) -> BrokerReadBatch:
 
     while True:
         page_no += 1
-        response = fetch_page(cursor, page_no)
-        _response_preflight(response)
+        response = _response_preflight(fetch_page(cursor, page_no))
         if not isinstance(response, _Mapping):
             _raise(BrokerReadReason.RESPONSE_SCHEMA_INVALID)
         response_schema_failure = False
