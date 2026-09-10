@@ -1,0 +1,379 @@
+{
+  "domain": "v3.10-cl4-opening-reconciliation-fixture",
+  "inputs": {
+    "account_scope_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "as_of": "2026-01-02T03:04:05.123456789Z",
+    "environment": "SANDBOX",
+    "evaluated_at": "2026-01-02T03:04:06.123456789Z",
+    "identity_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "identity_key_id": "CL4_TEST_KEY",
+    "response": {
+      "totalAmountCurrencies": {
+        "currency": "RUB",
+        "nano": 500000000,
+        "units": "123"
+      }
+    }
+  },
+  "known_answer": {
+    "adoption_candidate": {
+      "canonical": {
+        "automatic_adoption": false,
+        "disposition": "SEPARATE_LOCKED_REVIEW_REQUIRED",
+        "domain": "v3.10-cl4-adoption-candidate",
+        "ledger_head_sha256": "adcfaa4c9d4c0460b96ca1845882c748f4531b79c27cd807b03577576d23a892",
+        "reconciliation_sha256": "0abaaacfa0c8a607848b54a90f140ce8bb2a59eb02cecaaca87b17c21d24ebd7",
+        "requires_locked_revalidation": true,
+        "runtime_cash_owner_changed": false,
+        "version": 1
+      },
+      "canonical_json_ascii": "{\"automatic_adoption\":false,\"disposition\":\"SEPARATE_LOCKED_REVIEW_REQUIRED\",\"domain\":\"v3.10-cl4-adoption-candidate\",\"ledger_head_sha256\":\"adcfaa4c9d4c0460b96ca1845882c748f4531b79c27cd807b03577576d23a892\",\"reconciliation_sha256\":\"0abaaacfa0c8a607848b54a90f140ce8bb2a59eb02cecaaca87b17c21d24ebd7\",\"requires_locked_revalidation\":true,\"runtime_cash_owner_changed\":false,\"version\":1}",
+      "sha256": "8de3f3e4cdbed751d7593dbcb96730f1a1ac5552a450f75869fe9f955a4f3304"
+    },
+    "codec": {
+      "canonical": {
+        "codec_id": "CL4_FROM_NOW_OPENING_V1",
+        "codec_version": 1,
+        "domain": "v3.10-operation-inbox-codec",
+        "schema_json_ascii": "{\"domain\":\"v3.10-operation-inbox-codec-schema\",\"fields\":[{\"allowed_values\":null,\"key\":\"account_scope_sha256\",\"kind\":\"STRING\",\"max_scalars\":\"64\",\"maximum\":null,\"minimum\":null,\"required\":true},{\"allowed_values\":null,\"key\":\"broker_cash_proof_sha256\",\"kind\":\"STRING\",\"max_scalars\":\"64\",\"maximum\":null,\"minimum\":null,\"required\":true},{\"allowed_values\":null,\"key\":\"cutoff\",\"kind\":\"STRING\",\"max_scalars\":\"30\",\"maximum\":null,\"minimum\":null,\"required\":true},{\"allowed_values\":[\"SANDBOX\"],\"key\":\"environment\",\"kind\":\"STRING\",\"max_scalars\":\"16\",\"maximum\":null,\"minimum\":null,\"required\":true},{\"allowed_values\":null,\"key\":\"generation\",\"kind\":\"INTEGER\",\"max_scalars\":null,\"maximum\":\"1\",\"minimum\":\"1\",\"required\":true},{\"allowed_values\":null,\"key\":\"identity_key_id\",\"kind\":\"STRING\",\"max_scalars\":\"64\",\"maximum\":null,\"minimum\":null,\"required\":true},{\"allowed_values\":null,\"key\":\"ledger_export_sha256\",\"kind\":\"STRING\",\"max_scalars\":\"64\",\"maximum\":null,\"minimum\":null,\"required\":true},{\"allowed_values\":null,\"key\":\"ledger_head_sha256\",\"kind\":\"STRING\",\"max_scalars\":\"64\",\"maximum\":null,\"minimum\":null,\"required\":true},{\"allowed_values\":null,\"key\":\"ledger_revision\",\"kind\":\"STRING\",\"max_scalars\":\"19\",\"maximum\":null,\"minimum\":null,\"required\":true},{\"allowed_values\":[\"FROM_NOW\"],\"key\":\"mode\",\"kind\":\"STRING\",\"max_scalars\":\"16\",\"maximum\":null,\"minimum\":null,\"required\":true},{\"allowed_values\":[\"RUB\"],\"key\":\"opening_currency\",\"kind\":\"STRING\",\"max_scalars\":\"3\",\"maximum\":null,\"minimum\":null,\"required\":true},{\"allowed_values\":null,\"key\":\"opening_minor_units\",\"kind\":\"STRING\",\"max_scalars\":\"29\",\"maximum\":null,\"minimum\":null,\"required\":true},{\"allowed_values\":null,\"key\":\"response_identity_sha256\",\"kind\":\"STRING\",\"max_scalars\":\"64\",\"maximum\":null,\"minimum\":null,\"required\":true},{\"allowed_values\":null,\"key\":\"store_revision\",\"kind\":\"STRING\",\"max_scalars\":\"19\",\"maximum\":null,\"minimum\":null,\"required\":true}],\"version\":1}",
+        "schema_sha256": "917b0b3a98748c2279ed9efb1007fddec6375afd3da7003143690544b7336d78",
+        "version": 1
+      },
+      "canonical_json_ascii": "{\"codec_id\":\"CL4_FROM_NOW_OPENING_V1\",\"codec_version\":1,\"domain\":\"v3.10-operation-inbox-codec\",\"schema_json_ascii\":\"{\\\"domain\\\":\\\"v3.10-operation-inbox-codec-schema\\\",\\\"fields\\\":[{\\\"allowed_values\\\":null,\\\"key\\\":\\\"account_scope_sha256\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"64\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true},{\\\"allowed_values\\\":null,\\\"key\\\":\\\"broker_cash_proof_sha256\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"64\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true},{\\\"allowed_values\\\":null,\\\"key\\\":\\\"cutoff\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"30\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true},{\\\"allowed_values\\\":[\\\"SANDBOX\\\"],\\\"key\\\":\\\"environment\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"16\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true},{\\\"allowed_values\\\":null,\\\"key\\\":\\\"generation\\\",\\\"kind\\\":\\\"INTEGER\\\",\\\"max_scalars\\\":null,\\\"maximum\\\":\\\"1\\\",\\\"minimum\\\":\\\"1\\\",\\\"required\\\":true},{\\\"allowed_values\\\":null,\\\"key\\\":\\\"identity_key_id\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"64\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true},{\\\"allowed_values\\\":null,\\\"key\\\":\\\"ledger_export_sha256\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"64\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true},{\\\"allowed_values\\\":null,\\\"key\\\":\\\"ledger_head_sha256\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"64\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true},{\\\"allowed_values\\\":null,\\\"key\\\":\\\"ledger_revision\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"19\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true},{\\\"allowed_values\\\":[\\\"FROM_NOW\\\"],\\\"key\\\":\\\"mode\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"16\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true},{\\\"allowed_values\\\":[\\\"RUB\\\"],\\\"key\\\":\\\"opening_currency\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"3\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true},{\\\"allowed_values\\\":null,\\\"key\\\":\\\"opening_minor_units\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"29\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true},{\\\"allowed_values\\\":null,\\\"key\\\":\\\"response_identity_sha256\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"64\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true},{\\\"allowed_values\\\":null,\\\"key\\\":\\\"store_revision\\\",\\\"kind\\\":\\\"STRING\\\",\\\"max_scalars\\\":\\\"19\\\",\\\"maximum\\\":null,\\\"minimum\\\":null,\\\"required\\\":true}],\\\"version\\\":1}\",\"schema_sha256\":\"917b0b3a98748c2279ed9efb1007fddec6375afd3da7003143690544b7336d78\",\"version\":1}",
+      "sha256": "159ebf8e748b104bf691a0da2cda4d6a94866417b1c0330124f406f35d17e6c2"
+    },
+    "content": {
+      "canonical": {
+        "account_scope_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "broker_cash_proof_sha256": "8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d",
+        "cutoff": "2026-01-02T03:04:05.123456789Z",
+        "environment": "SANDBOX",
+        "generation": 1,
+        "identity_key_id": "CL4_TEST_KEY",
+        "ledger_export_sha256": "9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7",
+        "ledger_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+        "ledger_revision": "0",
+        "mode": "FROM_NOW",
+        "opening_currency": "RUB",
+        "opening_minor_units": "123500000000",
+        "response_identity_sha256": "78fbeb0620bd7fd086fb4c39e3a205d16ecd85e366c3bd77f28cbe9f45ac2190",
+        "store_revision": "0"
+      },
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"broker_cash_proof_sha256\":\"8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d\",\"cutoff\":\"2026-01-02T03:04:05.123456789Z\",\"environment\":\"SANDBOX\",\"generation\":1,\"identity_key_id\":\"CL4_TEST_KEY\",\"ledger_export_sha256\":\"9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7\",\"ledger_head_sha256\":\"6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37\",\"ledger_revision\":\"0\",\"mode\":\"FROM_NOW\",\"opening_currency\":\"RUB\",\"opening_minor_units\":\"123500000000\",\"response_identity_sha256\":\"78fbeb0620bd7fd086fb4c39e3a205d16ecd85e366c3bd77f28cbe9f45ac2190\",\"store_revision\":\"0\"}",
+      "sha256": "91ba372c45fe11317a39a1a474f3a9f4490d9fd664d2fc4add8cb0a648ceaf91"
+    },
+    "discrepancy_reconciliation": {
+      "canonical": {
+        "account_scope_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "broker_cash": {
+          "amount": "123.500000001",
+          "currency": "RUB",
+          "domain": "v3.10-money",
+          "minor_units": "123500000001",
+          "scale": 9,
+          "version": 1
+        },
+        "broker_cash_proof_sha256": "9d5785e344109fea7732d9892a88b95ff4067462b4ce1655bfb17ce9db10012a",
+        "currency": "RUB",
+        "delta_minor_units": "1",
+        "discrepancy_kind": "BROKER_ABOVE_EXPECTED",
+        "domain": "v3.10-cl4-cash-reconciliation",
+        "environment": "SANDBOX",
+        "evaluated_at": "2026-01-02T03:04:06.123456789Z",
+        "expected_cash": {
+          "amount": "123.500000000",
+          "currency": "RUB",
+          "domain": "v3.10-money",
+          "minor_units": "123500000000",
+          "scale": 9,
+          "version": 1
+        },
+        "ledger_cash_projection_sha256": "9a13af4d874d1f6f4adf4f3ee36cf2a368252a4dac2c040cdf49b98283f708e8",
+        "status": "DISCREPANCY",
+        "tolerance_minor_units": "0",
+        "version": 1
+      },
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"broker_cash\":{\"amount\":\"123.500000001\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"123500000001\",\"scale\":9,\"version\":1},\"broker_cash_proof_sha256\":\"9d5785e344109fea7732d9892a88b95ff4067462b4ce1655bfb17ce9db10012a\",\"currency\":\"RUB\",\"delta_minor_units\":\"1\",\"discrepancy_kind\":\"BROKER_ABOVE_EXPECTED\",\"domain\":\"v3.10-cl4-cash-reconciliation\",\"environment\":\"SANDBOX\",\"evaluated_at\":\"2026-01-02T03:04:06.123456789Z\",\"expected_cash\":{\"amount\":\"123.500000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"123500000000\",\"scale\":9,\"version\":1},\"ledger_cash_projection_sha256\":\"9a13af4d874d1f6f4adf4f3ee36cf2a368252a4dac2c040cdf49b98283f708e8\",\"status\":\"DISCREPANCY\",\"tolerance_minor_units\":\"0\",\"version\":1}",
+      "sha256": "f27ef9ec5a63a7d0e8b43d2a7e2ae6e4cb659aefb032ae5553ad633b2f4645d3"
+    },
+    "genesis_export": {
+      "sha256": "9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7"
+    },
+    "incomplete_export": {
+      "sha256": "b73b597299fe59f7927892690467f4818e86773b7c05896f820d62e1cdbd54ff",
+      "unresolved_observation_sha256": "19417b801266e83c5a793c128445033409bec5304b0c769536868d523a964d0a"
+    },
+    "incomplete_reconciliation": {
+      "canonical": {
+        "account_scope_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "broker_cash": {
+          "amount": "123.500000000",
+          "currency": "RUB",
+          "domain": "v3.10-money",
+          "minor_units": "123500000000",
+          "scale": 9,
+          "version": 1
+        },
+        "broker_cash_proof_sha256": "8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d",
+        "currency": "RUB",
+        "delta_minor_units": "0",
+        "discrepancy_kind": "UNRESOLVED_OBSERVATION",
+        "domain": "v3.10-cl4-cash-reconciliation",
+        "environment": "SANDBOX",
+        "evaluated_at": "2026-01-02T03:04:06.123456789Z",
+        "expected_cash": {
+          "amount": "123.500000000",
+          "currency": "RUB",
+          "domain": "v3.10-money",
+          "minor_units": "123500000000",
+          "scale": 9,
+          "version": 1
+        },
+        "ledger_cash_projection_sha256": "d1504dc993cef0233af09d9aba567a5b9ef05e7494c874f29c06f9cda5555ee0",
+        "status": "INCOMPLETE",
+        "tolerance_minor_units": "0",
+        "version": 1
+      },
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"broker_cash\":{\"amount\":\"123.500000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"123500000000\",\"scale\":9,\"version\":1},\"broker_cash_proof_sha256\":\"8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d\",\"currency\":\"RUB\",\"delta_minor_units\":\"0\",\"discrepancy_kind\":\"UNRESOLVED_OBSERVATION\",\"domain\":\"v3.10-cl4-cash-reconciliation\",\"environment\":\"SANDBOX\",\"evaluated_at\":\"2026-01-02T03:04:06.123456789Z\",\"expected_cash\":{\"amount\":\"123.500000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"123500000000\",\"scale\":9,\"version\":1},\"ledger_cash_projection_sha256\":\"d1504dc993cef0233af09d9aba567a5b9ef05e7494c874f29c06f9cda5555ee0\",\"status\":\"INCOMPLETE\",\"tolerance_minor_units\":\"0\",\"version\":1}",
+      "sha256": "07671b03a2dd72bff95d63b7ef2900b6e34401bbbde7e6c95c6c3d8e89728ed8"
+    },
+    "matched_reconciliation": {
+      "canonical": {
+        "account_scope_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "broker_cash": {
+          "amount": "123.500000000",
+          "currency": "RUB",
+          "domain": "v3.10-money",
+          "minor_units": "123500000000",
+          "scale": 9,
+          "version": 1
+        },
+        "broker_cash_proof_sha256": "8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d",
+        "currency": "RUB",
+        "delta_minor_units": "0",
+        "discrepancy_kind": "NONE",
+        "domain": "v3.10-cl4-cash-reconciliation",
+        "environment": "SANDBOX",
+        "evaluated_at": "2026-01-02T03:04:06.123456789Z",
+        "expected_cash": {
+          "amount": "123.500000000",
+          "currency": "RUB",
+          "domain": "v3.10-money",
+          "minor_units": "123500000000",
+          "scale": 9,
+          "version": 1
+        },
+        "ledger_cash_projection_sha256": "9a13af4d874d1f6f4adf4f3ee36cf2a368252a4dac2c040cdf49b98283f708e8",
+        "status": "MATCHED",
+        "tolerance_minor_units": "0",
+        "version": 1
+      },
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"broker_cash\":{\"amount\":\"123.500000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"123500000000\",\"scale\":9,\"version\":1},\"broker_cash_proof_sha256\":\"8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d\",\"currency\":\"RUB\",\"delta_minor_units\":\"0\",\"discrepancy_kind\":\"NONE\",\"domain\":\"v3.10-cl4-cash-reconciliation\",\"environment\":\"SANDBOX\",\"evaluated_at\":\"2026-01-02T03:04:06.123456789Z\",\"expected_cash\":{\"amount\":\"123.500000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"123500000000\",\"scale\":9,\"version\":1},\"ledger_cash_projection_sha256\":\"9a13af4d874d1f6f4adf4f3ee36cf2a368252a4dac2c040cdf49b98283f708e8\",\"status\":\"MATCHED\",\"tolerance_minor_units\":\"0\",\"version\":1}",
+      "sha256": "0abaaacfa0c8a607848b54a90f140ce8bb2a59eb02cecaaca87b17c21d24ebd7"
+    },
+    "observation": {
+      "canonical": {
+        "codec_id": "CL4_FROM_NOW_OPENING_V1",
+        "codec_schema_sha256": "917b0b3a98748c2279ed9efb1007fddec6375afd3da7003143690544b7336d78",
+        "codec_version": 1,
+        "content_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"broker_cash_proof_sha256\":\"8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d\",\"cutoff\":\"2026-01-02T03:04:05.123456789Z\",\"environment\":\"SANDBOX\",\"generation\":1,\"identity_key_id\":\"CL4_TEST_KEY\",\"ledger_export_sha256\":\"9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7\",\"ledger_head_sha256\":\"6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37\",\"ledger_revision\":\"0\",\"mode\":\"FROM_NOW\",\"opening_currency\":\"RUB\",\"opening_minor_units\":\"123500000000\",\"response_identity_sha256\":\"78fbeb0620bd7fd086fb4c39e3a205d16ecd85e366c3bd77f28cbe9f45ac2190\",\"store_revision\":\"0\"}",
+        "domain": "v3.10-operation-inbox-observation",
+        "initial_status": "OBSERVED",
+        "logical_source_sha256": "54cc407824192884faed6c902db7b9f7c687f26c5a1ed020191d9d76d864f9d5",
+        "observed_at": "2026-01-02T03:04:05.123456789Z",
+        "provenance_sha256": "cb2313c95fb36f6beae746b5b4a449f0daa41b0b70e1a5538039ba442bf71507",
+        "source": {
+          "account_scope_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "domain": "v3.10-cash-ledger-source",
+          "source_content_sha256": "91ba372c45fe11317a39a1a474f3a9f4490d9fd664d2fc4add8cb0a648ceaf91",
+          "source_kind": "CL4_FROM_NOW_OPENING",
+          "source_scope_sha256": "d2b0be487681ab01e541fd8e594db29350da7401450efef7870a8217a28b9584",
+          "version": 1
+        },
+        "version": 1
+      },
+      "canonical_json_ascii": "{\"codec_id\":\"CL4_FROM_NOW_OPENING_V1\",\"codec_schema_sha256\":\"917b0b3a98748c2279ed9efb1007fddec6375afd3da7003143690544b7336d78\",\"codec_version\":1,\"content_json_ascii\":\"{\\\"account_scope_sha256\\\":\\\"1111111111111111111111111111111111111111111111111111111111111111\\\",\\\"broker_cash_proof_sha256\\\":\\\"8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d\\\",\\\"cutoff\\\":\\\"2026-01-02T03:04:05.123456789Z\\\",\\\"environment\\\":\\\"SANDBOX\\\",\\\"generation\\\":1,\\\"identity_key_id\\\":\\\"CL4_TEST_KEY\\\",\\\"ledger_export_sha256\\\":\\\"9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7\\\",\\\"ledger_head_sha256\\\":\\\"6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37\\\",\\\"ledger_revision\\\":\\\"0\\\",\\\"mode\\\":\\\"FROM_NOW\\\",\\\"opening_currency\\\":\\\"RUB\\\",\\\"opening_minor_units\\\":\\\"123500000000\\\",\\\"response_identity_sha256\\\":\\\"78fbeb0620bd7fd086fb4c39e3a205d16ecd85e366c3bd77f28cbe9f45ac2190\\\",\\\"store_revision\\\":\\\"0\\\"}\",\"domain\":\"v3.10-operation-inbox-observation\",\"initial_status\":\"OBSERVED\",\"logical_source_sha256\":\"54cc407824192884faed6c902db7b9f7c687f26c5a1ed020191d9d76d864f9d5\",\"observed_at\":\"2026-01-02T03:04:05.123456789Z\",\"provenance_sha256\":\"cb2313c95fb36f6beae746b5b4a449f0daa41b0b70e1a5538039ba442bf71507\",\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"91ba372c45fe11317a39a1a474f3a9f4490d9fd664d2fc4add8cb0a648ceaf91\",\"source_kind\":\"CL4_FROM_NOW_OPENING\",\"source_scope_sha256\":\"d2b0be487681ab01e541fd8e594db29350da7401450efef7870a8217a28b9584\",\"version\":1},\"version\":1}",
+      "sha256": "d9467aa68811d79288aa44040df798770b57ae7080bd823b50469cf77ab616d5"
+    },
+    "plan": {
+      "canonical": {
+        "account_scope_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "broker_cash_proof_sha256": "8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d",
+        "domain": "v3.10-cl4-opening-plan",
+        "environment": "SANDBOX",
+        "generation": 1,
+        "mode": "FROM_NOW",
+        "observation_sha256": "d9467aa68811d79288aa44040df798770b57ae7080bd823b50469cf77ab616d5",
+        "opening_money": {
+          "amount": "123.500000000",
+          "currency": "RUB",
+          "domain": "v3.10-money",
+          "minor_units": "123500000000",
+          "scale": 9,
+          "version": 1
+        },
+        "pre_ledger_export_sha256": "9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7",
+        "pre_ledger_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+        "pre_ledger_revision": "0",
+        "pre_store_revision": "0",
+        "transaction_sha256": "4f824590773db04fe95f91852182b70ae4fb0dbc92bb6d397306963d277a1a3a",
+        "version": 1
+      },
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"broker_cash_proof_sha256\":\"8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d\",\"domain\":\"v3.10-cl4-opening-plan\",\"environment\":\"SANDBOX\",\"generation\":1,\"mode\":\"FROM_NOW\",\"observation_sha256\":\"d9467aa68811d79288aa44040df798770b57ae7080bd823b50469cf77ab616d5\",\"opening_money\":{\"amount\":\"123.500000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"123500000000\",\"scale\":9,\"version\":1},\"pre_ledger_export_sha256\":\"9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7\",\"pre_ledger_head_sha256\":\"6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37\",\"pre_ledger_revision\":\"0\",\"pre_store_revision\":\"0\",\"transaction_sha256\":\"4f824590773db04fe95f91852182b70ae4fb0dbc92bb6d397306963d277a1a3a\",\"version\":1}",
+      "sha256": "d5b351c9e7132ff60fd0d20e452996932a6df992bc4ecff73772e7e1c4f65df2"
+    },
+    "post_opening_export": {
+      "sha256": "6c2e5d71a02d5ea07b8a18bcd6ac89d8f4b67ad2c6e73352f47d09c7f111942d"
+    },
+    "post_opening_head": {
+      "sha256": "adcfaa4c9d4c0460b96ca1845882c748f4531b79c27cd807b03577576d23a892"
+    },
+    "projection": {
+      "canonical": {
+        "account_scope_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "as_of": "2026-01-02T03:04:05.123456789Z",
+        "complete": true,
+        "currency": "RUB",
+        "domain": "v3.10-cl4-ledger-cash-projection",
+        "environment": "SANDBOX",
+        "expected_cash": {
+          "amount": "123.500000000",
+          "currency": "RUB",
+          "domain": "v3.10-money",
+          "minor_units": "123500000000",
+          "scale": 9,
+          "version": 1
+        },
+        "incompleteness_kinds": [],
+        "ledger_export_sha256": "6c2e5d71a02d5ea07b8a18bcd6ac89d8f4b67ad2c6e73352f47d09c7f111942d",
+        "ledger_head_sha256": "adcfaa4c9d4c0460b96ca1845882c748f4531b79c27cd807b03577576d23a892",
+        "ledger_revision": "1",
+        "opening_record_sha256": "9544462db024ed8d3a0eae9da5b0b037467565fb360925421821f8120e855cc1",
+        "unresolved_observation_sha256": [],
+        "version": 1
+      },
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"as_of\":\"2026-01-02T03:04:05.123456789Z\",\"complete\":true,\"currency\":\"RUB\",\"domain\":\"v3.10-cl4-ledger-cash-projection\",\"environment\":\"SANDBOX\",\"expected_cash\":{\"amount\":\"123.500000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"123500000000\",\"scale\":9,\"version\":1},\"incompleteness_kinds\":[],\"ledger_export_sha256\":\"6c2e5d71a02d5ea07b8a18bcd6ac89d8f4b67ad2c6e73352f47d09c7f111942d\",\"ledger_head_sha256\":\"adcfaa4c9d4c0460b96ca1845882c748f4531b79c27cd807b03577576d23a892\",\"ledger_revision\":\"1\",\"opening_record_sha256\":\"9544462db024ed8d3a0eae9da5b0b037467565fb360925421821f8120e855cc1\",\"unresolved_observation_sha256\":[],\"version\":1}",
+      "sha256": "9a13af4d874d1f6f4adf4f3ee36cf2a368252a4dac2c040cdf49b98283f708e8"
+    },
+    "proof": {
+      "canonical": {
+        "account_scope_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "as_of": "2026-01-02T03:04:05.123456789Z",
+        "cash": {
+          "amount": "123.500000000",
+          "currency": "RUB",
+          "domain": "v3.10-money",
+          "minor_units": "123500000000",
+          "scale": 9,
+          "version": 1
+        },
+        "cash_field": "totalAmountCurrencies",
+        "domain": "v3.10-cl4-broker-cash-proof",
+        "environment": "SANDBOX",
+        "identity_key_id": "CL4_TEST_KEY",
+        "provider": "TBANK",
+        "response_canonical_sha256": "204dba39888167e2384d8188817a5ad4a01f132a405a9b7b06f75f76aceed3ce",
+        "response_complete": true,
+        "response_identity_sha256": "78fbeb0620bd7fd086fb4c39e3a205d16ecd85e366c3bd77f28cbe9f45ac2190",
+        "rpc": "tinkoff.public.invest.api.contract.v1.OperationsService/GetPortfolio",
+        "version": 1
+      },
+      "canonical_json_ascii": "{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"as_of\":\"2026-01-02T03:04:05.123456789Z\",\"cash\":{\"amount\":\"123.500000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"123500000000\",\"scale\":9,\"version\":1},\"cash_field\":\"totalAmountCurrencies\",\"domain\":\"v3.10-cl4-broker-cash-proof\",\"environment\":\"SANDBOX\",\"identity_key_id\":\"CL4_TEST_KEY\",\"provider\":\"TBANK\",\"response_canonical_sha256\":\"204dba39888167e2384d8188817a5ad4a01f132a405a9b7b06f75f76aceed3ce\",\"response_complete\":true,\"response_identity_sha256\":\"78fbeb0620bd7fd086fb4c39e3a205d16ecd85e366c3bd77f28cbe9f45ac2190\",\"rpc\":\"tinkoff.public.invest.api.contract.v1.OperationsService/GetPortfolio\",\"version\":1}",
+      "sha256": "8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d"
+    },
+    "record": {
+      "canonical": {
+        "accepted_ledger_revision": "1",
+        "account_scope_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "baseline_ledger_export_sha256": "9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7",
+        "baseline_ledger_head_sha256": "6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37",
+        "baseline_ledger_revision": "0",
+        "baseline_store_revision": "0",
+        "broker_cash_proof_sha256": "8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d",
+        "cutoff": "2026-01-02T03:04:05.123456789Z",
+        "domain": "v3.10-cl4-opening-record",
+        "environment": "SANDBOX",
+        "generation": 1,
+        "mode": "FROM_NOW",
+        "observation_sha256": "d9467aa68811d79288aa44040df798770b57ae7080bd823b50469cf77ab616d5",
+        "opening_money": {
+          "amount": "123.500000000",
+          "currency": "RUB",
+          "domain": "v3.10-money",
+          "minor_units": "123500000000",
+          "scale": 9,
+          "version": 1
+        },
+        "transaction_sha256": "4f824590773db04fe95f91852182b70ae4fb0dbc92bb6d397306963d277a1a3a",
+        "version": 1
+      },
+      "canonical_json_ascii": "{\"accepted_ledger_revision\":\"1\",\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"baseline_ledger_export_sha256\":\"9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7\",\"baseline_ledger_head_sha256\":\"6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37\",\"baseline_ledger_revision\":\"0\",\"baseline_store_revision\":\"0\",\"broker_cash_proof_sha256\":\"8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d\",\"cutoff\":\"2026-01-02T03:04:05.123456789Z\",\"domain\":\"v3.10-cl4-opening-record\",\"environment\":\"SANDBOX\",\"generation\":1,\"mode\":\"FROM_NOW\",\"observation_sha256\":\"d9467aa68811d79288aa44040df798770b57ae7080bd823b50469cf77ab616d5\",\"opening_money\":{\"amount\":\"123.500000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"123500000000\",\"scale\":9,\"version\":1},\"transaction_sha256\":\"4f824590773db04fe95f91852182b70ae4fb0dbc92bb6d397306963d277a1a3a\",\"version\":1}",
+      "sha256": "9544462db024ed8d3a0eae9da5b0b037467565fb360925421821f8120e855cc1"
+    },
+    "response": {
+      "canonical": {
+        "totalAmountCurrencies": {
+          "currency": "RUB",
+          "nano": 500000000,
+          "units": "123"
+        }
+      },
+      "canonical_json_ascii": "{\"totalAmountCurrencies\":{\"currency\":\"RUB\",\"nano\":500000000,\"units\":\"123\"}}",
+      "identity_hmac_sha256": "78fbeb0620bd7fd086fb4c39e3a205d16ecd85e366c3bd77f28cbe9f45ac2190",
+      "sha256": "204dba39888167e2384d8188817a5ad4a01f132a405a9b7b06f75f76aceed3ce"
+    },
+    "transaction": {
+      "canonical": {
+        "chart_version": 1,
+        "classification": "OPENING_BALANCE",
+        "classification_version": 1,
+        "corrects_sha256": null,
+        "domain": "v3.10-cash-ledger-transaction",
+        "effective_at": "2026-01-02T03:04:05.123456789Z",
+        "postings": [
+          {
+            "account": "ASSET_BROKER_CASH",
+            "domain": "v3.10-cash-ledger-posting",
+            "line_no": "1",
+            "money": {
+              "amount": "123.500000000",
+              "currency": "RUB",
+              "domain": "v3.10-money",
+              "minor_units": "123500000000",
+              "scale": 9,
+              "version": 1
+            },
+            "version": 1
+          },
+          {
+            "account": "EQUITY_OPENING_BALANCE",
+            "domain": "v3.10-cash-ledger-posting",
+            "line_no": "2",
+            "money": {
+              "amount": "-123.500000000",
+              "currency": "RUB",
+              "domain": "v3.10-money",
+              "minor_units": "-123500000000",
+              "scale": 9,
+              "version": 1
+            },
+            "version": 1
+          }
+        ],
+        "reversal_of_sha256": null,
+        "source": {
+          "account_scope_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "domain": "v3.10-cash-ledger-source",
+          "source_content_sha256": "91ba372c45fe11317a39a1a474f3a9f4490d9fd664d2fc4add8cb0a648ceaf91",
+          "source_kind": "CL4_FROM_NOW_OPENING",
+          "source_scope_sha256": "d2b0be487681ab01e541fd8e594db29350da7401450efef7870a8217a28b9584",
+          "version": 1
+        },
+        "version": 1
+      },
+      "canonical_json_ascii": "{\"chart_version\":1,\"classification\":\"OPENING_BALANCE\",\"classification_version\":1,\"corrects_sha256\":null,\"domain\":\"v3.10-cash-ledger-transaction\",\"effective_at\":\"2026-01-02T03:04:05.123456789Z\",\"postings\":[{\"account\":\"ASSET_BROKER_CASH\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"1\",\"money\":{\"amount\":\"123.500000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"123500000000\",\"scale\":9,\"version\":1},\"version\":1},{\"account\":\"EQUITY_OPENING_BALANCE\",\"domain\":\"v3.10-cash-ledger-posting\",\"line_no\":\"2\",\"money\":{\"amount\":\"-123.500000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"-123500000000\",\"scale\":9,\"version\":1},\"version\":1}],\"reversal_of_sha256\":null,\"source\":{\"account_scope_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"domain\":\"v3.10-cash-ledger-source\",\"source_content_sha256\":\"91ba372c45fe11317a39a1a474f3a9f4490d9fd664d2fc4add8cb0a648ceaf91\",\"source_kind\":\"CL4_FROM_NOW_OPENING\",\"source_scope_sha256\":\"d2b0be487681ab01e541fd8e594db29350da7401450efef7870a8217a28b9584\",\"version\":1},\"version\":1}",
+      "sha256": "4f824590773db04fe95f91852182b70ae4fb0dbc92bb6d397306963d277a1a3a"
+    }
+  },
+  "version": 1
+}
