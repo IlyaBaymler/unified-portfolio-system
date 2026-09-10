@@ -948,8 +948,17 @@ def _assert_shallow_pull_request_custody(
     assert event_path is not None
     event = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))
     pull_request = event["pull_request"]
-    assert pull_request["base"]["ref"] == "agent/v3-10-clean-cl3-contract-freeze"
-    assert pull_request["base"]["sha"] == accepted_head
+    expected_topology = {
+        "agent/v3-10-clean-cl3-contract-freeze": (accepted_head, 4, len(allowed)),
+        "program/v3-10-v4-stable-line": (
+            _INTEGRATED_CL2_HEAD,
+            7,
+            len(allowed) + 1,
+        ),
+    }.get(pull_request["base"]["ref"])
+    assert expected_topology is not None
+    expected_base, expected_commits, expected_files = expected_topology
+    assert pull_request["base"]["sha"] == expected_base
     assert pull_request["base"]["repo"]["full_name"] == (
         "baimleriv/unified-portfolio-system"
     )
@@ -957,8 +966,8 @@ def _assert_shallow_pull_request_custody(
     assert pull_request["head"]["repo"]["full_name"] == (
         "baimleriv/unified-portfolio-system"
     )
-    assert pull_request["commits"] == 3
-    assert pull_request["changed_files"] == len(allowed)
+    assert pull_request["commits"] == expected_commits
+    assert pull_request["changed_files"] == expected_files
     current_head = subprocess.run(
         ["git", "-c", f"safe.directory={repository}", "rev-parse", "HEAD"],
         cwd=repository,
@@ -979,11 +988,12 @@ def _assert_shallow_pull_request_custody(
         for line in commit_text.splitlines()
         if line.startswith("parent ")
     ]
-    assert parents == [accepted_head, pull_request["head"]["sha"]]
+    assert parents == [expected_base, pull_request["head"]["sha"]]
     assert all((repository / path).is_file() for path in allowed)
 
 
 _ACCEPTED_CL3_CONTRACT_HEAD = "80fe47eba1f7f625f77290fce4a816884ad0ccd2"
+_INTEGRATED_CL2_HEAD = "d684186c0628d27ed452ce4f11311155fdf7a44e"
 _CL3_IMPLEMENTATION_PATHS = {
     "current/trading_robot/broker_read_adapters.py",
     "current/tests/test_v3_10_broker_read_adapters.py",
