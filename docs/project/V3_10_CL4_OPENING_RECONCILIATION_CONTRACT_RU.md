@@ -150,6 +150,7 @@ MAX_STRING_SCALARS = 4096
 MAX_KEY_SCALARS = 128
 MAX_LEDGER_EXPORT_BYTES = 16777216
 MAX_LEDGER_OBJECTS = 100000
+RECONCILIATION_DELTA_MAX_ABS_MINOR_UNITS = 18446744073709551616999999998
 ```
 
 Все CL4 canonical bytes используют exact CL1/CL2 rule:
@@ -261,6 +262,9 @@ reconcile_shadow_cash(
 
 build_adoption_candidate(
     reconciliation: CashReconciliation,
+    *,
+    ledger_export_bytes: bytes,
+    identity_key: bytes,
 ) -> AdoptionCandidate
 ```
 
@@ -286,12 +290,22 @@ Mapping subclass, dataclass, protobuf object, bytes, float и Decimal запре
 Graph preflight до semantic extraction:
 
 1. cycle и repeated container identity запрещены;
-2. depth, total nodes, keys/container и string scalar bounds применяются ко всему
+2. root response имеет depth `1`; child value имеет parent depth `+1`, maximum
+   inclusive depth равен `MAX_RESPONSE_DEPTH`;
+3. node — каждое occurrence value, включая root, container и scalar; dict key не
+   является node; traversal идёт dict insertion order и list order, а limit
+   проверяется после каждого increment;
+4. каждый dict имеет не более `MAX_MAPPING_KEYS`; key проверяется отдельно;
+5. depth, total nodes, keys/container и string scalar bounds применяются ко всему
    graph, включая ignored provider fields;
-3. dict keys — exact strings, не более `MAX_KEY_SCALARS`, без surrogate;
-4. integer — plain signed int64;
-5. canonical response bytes не превышают `MAX_RESPONSE_CANONICAL_BYTES`;
-6. serialization и immediate parse/re-serialize обязаны быть byte-identical.
+6. dict keys — exact strings, не более `MAX_KEY_SCALARS`, без surrogate;
+7. integer — plain signed int64;
+8. canonical response bytes не превышают `MAX_RESPONSE_CANONICAL_BYTES`;
+9. serialization и immediate parse/re-serialize обязаны быть byte-identical.
+
+Все limits inclusive. Container identity добавляется в global seen-set при первом
+посещении; повтор, включая cycle, отклоняется до обхода children. String key
+участвует в key bounds, string value — в node и value bounds.
 
 После snapshot дальнейшее чтение идёт только из parsed immutable logical value;
 mutation исходного object не может изменить proof.
@@ -450,7 +464,11 @@ transactions как projection input. Перед любым opening/projection:
 1. bytes length `1..MAX_LEDGER_EXPORT_BYTES`;
 2. CL2 canonical parse и byte-identical re-encoding;
 3. exact top-level/element keysets и versions из CL2 contract;
-4. array count и aggregate object bound `MAX_LEDGER_OBJECTS`;
+4. каждая export array имеет длину `0..MAX_LEDGER_OBJECTS`; aggregate count —
+   exact сумма длин `codec_registry`, `observations`, `inbox_status_events`,
+   `transactions`, `provenance_links`, `correction_bundles` и
+   `ledger_transitions`, также не более `MAX_LEDGER_OBJECTS`; top-level object,
+   wrapper fields и nested JSON-in-JSON CL1/CL2 objects отдельно не считаются;
 5. every nested CL1/CL2 canonical object parse/round-trip byte-identically;
 6. wrapper SHA/source/economic/logical fields equal derived values;
 7. unique hashes/logical sources/provenance links;
@@ -459,7 +477,9 @@ transactions как projection input. Перед любым opening/projection:
 10. every ordinary transition resolves one ordinary transaction;
 11. every correction transition resolves one valid `LedgerCorrectionBundle`;
 12. reversal/correction rows occur only through their exact bundle transition;
-13. CL4 source-scope/provenance HMAC воспроизводятся из content и supplied key;
+13. для target account все CL4 source-scope/provenance HMAC воспроизводятся из
+    content и supplied key; их key ID обязан быть единым; non-target CL4 rows
+    проходят полный CL2/schema/hash graph validation, но не проверяются чужим key;
 14. final revisions/head equal export top-level values;
 15. unreferenced, duplicated, dangling или unknown graph elements fail closed.
 
@@ -555,11 +575,14 @@ ledger_revision: int
 ledger_head_sha256: str
 ```
 
-Перед первым write функция получает `store.export_bytes()` и допускает только:
+Перед первым write функция получает `store.export_bytes()`, валидирует весь graph и
+допускает только:
 
 1. **ABSENT** — exact pre-export/head/revisions из plan, opening отсутствует;
-2. **STAGED_OBSERVATION** — единственное отличие от plan pre-state составляет
-   exact plan codec/observation в status `OBSERVED`, ledger head не изменён;
+2. **STAGED_OBSERVATION** — current export является valid append-only descendant
+   plan pre-state: ledger chain содержит exact `pre_ledger_head_sha256` на exact
+   `pre_ledger_revision`, exact plan observation существует в status `OBSERVED`,
+   plan transaction отсутствует и другого target opening нет;
 3. **COMMITTED_OPENING** — complete exact observation/link/transaction graph,
    из которого выводится byte-identical expected `OpeningRecord`.
 
@@ -570,13 +593,22 @@ ledger_head_sha256: str
 content. Для `ABSENT` proof всё ещё обязан быть fresh непосредственно перед
 первым write. Different proof/plan/graph даёт `OPENING_CONFLICT`.
 
+Здесь append-only descendant означает: current `CashLedgerStore` прошёл полную
+CL2 export/schema/graph validation, frozen plan ledger head найден на exact
+revision его contiguous head chain, а все последующие ledger transitions являются
+valid suffix этой chain. CL2 не имеет delete/update/reset API; inbox-only suffix не
+имеет экономического эффекта и не обязан сохранять plan `pre_store_revision`.
+`pre_ledger_export_sha256` остаётся exact preparation evidence и требуется как
+current equality только в `ABSENT`, а не как equality predicate recovery branch.
+
 В `ABSENT` вызывается существующий CL2 `append_observation` с exact CAS revision.
 После read-back допускается exact `STAGED_OBSERVATION` либо exact
 `COMMITTED_OPENING`, если concurrent same-plan caller уже завершил second step.
 Во втором случае возвращается `OPENING_ALREADY_PRESENT`. Из staged state
 вызывается CL2 `append_transaction` с current store revision и неизменными plan
-ledger revision/head. После второго read-back exact graph обязан быть complete,
-иначе `POSTCONDITION_FAILED`.
+transaction bytes. CL2 CAS получает current store revision и current ledger
+revision, прочитанные из validated descendant export. После второго read-back exact
+graph обязан быть complete, иначе `POSTCONDITION_FAILED`.
 
 В `STAGED_OBSERVATION` первая операция не повторяет write; выполняется только
 точно такой же second step. Automatic retry loop отсутствует.
@@ -592,8 +624,13 @@ one complete LEDGER_LINKED opening graph
 Crash/fault до observation commit оставляет первый state; между двумя CL2 commits
 — второй; после transaction commit/lost response — третий. Staged observation не
 является opening record и не влияет на expected cash. Exact caller replay может
-завершить staged state. Любая concurrent store mutation, кроме exact staged/fully
-committed graph, даёт `OPENING_PLAN_STALE` и zero additional writes.
+завершить staged state даже после unrelated valid inbox или ledger appends. Такие
+appends не меняют frozen baseline plan; их target-account cash effects позже входят
+в projection относительно baseline. Concurrent mutation между read и append даёт
+CL2 CAS failure, нормализованный в `OPENING_PLAN_STALE`; caller может повторно
+вызвать функцию, internal retry loop отсутствует. Изменённый status exact plan
+observation, competing target opening, отсутствующий baseline head в exact chain
+или иная несовместимая lineage дают `OPENING_CONFLICT` и zero additional writes.
 
 Edit/delete/reset/reopen/correct-opening API отсутствует. Correction bundle,
 reversal или второй `OPENING_BALANCE` target account/currency делает весь CL4
@@ -611,6 +648,10 @@ Exact canonical keyset:
 {
   "accepted_ledger_revision": "<positive decimal>",
   "account_scope_sha256": "<hash>",
+  "baseline_ledger_export_sha256": "<hash>",
+  "baseline_ledger_head_sha256": "<hash>",
+  "baseline_ledger_revision": "<decimal>",
+  "baseline_store_revision": "<decimal>",
   "broker_cash_proof_sha256": "<hash>",
   "cutoff": "<CL1 timestamp>",
   "domain": "v3.10-cl4-opening-record",
@@ -624,18 +665,22 @@ Exact canonical keyset:
 }
 ```
 
-Record SHA-256 — hash этих bytes. Observation content, SourceIdentity, transaction
-postings и transition revision обязаны взаимно воспроизводить все fields.
-Inference из missing/corrupt/legacy data запрещён.
+Record SHA-256 — hash этих bytes. Baseline fields берутся byte-for-byte из plan и
+обязаны совпасть с exact ancestor ledger head/revision; accepted revision — exact
+ordinary transition revision opening transaction. Observation content,
+SourceIdentity, transaction postings и transition revision обязаны взаимно
+воспроизводить все fields. Inference из missing/corrupt/legacy data запрещён.
 
 ## 16. Deterministic shadow cash projection
 
 `project_shadow_cash` валидирует full export, воспроизводит CL4 source/provenance
 HMAC из opening content и supplied key, находит ровно один target opening и
-начинает с `opening_money`. Key ID должен совпадать с content; mixed-key/key
-rotation state не поддерживается. Затем в ascending ledger revision учитываются
-только accepted target-account effects строго после
-`accepted_ledger_revision`:
+начинает с `opening_money`. Для target account proof/content/source/provenance
+обязаны иметь один exact key ID и проходить HMAC supplied key; target mixed-key или
+key-rotation state не поддерживается. Non-target CL4 identities, созданные с
+другими keys, не препятствуют projection после полного graph validation. Затем в
+ascending ledger revision учитываются все accepted target-account effects строго
+после `baseline_ledger_revision`, кроме exact opening transaction:
 
 - ordinary transaction — exact posting `ASSET_BROKER_CASH`;
 - correction-bundle transition — exact sum reversal and correction cash postings;
@@ -644,7 +689,8 @@ rotation state не поддерживается. Затем в ascending ledger
 - other account scope не влияет на target sum после полного graph validation.
 
 Любой target cash effect с `effective_at <= opening.cutoff`, appended после
-opening, помечает projection incomplete как `LATE_PRE_CUTOFF_LEDGER_EFFECT` и не
+baseline revision, помечает projection incomplete как
+`LATE_PRE_CUTOFF_LEDGER_EFFECT` и не
 может дать `MATCHED`. Он всё равно включается в deterministic arithmetic, чтобы
 `expected_cash` оставался воспроизводимым; automatic repair/subtraction forbidden.
 
@@ -657,29 +703,61 @@ Current target observations `OBSERVED`/`REVIEW_REQUIRED` дают sorted
 `LEDGER_LINKED` требует exact link. Pending/unclassified amounts никогда не
 угадываются и не добавляются.
 
-Каждый accepted target cash effect после opening ledger revision входит в
+Каждый accepted target cash effect после baseline ledger revision входит в
 `expected_cash` ровно один раз независимо от `effective_at`. Timestamp
 нарушения меняют только `complete/incompleteness_kinds`; при `INCOMPLETE`
 получившаяся сумма и delta являются воспроизводимым evidence, а не экономическим
 утверждением или основанием для repair.
 
-`LedgerCashProjection` canonical fields:
+`LedgerCashProjection` immutable public fields имеют exact types:
 
 ```text
-account_scope_sha256
-environment
-currency
-as_of
-opening_record_sha256
-ledger_export_sha256
-ledger_revision
-ledger_head_sha256
-expected_cash
-complete
-incompleteness_kinds (sorted unique tuple)
-unresolved_observation_sha256 (sorted unique tuple)
-version
+account_scope_sha256: str
+environment: BrokerEnvironment
+currency: str
+as_of: str
+opening_record_sha256: str
+ledger_export_sha256: str
+ledger_revision: int
+ledger_head_sha256: str
+expected_cash: Money
+complete: bool
+incompleteness_kinds: tuple[DiscrepancyKind, ...]
+unresolved_observation_sha256: tuple[str, ...]
+version: int = 1
 ```
+
+Exact canonical keyset:
+
+```json
+{
+  "account_scope_sha256": "<hash>",
+  "as_of": "<CL1 timestamp>",
+  "complete": true,
+  "currency": "RUB",
+  "domain": "v3.10-cl4-ledger-cash-projection",
+  "environment": "SANDBOX",
+  "expected_cash": "<nested CL1 Money>",
+  "incompleteness_kinds": ["<DiscrepancyKind>", "..."],
+  "ledger_export_sha256": "<hash>",
+  "ledger_head_sha256": "<hash>",
+  "ledger_revision": "<decimal>",
+  "opening_record_sha256": "<hash>",
+  "unresolved_observation_sha256": ["<hash>", "..."],
+  "version": 1
+}
+```
+
+`incompleteness_kinds` — unique subset первых четырёх `DiscrepancyKind` в frozen
+precedence порядка section 17; это не ASCII sort.
+`unresolved_observation_sha256` — unique ASCII-sorted hashes.
+`complete` равен `true` iff оба массива пусты. Projection SHA-256 — hash exact
+canonical bytes.
+
+`UNRESOLVED_OBSERVATION` присутствует в `incompleteness_kinds` iff
+`unresolved_observation_sha256` не пуст; остальные три incomplete kinds
+присутствуют iff соответствующее condition section 16 встретилось хотя бы один
+раз. Ни один amount/count не кодируется в kind list.
 
 Integer summation проверяется после каждого addition против full CL1 Money bound;
 overflow fail-closed. Порядок input rows не влияет на canonical result.
@@ -689,12 +767,19 @@ overflow fail-closed. Порядок input rows не влияет на canonical
 `reconcile_shadow_cash` повторно валидирует proof freshness на `evaluated_at`,
 строит projection на `as_of = proof.as_of` и требует exact account/environment/
 currency equality. Proof `identity_key_id` обязан совпасть с opening content;
-mixed-key reconciliation запрещена.
+target mixed-key reconciliation запрещена, valid non-target CL4 rows с другими
+key IDs не проверяются target key и не запрещены.
 
 ```text
 delta_minor_units = broker_cash.minor_units - expected_cash.minor_units
 tolerance_minor_units = 0
 ```
+
+`delta_minor_units` — exact Python `int` в inclusive range
+`[-RECONCILIATION_DELTA_MAX_ABS_MINOR_UNITS,
+RECONCILIATION_DELTA_MAX_ABS_MINOR_UNITS]`; overflow невозможен для двух valid
+CL1 Money, но проверяется явно. В canonical JSON он является signed decimal
+string, потому что difference может быть шире одного CL1 Money.
 
 Closed `ReconciliationStatus`:
 
@@ -722,14 +807,45 @@ status. При complete projection: positive delta -> `DISCREPANCY /
 BROKER_ABOVE_EXPECTED`; negative -> `DISCREPANCY / BROKER_BELOW_EXPECTED`; exact
 zero -> `MATCHED / NONE`.
 
-`CashReconciliation` canonical identity связывает:
+`CashReconciliation` immutable public fields имеют exact types:
 
 ```text
-account_scope_sha256, environment, currency, evaluated_at,
-broker_cash_proof_sha256, ledger_cash_projection_sha256,
-broker_cash, expected_cash, delta, tolerance_minor_units="0",
-status, discrepancy_kind, version
+proof: BrokerCashProof
+projection: LedgerCashProjection
+evaluated_at: str
+broker_cash: Money
+expected_cash: Money
+delta_minor_units: int
+status: ReconciliationStatus
+discrepancy_kind: DiscrepancyKind
+version: int = 1
 ```
+
+Exact canonical keyset:
+
+```json
+{
+  "account_scope_sha256": "<hash>",
+  "broker_cash": "<nested CL1 Money>",
+  "broker_cash_proof_sha256": "<hash>",
+  "currency": "RUB",
+  "delta_minor_units": "<signed decimal>",
+  "discrepancy_kind": "<DiscrepancyKind>",
+  "domain": "v3.10-cl4-cash-reconciliation",
+  "environment": "SANDBOX",
+  "evaluated_at": "<CL1 timestamp>",
+  "expected_cash": "<nested CL1 Money>",
+  "ledger_cash_projection_sha256": "<hash>",
+  "status": "<ReconciliationStatus>",
+  "tolerance_minor_units": "0",
+  "version": 1
+}
+```
+
+Nested proof/projection, repeated public Money fields и все canonical hash/value
+fields обязаны совпадать byte-for-byte. Status/discrepancy consistency следует
+только deterministic table выше. Reconciliation SHA-256 — hash exact canonical
+bytes.
 
 No configurable epsilon, float comparison, pending-netting или silent rounding.
 
@@ -742,8 +858,20 @@ SEPARATE_LOCKED_REVIEW_REQUIRED
 BLOCKED
 ```
 
-Только exact `MATCHED/NONE`, fresh proof и complete projection создают
-`SEPARATE_LOCKED_REVIEW_REQUIRED`. Любой другой reconciliation создаёт `BLOCKED`.
+Функция byte-identically revalidates nested reconciliation, proof и projection,
+затем заново вызывает `reconcile_shadow_cash(ledger_export_bytes, proof,
+evaluated_at=reconciliation.evaluated_at, identity_key=identity_key)`. Переданный
+export обязан иметь exact hash/head/revision projection, target CL4 HMAC должны
+воспроизводиться supplied key, а recomputed reconciliation canonical bytes обязаны
+совпасть с input. Только после этой independent revalidation exact `MATCHED/NONE`,
+fresh-at-recorded-evaluation proof и complete projection создают
+`SEPARATE_LOCKED_REVIEW_REQUIRED`. Любой valid другой reconciliation создаёт
+`BLOCKED`; forged, stale-at-evaluation или mismatched graph отклоняется error и не
+создаёт candidate. Candidate не продлевает freshness proof.
+
+Canonical/nested/recomputed mismatch самого reconciliation даёт
+`RECONCILIATION_INVALID`; lower-level proof/export/key/freshness failures сохраняют
+свой более ранний exact `CL4Reason` по section 20.
 
 Canonical candidate обязательно содержит:
 
@@ -788,6 +916,7 @@ RESPONSE_IDENTITY_INVALID
 LEDGER_EXPORT_INVALID
 LEDGER_GRAPH_INVALID
 LEDGER_REVISION_INVALID
+RECONCILIATION_INVALID
 INBOX_INCOMPLETE
 OPENING_AMOUNT_UNSUPPORTED
 OPENING_MISSING
@@ -841,11 +970,11 @@ Acceptance boundary:
 3. identity key grammar, proof response identity и opening HMAC;
 4. evaluated timestamp grammar;
 5. store type/open state and sanitized export;
-6. committed exact replay либо exact staged recovery branch;
+6. committed exact replay либо exact staged append-only descendant branch;
 7. proof freshness for absent state;
 8. absent state plan revisions/head/export equality;
 9. CL2 observation append/read-back;
-10. unchanged ledger head and current store CAS;
+10. staged baseline ancestry, competing-opening absence и current CAS revisions;
 11. CL2 transaction append/read-back;
 12. exact OpeningRecord/postcondition.
 
@@ -866,6 +995,7 @@ evaluated_at = 2026-01-02T03:04:06.123456789Z
 response_complete = true
 response = {"totalAmountCurrencies":{"currency":"RUB","nano":500000000,"units":"123"}}
 ledger export = exact empty CL2 genesis export
+post-opening export = genesis + exact opening observation + exact opening transaction
 ```
 
 Expected identities:
@@ -876,12 +1006,19 @@ response identity HMAC-SHA-256 = 78fbeb0620bd7fd086fb4c39e3a205d16ecd85e366c3bd7
 broker cash minor_units = 123500000000
 broker cash proof SHA-256 = 8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d
 genesis CL2 export SHA-256 = 9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7
+genesis ledger head SHA-256 = 6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37
 opening source scope HMAC-SHA-256 = d2b0be487681ab01e541fd8e594db29350da7401450efef7870a8217a28b9584
 opening content SHA-256 = 91ba372c45fe11317a39a1a474f3a9f4490d9fd664d2fc4add8cb0a648ceaf91
 opening provenance HMAC-SHA-256 = cb2313c95fb36f6beae746b5b4a449f0daa41b0b70e1a5538039ba442bf71507
 opening observation SHA-256 = d9467aa68811d79288aa44040df798770b57ae7080bd823b50469cf77ab616d5
 opening transaction SHA-256 = 4f824590773db04fe95f91852182b70ae4fb0dbc92bb6d397306963d277a1a3a
 opening plan SHA-256 = d5b351c9e7132ff60fd0d20e452996932a6df992bc4ecff73772e7e1c4f65df2
+post-opening CL2 export SHA-256 = 6c2e5d71a02d5ea07b8a18bcd6ac89d8f4b67ad2c6e73352f47d09c7f111942d
+post-opening ledger head SHA-256 = adcfaa4c9d4c0460b96ca1845882c748f4531b79c27cd807b03577576d23a892
+opening record SHA-256 = 9544462db024ed8d3a0eae9da5b0b037467565fb360925421821f8120e855cc1
+complete projection SHA-256 = 9a13af4d874d1f6f4adf4f3ee36cf2a368252a4dac2c040cdf49b98283f708e8
+matched reconciliation SHA-256 = 0abaaacfa0c8a607848b54a90f140ce8bb2a59eb02cecaaca87b17c21d24ebd7
+adoption candidate SHA-256 = 8de3f3e4cdbed751d7593dbcb96730f1a1ac5552a450f75869fe9f955a4f3304
 ```
 
 Exact canonical response bytes:
@@ -900,19 +1037,21 @@ reconciliation и adoption candidate. Independent implementation должен
 - `V310-CL4-01`: exact exports, versions, signatures, immutable/slotted DTOs и
   import side-effect freedom;
 - `V310-CL4-02`: one-response snapshot, nested bounds/cycle/alias/custom types,
-  mutation-after-call и canonical identity;
+  mutation-after-call, root/child depth, exact node/key counting boundaries и
+  canonical identity;
 - `V310-CL4-03`: exact totalAmountCurrencies Money happy/bounds/sign/currency и
   rejection of every substitute/float/rounding path;
 - `V310-CL4-04`: account/response/proof HMAC known answers, response snapshot
   hash, key/key-id changes, forged proof и privacy scans;
 - `V310-CL4-05`: timestamp 9-digit ordering, future/stale/boundary age;
 - `V310-CL4-06`: CL2 export canonical/schema/object/head/link/bundle adversarial
-  corruption and size/count bounds;
+  corruption, each-array и exact seven-array aggregate size/count bounds;
 - `V310-CL4-07`: deterministic FROM_NOW plan, codec/content/source/provenance,
   positive amount and exact CL1 opening postings;
 - `V310-CL4-08`: wrong confirmation/stale head/revision/export -> zero writes;
 - `V310-CL4-09`: ABSENT -> STAGED -> COMMITTED, fault at both CL2 boundaries,
-  exact resume after proof expiry and lost-success replay;
+  exact resume after proof expiry, unrelated inbox/ledger append между steps,
+  CAS race replay and lost-success replay;
 - `V310-CL4-10`: concurrent same/different plan, one opening, no second effect;
 - `V310-CL4-11`: derived record graph and missing/extra/dangling/wrong-source/
   wrong-link/wrong-revision/key negatives;
@@ -923,14 +1062,17 @@ reconciliation и adoption candidate. Independent implementation должен
 - `V310-CL4-15`: unresolved/rejected/linked inbox status semantics;
 - `V310-CL4-16`: exact zero, +1 and -1 minor-unit reconciliation taxonomy;
 - `V310-CL4-17`: adoption candidate booleans/dispositions and absence of any
-  apply/adopt/migrate callable;
+  apply/adopt/migrate callable; forged nested/outer-rehashed reconciliation,
+  mismatched export/head/key и stale-at-recorded-evaluation rejected;
 - `V310-CL4-18`: raw account/token/key/response/sentinels absent from every
   canonical object, error, repr and evidence;
 - `V310-CL4-19`: no provider/network/env/clock/random/SQLite/runtime imports or
   calls; only two named CL2 mutators may write;
 - `V310-CL4-20`: implementation delta exact frozen three-file allowlist and
   accepted CL1/CL2/CL3 sources byte-identical;
-- `V310-CL4-21`: accepted CL1/CL2/CL3 suites and full functional suite unchanged.
+- `V310-CL4-21`: accepted CL1/CL2/CL3 functional suites and full functional suite
+  pass excluding only two exact historical current-HEAD custody node IDs below;
+  predecessor file custody проверяется отдельными immutable Git comparisons.
 
 Adversarial tests обязаны forge/mutate frozen DTO nested values, recompute outer
 hashes, reorder arrays, duplicate logical sources, alter one nano/revision/head,
@@ -943,10 +1085,26 @@ Future implementation review запускает минимум:
 ```powershell
 git diff --name-status <accepted-cl4-contract-head>..HEAD
 git diff --check <accepted-cl4-contract-head>..HEAD
-python -m pytest current/tests/test_v3_10_cash_ledger_opening_reconciliation.py -q
-python -m pytest current/tests/test_v3_10_cash_ledger_domain.py current/tests/test_v3_10_cash_ledger_persistence.py current/tests/test_v3_10_broker_read_adapters.py -q
-python -m pytest current/tests -q
+git diff --name-only 4340c5d517dcece4f7db20b7cfc21e602c3efddc..HEAD
+git diff --quiet 095a24a0d8ad2487f09ec0c5f3473a6c65a84710..HEAD -- current/trading_robot/cash_ledger_domain.py current/tests/test_v3_10_cash_ledger_domain.py current/tests/fixtures/v3_10_cash_ledger_vectors.json
+git diff --quiet d684186c0628d27ed452ce4f11311155fdf7a44e..HEAD -- current/trading_robot/cash_ledger_persistence.py current/tests/test_v3_10_cash_ledger_persistence.py current/tests/fixtures/v3_10_cash_ledger_persistence_vectors.json
+git diff --quiet 4340c5d517dcece4f7db20b7cfc21e602c3efddc..HEAD -- current/trading_robot/broker_read_adapters.py current/tests/test_v3_10_broker_read_adapters.py current/tests/fixtures/v3_10_broker_read_adapters_vectors.json
+Push-Location current
+try {
+  python -m pytest tests/test_v3_10_cash_ledger_opening_reconciliation.py -q -p no:cacheprovider
+  python -m pytest tests/test_v3_10_cash_ledger_domain.py tests/test_v3_10_cash_ledger_persistence.py tests/test_v3_10_broker_read_adapters.py --deselect=tests/test_v3_10_cash_ledger_persistence.py::test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files --deselect=tests/test_v3_10_broker_read_adapters.py::test_v310_cl3_17_exact_three_path_delta -q -p no:cacheprovider
+  python -m pytest tests --deselect=tests/test_v3_10_cash_ledger_persistence.py::test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files --deselect=tests/test_v3_10_broker_read_adapters.py::test_v310_cl3_17_exact_three_path_delta -q -p no:cacheprovider
+} finally {
+  Pop-Location
+}
 ```
+
+Оба deselected tests — исторические self-custody oracles: они намеренно сравнивают
+свои accepted contract heads с current `HEAD`, поэтому после любого successor
+milestone их pytest predicates ложны. Они не являются functional regression
+tests. Их invariant на CL4 successor заменён exact `git diff --quiet` checks выше;
+каждый command обязан завершиться exit `0`, а cumulative `4340c5d...HEAD` name set
+обязан быть ровно CL4 contract plus frozen three implementation paths.
 
 Static checks подтверждают отсутствие provider SDK/network/env/clock/random/
 direct SQLite/runtime imports, отсутствие forbidden public methods и ровно два
