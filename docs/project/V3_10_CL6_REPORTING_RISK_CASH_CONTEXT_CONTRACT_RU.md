@@ -412,11 +412,15 @@ MAX_PORTFOLIO_POSITIONS = 100_000
 
 MAX_PORTFOLIO_PENDING_ORDERS_TOTAL = 100_000
 
+MAX_PORTFOLIO_GRAPH_ITEMS_TOTAL = 500_000
+
 MAX_PORTFOLIO_CANONICAL_BYTES = 16_777_216
 
 MAX_RISK_HALTS = 10_000
 
 MAX_RECORDED_EXECUTION_IDS = 512
+
+MAX_RISK_ASSET_CLASS_LIMITS = 10_000
 
 MAX_RISK_CANONICAL_BYTES = 1_048_576
 
@@ -984,6 +988,36 @@ Missing/ambiguous reversal target:
 LEDGER_GRAPH_INVALID
 ```
 
+### 24.1. Operational external-flow timestamp bound
+
+После полной identity/lineage validation и reporting classification, включая наследование
+category для `REVERSAL`, но до построения `CashFlowSummary` и до TWR/XIRR,
+implementation обязана вычислить:
+
+```text
+external_flow_timestamp_count =
+    len(distinct transaction.effective_at
+        for every target-account reporting row in (period_start, period_end]
+        whose final ReportingCategory is EXTERNAL_FLOW)
+```
+
+Считаются timestamps физических ledger rows. Foreign-account rows не участвуют.
+Несколько `EXTERNAL_FLOW` rows с одним `effective_at` дают один distinct timestamp.
+
+Boundary:
+
+```text
+external_flow_timestamp_count <= MAX_EXTERNAL_FLOW_TIMESTAMPS
+```
+
+Ровно `10_000` допустимо. `10_001` даёт primary closed failure:
+
+```text
+NUMERIC_BOUND_EXCEEDED
+```
+
+и report, summary, TWR/XIRR или частичный результат не создаются.
+
 ---
 
 ## 25. CashFlowSummary
@@ -1023,6 +1057,31 @@ v3.10-cl6-cash-flow-summary
 Все cash effects — signed exact CL1 Money.
 
 Counts — plain non-negative integers.
+
+Count semantics frozen at the physical target-account ledger-row level:
+
+1. каждая exact target-account transaction в `(period_start, period_end]` увеличивает
+   `transaction_count` ровно на `1`;
+2. ordinary, `REVERSAL` и `CORRECTION` rows считаются отдельно и никогда не
+   lineage-collapse/net друг друга;
+3. после reversal category inheritance и correction own-classification ровно один
+   corresponding category count увеличивается на `1` для каждой transaction;
+4. денежная компенсация до нуля не отменяет counts;
+5. обязательно:
+
+```text
+opening_count
++ external_flow_count
++ investment_income_count
++ expense_count
++ internal_settlement_count
++ manual_adjustment_count
+== transaction_count
+```
+
+Например, `original -> reversal -> correction` всегда даёт
+`transaction_count == 3`; original и reversal учитываются в inherited category,
+correction — в собственной category.
 
 ---
 
@@ -1881,6 +1940,141 @@ PortfolioMigrationMetadata
 
 Subclasses/proxies запрещены.
 
+### 50.1. Exact recursive field schema
+
+Preflight читает только dataclass slot fields у уже подтверждённых exact classes.
+До завершения всего recursive walk запрещены `to_dict`, `from_dict`, `asdict`,
+property, `__str__`, hash helper и любой другой instance/virtual dispatch.
+
+Notation:
+
+```text
+S     = type(value) is str
+S?    = value is None or type(value) is str
+I     = type(value) is int; bool/subclasses forbidden
+I?    = value is None or I
+F     = type(value) is float and value is finite
+F?    = value is None or F
+B     = type(value) is bool
+E[X]  = type(value) is exact enum class X
+T[X]  = type(value) is tuple and every element satisfies X
+O[X]  = value is None or type(value) is exact class X
+```
+
+Accepted predecessor-valid values with a non-normalized scalar representation
+outside this table are rejected rather than coerced.
+
+Exact field sets and schemas:
+
+```text
+PortfolioSnapshotLease:
+  state: PortfolioState
+  revision: I
+  decision_checksum: S
+  document_checksum: S
+  leased_at: S
+
+PortfolioState:
+  version: I
+  account: AccountState
+  snapshot_at: S
+  generated_at: S
+  freshness: E[SnapshotFreshness]
+  source: S
+  positions: T[PositionState]
+  warnings: T[S]
+  state_status: S
+  blocking: B
+  revision: I
+  portfolio_source: S
+  migration: PortfolioMigrationMetadata
+  last_transaction_id: S?
+  last_transaction_status: S
+
+AccountState:
+  account_id: S
+  total_value: F?
+  securities_value: F?
+  expected_yield: F?
+  cash_balances: T[CashBalance]
+
+CashBalance:
+  currency: S
+  available: F
+  blocked: F
+
+PositionState:
+  instrument_id: S
+  figi: S
+  ticker: S
+  class_code: S
+  asset_type: S
+  currency: S
+  quantity: F
+  actual_lots: I
+  average_price: F?
+  current_price: F?
+  market_value: F?
+  expected_yield: F?
+  target: O[PortfolioTarget]
+  ownership: O[PositionOwnership]
+  ownership_status: E[OwnershipStatus]
+  pending_orders: T[PendingOrderState]
+  reconciliation: ReconciliationResult
+  origin: E[PositionOrigin]
+  last_candle_time: S?
+
+PortfolioTarget:
+  instrument_id: S
+  target_lots: I
+  strategy_id: S?
+  config_hash: S?
+  candle_time: S?
+
+PositionOwnership:
+  strategy_id: S
+  config_hash: S
+  candle_interval: S
+  source: S
+  attributed_at: S?
+
+PendingOrderState:
+  order_request_id: S
+  instrument_id: S
+  direction: S
+  requested_lots: I
+  executed_lots: I
+  status: E[PendingOrderStatus]
+  broker_order_id: S?
+  uncertain: B
+  source: S
+
+ReconciliationResult:
+  instrument_id: S
+  status: E[ReconciliationStatus]
+  blocking: B
+  reasons: T[S]
+  actual_lots: I
+  target_lots: I?
+  pending_order_ids: T[S]
+  checked_at: S?
+
+PortfolioMigrationMetadata:
+  status: E[PortfolioMigrationStatus]
+  source_schema: I
+  target_schema: I
+  migration_id: S?
+  migrated_at: S?
+  legacy_read_path_enabled: B
+  compatibility_shadow_status: E[CompatibilityShadowStatus]
+  detail: S
+```
+
+No field may be missing or added. Every named nested value must first pass
+`type(value) is ExactClass` before its fields are read.
+
+### 50.2. Bounds before predecessor dispatch
+
 Bounds:
 
 ```text
@@ -1888,16 +2082,29 @@ len(positions) <= MAX_PORTFOLIO_POSITIONS
 
 total pending orders <= MAX_PORTFOLIO_PENDING_ORDERS_TOTAL
 
+sum of lengths of positions, cash_balances, warnings, all pending_orders,
+all reconciliation.reasons and all reconciliation.pending_order_ids
+<= MAX_PORTFOLIO_GRAPH_ITEMS_TOTAL
+
 canonical state bytes <= MAX_PORTFOLIO_CANONICAL_BYTES
 
 all strings <= MAX_STRING_SCALARS
 ```
 
-All ints must satisfy predecessor semantic ranges.
+Every tuple container and element type is verified during the direct walk.
+All ints must satisfy predecessor semantic ranges and `0 <= revision <= MAX_REVISION`.
 
 All float fields must be finite where predecessor permits float.
 
 CL6 does not reinterpret those floats as exact Money.
+
+Only after the direct recursive schema, type and collection bounds pass may the
+implementation call predecessor serialization/hash helpers and then enforce the
+canonical byte-size bound. Any earlier schema/type/optionality/bound violation:
+
+```text
+PORTFOLIO_EVIDENCE_INVALID
+```
 
 ---
 
@@ -2165,6 +2372,112 @@ type(policy.asset_class_concentration_limits) is tuple
 every entry exact 2-tuple
 ```
 
+### 58.1. Exact recursive field schema
+
+Используется notation из section 50.1. Для exact pair:
+
+```text
+P[S,F] = type(value) is tuple and len(value) == 2,
+         first element satisfies S, second element satisfies F
+```
+
+До завершения всего прямого field walk запрещены `asdict`, `policy_hash`,
+`risk_state_guard_hash`, property, `__str__` и любой другой instance/virtual
+dispatch. Preflight читает только fields exact dataclass classes.
+
+Exact field sets and schemas:
+
+```text
+RiskPolicy:
+  enabled: B
+  max_position_lots: I
+  max_position_value_rub: F?
+  max_position_share_of_equity: F?
+  max_order_value_rub: F?
+  cash_reserve_rub: F
+  max_cash_usage_fraction: F
+  commission_buffer_fraction: F
+  risk_per_trade_rub: F?
+  risk_per_trade_fraction: F?
+  atr_multiplier: F
+  daily_loss_limit_rub: F?
+  daily_loss_limit_fraction: F?
+  weekly_loss_limit_rub: F?
+  weekly_loss_limit_fraction: F?
+  max_drawdown_fraction: F?
+  max_daily_turnover_rub: F?
+  max_orders_per_day: I?
+  max_snapshot_age_seconds: I?
+  block_on_unknown_equity: B
+  block_on_unknown_cash: B
+  block_on_unknown_price: B
+  block_on_unknown_risk_distance: B
+  block_on_stale_snapshot: B
+  block_on_unreconciled_position: B
+  block_on_pending_order: B
+  allow_risk_reducing_orders_during_halt: B
+  portfolio_policy_configured: B
+  portfolio_policy_mode: S
+  max_gross_exposure_rub: F?
+  max_gross_exposure_fraction: F?
+  max_net_exposure_fraction: F?
+  max_instrument_concentration_fraction: F?
+  max_strategy_concentration_fraction: F?
+  max_asset_class_concentration_fraction: F?
+  asset_class_concentration_limits: T[P[S,F]]
+  max_open_positions: I?
+  min_cash_reserve_fraction: F?
+  max_daily_turnover_fraction: F?
+  max_price_age_seconds: I?
+  portfolio_warning_utilization_fraction: F
+
+InstrumentRiskHalt:
+  instrument_id: S
+  reason: S
+  source: S
+  set_at: S
+  operator_ref: S?
+
+RiskState:
+  version: I
+  daily_date: S?
+  weekly_key: S?
+  daily_start_equity_rub: F?
+  weekly_start_equity_rub: F?
+  high_watermark_equity_rub: F?
+  daily_turnover_rub: F
+  daily_order_count: I
+  kill_switch_active: B
+  kill_switch_reason: S?
+  kill_switch_set_at: S?
+  kill_switch_source: S?
+  kill_switch_operator_ref: S?
+  instrument_kill_switches: T[InstrumentRiskHalt]
+  risk_resync_required: B
+  risk_resync_reason: S?
+  risk_resync_set_at: S?
+  risk_resync_source: S?
+  risk_resync_cash_before_rub: F?
+  risk_resync_cash_observed_rub: F?
+  risk_resync_equity_observed_rub: F?
+  risk_resync_snapshot_at: S?
+  last_equity_rub: F?
+  last_cash_rub: F?
+  last_snapshot_at: S?
+  last_evaluated_at: S?
+  last_execution_at: S?
+  recorded_execution_ids: T[S]
+  last_portfolio_risk_decision_id: S?
+  last_portfolio_risk_input_hash: S?
+  last_portfolio_risk_evaluated_at: S?
+```
+
+No field may be missing or added. Accepted predecessor-valid values with a
+non-normalized scalar representation outside this table are rejected rather
+than coerced. Every named nested value must first pass exact-class validation.
+
+### 58.2. Bounds before predecessor dispatch
+
 Bounds:
 
 ```text
@@ -2172,14 +2485,26 @@ len(instrument_kill_switches) <= MAX_RISK_HALTS
 
 len(recorded_execution_ids) <= MAX_RECORDED_EXECUTION_IDS
 
+len(asset_class_concentration_limits) <= MAX_RISK_ASSET_CLASS_LIMITS
+
 all strings <= MAX_STRING_SCALARS
 
 canonical bounded source representation <= MAX_RISK_CANONICAL_BYTES
 ```
 
-Float fields must be finite where predecessor permits them.
+Every tuple/pair container and element type is verified during the direct walk.
+Every `I`/`I?` rejects bool and satisfies predecessor semantic ranges. Every
+`F`/`F?` is finite.
 
 CL6 does not convert any of them into exact Money.
+
+Only after the direct recursive schema, type and bounds pass may implementation
+construct the bounded canonical source representation or invoke either accepted
+hash helper. Any earlier schema/type/optionality/bound violation:
+
+```text
+RISK_EVIDENCE_INVALID
+```
 
 ---
 
@@ -2649,29 +2974,82 @@ Any future use must perform separate locked revalidation.
 
 ## 75. Mandatory CL7 revalidation boundary
 
-CL6 freezes the evidence fields that CL7 must later recheck immediately before economic mutation:
+CL6 freezes the evidence that CL7 must later reacquire and recheck immediately
+before economic mutation under one account-scoped lock/snapshot transaction.
+The lock/snapshot mechanism is owned by CL7, but the following revalidation set
+is complete and cannot be reduced.
+
+CL7 receives a freshly captured exact normalized:
+
+```text
+locked_evaluated_at
+```
+
+and requires `locked_evaluated_at >= context.evaluated_at`. Relative to
+`locked_evaluated_at`, CL7 repeats dependency-from-future and
+`age <= MAX_CONTEXT_AGE_NS` checks for every bound timestamp:
+
+```text
+context.evaluated_at
+availability.evaluated_at
+availability.broker_cash_as_of
+availability.broker_positions_as_of
+availability.central_projection_evaluated_at
+portfolio.portfolio_snapshot_at
+portfolio.captured_at
+risk_guard.captured_at
+```
+
+It also repeats the exact section 70 skew check over the seven dependency
+timestamps, using the same `MAX_CONTEXT_SKEW_NS`. A revision/hash match never
+waives an expired/future/mixed temporal proof.
+
+Under the same lock/snapshot, CL7 must reacquire/rebuild and compare:
 
 ```text
 portfolio revision
 portfolio decision checksum
 portfolio document checksum
+PortfolioIdentityEvidence SHA/HMAC
+Portfolio source, schema, migration, freshness, state status and blocking fields
 
 central revision
 reservation projection hash
+Central projection account/environment/currency/source binding
 
 risk policy hash
 risk state guard hash
+RiskGuardEvidence SHA/HMAC
 
 ledger revision
 ledger head
+ledger export/projection identity used by CashAvailability
 
 reconciliation SHA
 
 CashAvailability SHA
-CashAvailability freshness
+CashAvailability status/reason and exact Money fields
 
 PortfolioRiskCashContext identity
 ```
+
+Locked account custody is re-bound, not copied from the old context:
+
+1. recompute accepted CL3 account-scope HMAC from the freshly locked Portfolio
+   raw account field under the same `environment` and `identity_key_id`;
+2. recompute the accepted CL3 account-scope HMAC from the freshly locked Risk
+   raw account binding supplied by CL7;
+3. require both to equal the context `account_scope_sha256` and the newly
+   acquired Central, ledger, reconciliation and CashAvailability scope;
+4. require exact equality of `environment`, `currency == RUB`, provider/source
+   identity and `identity_key_id` across the rebuilt evidence graph;
+5. rebuild Portfolio/Risk evidence and CashAvailability identities before
+   comparing the context identity.
+
+Any mismatch, stale/future timestamp, excessive skew, scope/source/key drift or
+rebuild failure aborts before reservation, state write, execution authorization
+or provider mutation. CL6 defines no optimistic fallback and grants no CL7
+implementation authority.
 
 CL6 itself performs no such mutation or lock orchestration.
 
@@ -2928,12 +3306,13 @@ Exact order:
 14. valuation account/environment/key correlation;
 15. valuation set structural validation;
 16. reporting classification/reversal graph;
-17. CashFlowSummary arithmetic;
-18. exact metric gates and primary-reason precedence from section 30.1;
-19. TWR deterministic calculation;
-20. XIRR deterministic calculation;
-21. report status;
-22. report HMAC/plain SHA.
+17. distinct target-account external-flow timestamp bound;
+18. CashFlowSummary physical-row counts and arithmetic;
+19. exact metric gates and primary-reason precedence from section 30.1;
+20. TWR deterministic calculation;
+21. XIRR deterministic calculation;
+22. report status;
+23. report HMAC/plain SHA.
 
 Representative multi-invalid vectors mandatory.
 
@@ -2946,8 +3325,9 @@ Exact order:
 1. public argument exact types;
 2. environment/account/key/key-id/evaluated timestamp;
 3. exact root Portfolio DTO types;
-4. bounded nested Portfolio graph;
-5. unbound serialization/canonical-byte bound;
+4. complete recursive Portfolio field schema and collection bounds, with no
+   predecessor/virtual dispatch;
+5. unbound serialization and canonical-byte bound only after step 4;
 6. predecessor Portfolio round-trip;
 7. revision/decision/document checksum reproduction;
 8. account-scope HMAC;
@@ -2964,7 +3344,8 @@ Exact order:
 1. public argument exact types;
 2. environment/account/key/key-id/timestamps;
 3. exact RiskPolicy/RiskState root types;
-4. nested Risk collection bounds/types;
+4. complete recursive Risk field schema and collection bounds, with no
+   predecessor/virtual dispatch;
 5. current RiskState version;
 6. account-scope HMAC;
 7. accepted RiskPolicy hash reproduction;
@@ -3698,6 +4079,26 @@ exact predecessor-error translation table
 
 V310-CL6-63
 missing/extra valuation and metric-reason precedence matrix
+
+V310-CL6-64
+Portfolio/Risk complete recursive field-spec walk rejects forged scalar,
+optionality, tuple/pair and nested-class values before any predecessor dispatch
+
+V310-CL6-65
+CL7 locked revalidation set covers all timestamps, age/skew, hashes and
+account/environment/currency/source/key bindings
+
+V310-CL6-66
+physical-row count oracle for original -> reversal -> correction and
+sum(category counts) == transaction_count
+
+V310-CL6-67
+distinct EXTERNAL_FLOW timestamp boundary: 10_000 accepted, 10_001 gives
+NUMERIC_BOUND_EXCEEDED before summary/TWR/XIRR
+
+V310-CL6-68
+exact CL5 predecessor regression oracle: dedicated CL6 green and no failure
+outside the closed inherited custody set from section 101.1
 ```
 
 ---
@@ -3822,6 +4223,16 @@ dependency from future + cross-evidence skew
 portfolio snapshot outside skew + fresh portfolio capture
 
 Portfolio checksum mismatch + Risk hash mismatch
+
+forged Portfolio nested float/int/bool/None field + trapping to_dict/property/hash
+
+forged Risk scalar/pair field + trapping asdict/policy_hash/guard_hash
+
+10_001 external-flow timestamps + otherwise valid valuation set
+
+locked revision/hash unchanged + expired context/Portfolio/Risk timestamp
+
+locked account-scope/source drift + otherwise unchanged context identity
 ```
 
 Observed primary reason must match sections 79–83 exactly.
@@ -3874,9 +4285,49 @@ Before independent implementation review:
 7. compile;
 8. `git diff --check`;
 9. exact three implementation paths only;
-10. full unchanged CL1–CL5 regression.
+10. full CL1–CL5 regression under the exact closed oracle in section 101.1.
 
 Green tests do not grant implementation acceptance.
+
+### 101.1. Exact predecessor regression oracle
+
+Regression baseline is the accepted/integrated CL5 predecessor:
+
+```text
+commit = 864963dd69cb4c907cbc762b66ed12f012f32741
+tree   = 496503685e57b024c2b511352b2637ed74c5663d
+```
+
+PR #168 terminal evidence recorded `940 passed, 4 failed` with these exact
+inherited milestone-local custody node IDs:
+
+```text
+current/tests/test_v3_10_cash_ledger_persistence.py::test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files
+current/tests/test_v3_10_broker_read_adapters.py::test_v310_cl3_17_exact_three_path_delta
+current/tests/test_v3_10_broker_read_adapters.py::test_v310_cl3_18_cl1_cl2_sources_unchanged
+current/tests/test_v3_10_cash_ledger_opening_reconciliation.py::test_v310_cl4_20_three_path_delta_and_predecessor_custody
+```
+
+Because an exact CL6 successor is necessarily no longer the CL5 implementation
+head/topology, this fifth milestone-local custody node is the only additional
+allowed CL6 successor failure:
+
+```text
+current/tests/test_v3_10_cash_availability.py::test_exact_successor_custody_and_three_path_delta
+```
+
+The closed allowed set is the union of those five node IDs. In a qualified local
+or current-base PR environment, the observed failing subset may be smaller due to
+checkout topology; disappearance of an inherited failure is allowed and cannot
+offset any new failure. Acceptance requires:
+
+1. every dedicated CL6 test passes;
+2. every regression failure belongs to that closed five-node set;
+3. an allowed-node failure is waived only when its failing assertion is the
+   historical exact milestone custody/topology assertion;
+4. any functional assertion failure, collection/import error, failure outside
+   the closed set, or additional failing node blocks acceptance;
+5. counts alone are never the oracle.
 
 ---
 
