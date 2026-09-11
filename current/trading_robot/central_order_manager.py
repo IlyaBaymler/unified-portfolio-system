@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
@@ -23,6 +24,7 @@ from .portfolio_preflight import (
 )
 from .portfolio_repository import PortfolioRepository, PortfolioRepositoryError
 from .risk_runtime import RiskRuntimeOutcome, risk_state_guard_hash
+from .runtime_cash_authority import LockedDispatchProof
 from .state_persistence import (
     StatePersistenceError,
     atomic_write_json,
@@ -1177,6 +1179,37 @@ class CentralOrderIntent:
             )
         object.__setattr__(self, "broker_order_id", broker_id)
 
+    @property
+    def cl7_locked_dispatch_proof(self) -> Mapping[str, Any] | None:
+        """Return proof custody embedded in the immutable transition chain.
+
+        Keeping the custody inside an existing predecessor field preserves the
+        accepted CL5 ``CentralOrderIntent`` dataclass shape while the serialized
+        intent exposes the two explicit CL7 fields required by the cutover
+        contract.
+        """
+
+        prefix = "CL7_LOCKED_DISPATCH_PROOF="
+        for transition in reversed(self.transitions):
+            if transition.detail.startswith(prefix):
+                try:
+                    raw = json.loads(transition.detail[len(prefix) :])
+                    return LockedDispatchProof.from_canonical_dict(
+                        raw
+                    ).to_canonical_dict()
+                except Exception as exc:
+                    raise CentralOrderStateError(
+                        "CL7 locked dispatch proof is invalid."
+                    ) from exc
+        return None
+
+    @property
+    def cl7_locked_dispatch_proof_sha256(self) -> str | None:
+        proof = self.cl7_locked_dispatch_proof
+        if proof is None:
+            return None
+        return LockedDispatchProof.from_canonical_dict(proof).sha256
+
     @classmethod
     def create(
         cls,
@@ -1190,7 +1223,7 @@ class CentralOrderIntent:
         key = candidate.idempotency_key()
         intent_id = str(uuid5(NAMESPACE_URL, "central-order-v1|" + key))
         timestamp = _timestamp(created_at or _now(), "created_at")
-        return cls(
+        intent = cls(
             intent_id=intent_id,
             idempotency_key=key,
             queue_sequence=queue_sequence,
@@ -1211,6 +1244,7 @@ class CentralOrderIntent:
             updated_at=timestamp,
             transitions=(OrderTransition("QUEUED", timestamp, "admitted"),),
         )
+        return intent
 
     def transition(
         self,
@@ -1357,6 +1391,10 @@ class CentralOrderIntent:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "transitions": [item.to_dict() for item in self.transitions],
+            "cl7_locked_dispatch_proof": self.cl7_locked_dispatch_proof,
+            "cl7_locked_dispatch_proof_sha256": (
+                self.cl7_locked_dispatch_proof_sha256
+            ),
         }
 
     @classmethod
@@ -1374,7 +1412,13 @@ class CentralOrderIntent:
             raise CentralOrderStateError(
                 "Every intent transition must be an object."
             )
-        return cls(
+        proof_present = "cl7_locked_dispatch_proof" in raw
+        proof_sha_present = "cl7_locked_dispatch_proof_sha256" in raw
+        if proof_present != proof_sha_present:
+            raise CentralOrderStateError(
+                "Central CL7 proof custody has a partial keyset."
+            )
+        intent = cls(
             intent_id=raw.get("intent_id", ""),
             idempotency_key=raw.get("idempotency_key", ""),
             queue_sequence=raw.get("queue_sequence", 0),
@@ -1404,6 +1448,21 @@ class CentralOrderIntent:
                 for item in transitions
             ),
         )
+        supplied_proof = raw.get("cl7_locked_dispatch_proof")
+        supplied_sha = raw.get("cl7_locked_dispatch_proof_sha256")
+        if proof_present:
+            if (
+                supplied_proof != intent.cl7_locked_dispatch_proof
+                or supplied_sha != intent.cl7_locked_dispatch_proof_sha256
+            ):
+                raise CentralOrderStateError(
+                    "Central CL7 proof custody does not match its transition chain."
+                )
+        elif intent.cl7_locked_dispatch_proof is not None:
+            raise CentralOrderStateError(
+                "Central CL7 proof custody is missing explicit serialized fields."
+            )
+        return intent
 
 
 @dataclass(frozen=True, slots=True)
@@ -1728,6 +1787,94 @@ class DispatchPreparation:
             )
 
 
+class LockedCentralDispatch:
+    """One exact CL7 Central lease held through provider outcome persistence."""
+
+    def __init__(
+        self,
+        manager: CentralOrderManager,
+        state: CentralOrderState,
+        intent: CentralOrderIntent,
+        proof: LockedDispatchProof,
+    ) -> None:
+        self._manager = manager
+        self._state = state
+        self.intent = intent
+        self.proof = proof
+        self._outcome_persisted = False
+
+    @property
+    def state_revision(self) -> int:
+        return self._state.revision
+
+    @property
+    def outcome_persisted(self) -> bool:
+        return self._outcome_persisted
+
+    def _persist(self, updated: CentralOrderIntent) -> CentralOrderIntent:
+        if self._outcome_persisted:
+            raise CentralOrderConflictError(
+                "CL7 locked dispatch outcome was already persisted."
+            )
+        candidate = replace(
+            self._state.replace_intent(updated),
+            revision=self._state.revision + 1,
+            updated_at=_now(),
+        )
+        self._manager.store._save_unlocked(candidate)
+        readback = self._manager.store._load_unlocked(
+            expected_account_id=self._manager.account_id
+        )
+        exact = next(
+            (item for item in readback.intents if item.intent_id == updated.intent_id),
+            None,
+        )
+        if exact is None or exact.to_dict() != updated.to_dict():
+            raise CentralOrderStateError(
+                "CL7 Central outcome read-back is not exact."
+            )
+        self._state = readback
+        self.intent = exact
+        self._outcome_persisted = True
+        return exact
+
+    def mark_submitted(self, *, broker_order_id: str) -> CentralOrderIntent:
+        return self._persist(
+            self.intent.transition(
+                "SUBMITTED",
+                detail="CL7 exact provider response was correlated",
+                broker_order_id=_required_text(broker_order_id, "broker_order_id"),
+            )
+        )
+
+    def mark_uncertain(self, *, reason: str) -> CentralOrderIntent:
+        return self._persist(
+            self.intent.transition(
+                "UNCERTAIN",
+                detail="CL7 exact submission requires lookup recovery",
+                uncertainty_reason=_required_text(reason, "reason"),
+            )
+        )
+
+    def mark_submission_rejected(self, *, reason: str) -> CentralOrderIntent:
+        return self._persist(
+            self.intent.transition(
+                "FAILED",
+                detail=_required_text(reason, "reason"),
+                outcome="SUBMISSION_REJECTED",
+            )
+        )
+
+    def mark_pre_submit_failed(self, *, reason: str) -> CentralOrderIntent:
+        return self._persist(
+            self.intent.transition(
+                "FAILED",
+                detail=_required_text(reason, "reason"),
+                outcome="PRE_SUBMIT_FAILED",
+            )
+        )
+
+
 class CentralOrderManager:
     """Account-wide queue and reservation coordinator without broker methods."""
 
@@ -1759,6 +1906,58 @@ class CentralOrderManager:
 
         _, result = self.store.mutate(self.account_id, operation)
         return result
+
+    def resolve_cl7_pre_submit(
+        self,
+        *,
+        authority_record_revision: int,
+        authority_record_sha256: str,
+    ) -> CentralOrderIntent:
+        """Resolve exactly one D3 lease for which provider POST is impossible."""
+
+        revision = _non_negative_int(
+            authority_record_revision,
+            "authority_record_revision",
+        )
+        authority_sha = _sha256_text(
+            authority_record_sha256,
+            "authority_record_sha256",
+        )
+
+        def operation(
+            state: CentralOrderState,
+        ) -> tuple[CentralOrderState, CentralOrderIntent]:
+            matches: list[CentralOrderIntent] = []
+            for item in state.intents:
+                proof_raw = item.cl7_locked_dispatch_proof
+                if proof_raw is None:
+                    continue
+                proof = LockedDispatchProof.from_canonical_dict(proof_raw)
+                if (
+                    item.status == "IN_FLIGHT"
+                    and proof.authority_record_revision == revision
+                    and proof.authority_record_sha256 == authority_sha
+                ):
+                    matches.append(item)
+            if len(matches) != 1:
+                raise CentralOrderConflictError(
+                    "Exact CL7 D3 correlation is missing or ambiguous."
+                )
+            updated = matches[0].transition(
+                "FAILED",
+                detail="CL7 D3 recovered before durable provider-attempt marker",
+                outcome="PRE_SUBMIT_FAILED",
+            )
+            return state.replace_intent(updated), updated
+
+        state, updated = self.store.mutate(self.account_id, operation)
+        exact = next(
+            (item for item in state.intents if item.intent_id == updated.intent_id),
+            None,
+        )
+        if exact is None or exact.to_dict() != updated.to_dict():
+            raise CentralOrderStateError("CL7 D3 recovery read-back is not exact.")
+        return exact
 
     def enqueue(
         self,
@@ -2173,6 +2372,92 @@ class CentralOrderManager:
             return None
         self._record("CENTRAL_ORDER_PREPARED", intent)
         return DispatchPreparation(intent=intent, state_revision=state.revision)
+
+    @contextmanager
+    def locked_dispatch_lease(
+        self,
+        portfolio_repository: PortfolioRepository,
+        *,
+        expected_intent_id: str,
+        locked_portfolio_state: PortfolioState,
+        validator: Callable[
+            [CentralOrderState, CentralOrderIntent], LockedDispatchProof
+        ],
+    ) -> Iterator[LockedCentralDispatch]:
+        """Freeze Central from the final CL7 projection through POST outcome."""
+
+        expected = _required_text(expected_intent_id, "expected_intent_id")
+        if not isinstance(locked_portfolio_state, PortfolioState):
+            raise CentralOrderStateError(
+                "locked_portfolio_state must be a PortfolioState."
+            )
+        if not callable(validator):
+            raise TypeError("validator must be callable.")
+        lock = InterProcessFileLock(
+            self.store.lock_path,
+            timeout_seconds=self.store.lock_timeout_seconds,
+        )
+        try:
+            lock.acquire()
+            state = self.store._load_unlocked(expected_account_id=self.account_id)
+            blocker = state.blocking_intent
+            if blocker is not None:
+                raise CentralOrderConflictError(
+                    "Account-wide pending/uncertain gate is active."
+                )
+            if not state.queued or state.queued[0].intent_id != expected:
+                raise CentralOrderConflictError(
+                    "Central-order queue head changed before CL7 locked dispatch."
+                )
+            intent = state.queued[0]
+            self._validate_portfolio_for_dispatch(
+                portfolio_repository,
+                intent,
+                locked_portfolio_state=locked_portfolio_state,
+            )
+            proof = validator(state, intent)
+            if not isinstance(proof, LockedDispatchProof):
+                raise CentralOrderStateError(
+                    "CL7 validator must return LockedDispatchProof."
+                )
+            if proof.central_order_revision != state.revision:
+                raise CentralOrderConflictError(
+                    "CL7 proof does not bind the pre-transition Central revision."
+                )
+            if proof.central_reservation_projection_hash != central_reservation_projection_hash(state):
+                raise CentralOrderConflictError(
+                    "CL7 proof does not bind the current reservation projection."
+                )
+            proof_json = proof.canonical_bytes.decode("ascii")
+            prepared = intent.transition(
+                "IN_FLIGHT",
+                detail="CL7_LOCKED_DISPATCH_PROOF=" + proof_json,
+            )
+            persisted = replace(
+                state.replace_intent(prepared),
+                revision=state.revision + 1,
+                updated_at=_now(),
+            )
+            self.store._save_unlocked(persisted)
+            readback = self.store._load_unlocked(expected_account_id=self.account_id)
+            readback_intent = next(
+                item for item in readback.intents if item.intent_id == expected
+            )
+            if (
+                readback.revision != proof.central_order_revision + 1
+                or readback_intent.status != "IN_FLIGHT"
+                or readback_intent.cl7_locked_dispatch_proof_sha256 != proof.sha256
+                or readback_intent.cl7_locked_dispatch_proof != proof.to_canonical_dict()
+            ):
+                raise CentralOrderStateError(
+                    "CL7 locked Central transition read-back is not exact."
+                )
+            lease = LockedCentralDispatch(self, readback, readback_intent, proof)
+            yield lease
+        except (LockUnavailableError, StatePersistenceError) as exc:
+            raise CentralOrderStateError(str(exc)) from exc
+        finally:
+            lock.release()
 
     def mark_submitted(
         self,
@@ -2732,5 +3017,6 @@ __all__ = [
     "DispatchPreparation",
     "EnqueueResult",
     "ExecutionAuthorization",
+    "LockedCentralDispatch",
     "OrderTransition",
 ]

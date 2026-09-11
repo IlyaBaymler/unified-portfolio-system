@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import json
 import os
-from pathlib import Path
 import shutil
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
@@ -18,13 +19,15 @@ from .config_persistence import (
     StrategyProfileStore,
     bot_config_to_profile,
 )
+from .instrument_runtime import InstrumentRuntimeStateError, InstrumentRuntimeStore
 from .journal import EventJournal
 from .locking import InterProcessFileLock, LockUnavailableError
-from .instrument_runtime import InstrumentRuntimeStateError, InstrumentRuntimeStore
 from .multi_instrument_config import (
     MultiInstrumentConfigError,
     MultiInstrumentProfileStore,
 )
+from .portfolio_model import PortfolioState
+from .portfolio_repository import PortfolioRepository, PortfolioRepositoryError
 from .risk import RiskPolicy
 from .risk_persistence import (
     RISK_MODES,
@@ -32,11 +35,12 @@ from .risk_persistence import (
     RiskProfileStore,
     RiskStateStore,
 )
-from .state_persistence import atomic_write_json
-from .portfolio_model import PortfolioState
-from .portfolio_repository import PortfolioRepository, PortfolioRepositoryError
+from .runtime_cash_authority import (
+    CL7RuntimeError,
+    RuntimeCashAuthorityStore,
+)
 from .secret_provider import SecretProvider, SecretProviderProbe, probe_secret_provider
-
+from .state_persistence import atomic_write_json
 
 CANONICAL_RISK_PROFILE_NAME = "risk_profiles.json"
 LEGACY_RISK_PROFILE_NAMES: tuple[str, ...] = ("risk_profile.json",)
@@ -397,6 +401,40 @@ def bootstrap_runtime_files(
         )
 
     try:
+        authority_store = RuntimeCashAuthorityStore(root)
+        try:
+            existed = authority_store.path.exists()
+            if create_missing:
+                transition_at = (
+                    datetime.now(timezone.utc)
+                    .strftime("%Y-%m-%dT%H:%M:%S.%f")
+                    + "000Z"
+                )
+                authority = authority_store.bootstrap(transition_at=transition_at)
+                items.append(
+                    RuntimeSetupItem(
+                        authority_store.path.name,
+                        "VALIDATED" if existed else "CREATED",
+                        f"CL7 {authority.state.value}; execution authority unchanged",
+                    )
+                )
+            elif authority_store.custody_exists():
+                authority = authority_store.load(allow_missing_legacy=False)
+                items.append(
+                    RuntimeSetupItem(
+                        authority_store.path.name,
+                        "VALIDATED",
+                        f"CL7 {authority.state.value}",
+                    )
+                )
+            else:
+                warnings.append("Отсутствует runtime_cash_authority.json.")
+        except (CL7RuntimeError, OSError, TypeError, ValueError) as exc:
+            errors.append(
+                "runtime_cash_authority.json не был автоматически исправлен: "
+                + str(exc)
+            )
+
         env_path = root / ".env"
         env_example = root / ".env.example"
         if env_path.exists():

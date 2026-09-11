@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_DOWN
-from http.client import IncompleteRead
 import logging
 import random
 import time
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from decimal import ROUND_DOWN, Decimal
+from http.client import IncompleteRead
 from typing import Any, Callable, ClassVar
 
 from .tls_support import enable_system_trust_store, resolve_ca_bundle
@@ -18,7 +18,6 @@ enable_system_trust_store()
 import pandas as pd
 import requests
 from urllib3.exceptions import ProtocolError
-
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +37,8 @@ class TBankAPIError(RuntimeError):
         tracking_id: str | None = None,
         retry_after_seconds: float | None = None,
         error_class: str | None = None,
+        direct_response: bool = False,
+        redirect_followed: bool = False,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -48,6 +49,8 @@ class TBankAPIError(RuntimeError):
         self.tracking_id = tracking_id
         self.retry_after_seconds = retry_after_seconds
         self.error_class = str(error_class) if error_class else None
+        self.direct_response = bool(direct_response)
+        self.redirect_followed = bool(redirect_followed)
 
 
 def _iter_nested_exceptions(exc: BaseException):
@@ -318,6 +321,8 @@ class TBankSandboxClient:
         payload: dict[str, Any] | None = None,
         *,
         retry_safe: bool = True,
+        allow_redirects: bool = True,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         url = (
             f"{self.BASE_URL}/"
@@ -331,14 +336,20 @@ class TBankSandboxClient:
 
         for attempt in range(attempts):
             try:
-                response = self._session.post(
-                    url,
-                    json=payload or {},
-                    timeout=(
-                        self.connect_timeout_seconds,
-                        self.read_timeout_seconds,
+                request_options: dict[str, Any] = {
+                    "json": payload or {},
+                    "timeout": (
+                        min(self.connect_timeout_seconds, timeout_seconds)
+                        if timeout_seconds is not None
+                        else self.connect_timeout_seconds,
+                        timeout_seconds
+                        if timeout_seconds is not None
+                        else self.read_timeout_seconds,
                     ),
-                )
+                }
+                if not allow_redirects:
+                    request_options["allow_redirects"] = False
+                response = self._session.post(url, **request_options)
             except requests.exceptions.SSLError as exc:
                 self._complete_request_meta(
                     event_type="API_REQUEST_FAILED",
@@ -481,6 +492,8 @@ class TBankSandboxClient:
                 method=method,
                 tracking_id=tracking_id,
                 retry_after_seconds=retry_after,
+                direct_response=True,
+                redirect_followed=bool(getattr(response, "history", ())),
             )
             if transient and attempt + 1 < attempts:
                 delay = self._sleep_before_retry(
@@ -945,6 +958,42 @@ class TBankSandboxClient:
             },
         )
 
+    def get_operations_by_cursor_once(
+        self,
+        payload: dict[str, Any],
+        timeout_ns: int,
+    ) -> dict[str, Any]:
+        """Perform one non-replaying CL3 Sandbox cursor-read attempt."""
+
+        if not isinstance(payload, dict) or type(timeout_ns) is not int or timeout_ns <= 0:
+            raise ValueError("payload and timeout_ns are invalid.")
+        try:
+            return self._post(
+                "SandboxService",
+                "GetSandboxOperationsByCursor",
+                dict(payload),
+                retry_safe=False,
+                allow_redirects=False,
+                timeout_seconds=timeout_ns / 1_000_000_000,
+            )
+        except TBankAPIError as exc:
+            from .broker_read_adapters import (
+                BrokerTransportFailure,
+                BrokerTransportFailureKind,
+            )
+
+            if exc.status_code is not None:
+                raise BrokerTransportFailure(
+                    BrokerTransportFailureKind.HTTP_STATUS,
+                    http_status=exc.status_code,
+                ) from None
+            kind = (
+                BrokerTransportFailureKind.TIMEOUT
+                if exc.error_class and "TIMEOUT" in exc.error_class.upper()
+                else BrokerTransportFailureKind.CONNECTION_INTERRUPTED
+            )
+            raise BrokerTransportFailure(kind) from None
+
     def post_order(
         self,
         account_id: str,
@@ -987,6 +1036,50 @@ class TBankSandboxClient:
                 "confirmMarginTrade": False,
             },
             retry_safe=True,
+        )
+
+    def post_order_once(
+        self,
+        account_id: str,
+        instrument_id: str,
+        lots: int,
+        direction: str,
+        *,
+        order_id: str,
+        order_type: str = "BESTPRICE",
+        time_in_force: str = "FILL_AND_KILL",
+    ) -> dict[str, Any]:
+        """Place exactly one CL7 physical order request with no redirect replay."""
+
+        if lots <= 0:
+            raise ValueError("lots must be positive.")
+        direction = direction.upper()
+        order_type = order_type.upper()
+        time_in_force = time_in_force.upper()
+        if direction not in {"BUY", "SELL"}:
+            raise ValueError("direction must be BUY or SELL.")
+        if order_type not in {"MARKET", "BESTPRICE"}:
+            raise ValueError("order_type must be MARKET or BESTPRICE.")
+        if time_in_force not in {"DAY", "FILL_AND_KILL", "FILL_OR_KILL"}:
+            raise ValueError("Unsupported time_in_force.")
+        if not order_id or len(order_id) > 36:
+            raise ValueError("order_id must be a UID no longer than 36 characters.")
+        return self._post(
+            "SandboxService",
+            "PostSandboxOrder",
+            {
+                "quantity": str(lots),
+                "direction": f"ORDER_DIRECTION_{direction}",
+                "accountId": account_id,
+                "orderType": f"ORDER_TYPE_{order_type}",
+                "orderId": order_id,
+                "instrumentId": instrument_id,
+                "timeInForce": f"TIME_IN_FORCE_{time_in_force}",
+                "priceType": "PRICE_TYPE_CURRENCY",
+                "confirmMarginTrade": False,
+            },
+            retry_safe=False,
+            allow_redirects=False,
         )
 
     def post_market_order(

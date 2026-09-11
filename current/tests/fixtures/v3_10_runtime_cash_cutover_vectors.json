@@ -1,0 +1,28 @@
+{
+  "accepted_contract_commit": "2eaba15d1260ab84a0ebc1b3bc8f950e497931ca",
+  "accepted_contract_tree": "999c983b82dfedd2e708cc8b1829dfab246f6ba2",
+  "stable_line_predecessor": "2667dbea770a1a5df25bbba67f0e7e8b5f27dc63",
+  "identity_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "identity_key_id": "CL5_TEST_KEY_V1",
+  "raw_account_id": "sandbox-account-0001",
+  "account_scope_sha256": "15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3",
+  "legacy_record": {
+    "canonical_json_ascii": "{\"account_scope_sha256\":null,\"activation_context_sha256\":null,\"cutover_generation\":\"0\",\"domain\":\"v3.10-cl7-runtime-cash-authority\",\"environment\":\"SANDBOX\",\"ever_exact_activated\":false,\"identity_key_id\":null,\"ledger_head_sha256\":null,\"ledger_revision\":null,\"opening_cutoff\":null,\"opening_record_sha256\":null,\"operations_complete_through\":null,\"pending_dispatch_proof_sha256\":null,\"post_attempt_count\":\"0\",\"previous_record_sha256\":null,\"record_revision\":\"0\",\"state\":\"LEGACY_ACTIVE\",\"transition_at\":\"2026-09-11T10:00:00.000000000Z\",\"transition_kind\":\"BOOTSTRAP_LEGACY\",\"version\":1}",
+    "sha256": "04be4a12386488e9d85a9ae5208c0f120100f75e047da2418ec68fe80d4051bf"
+  },
+  "armed_record": {
+    "canonical_json_ascii": "{\"account_scope_sha256\":\"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3\",\"activation_context_sha256\":\"fd4f5ecda228215f6ac2677d2ac1489a4d47b631258075d67b0fa91165e5d1d9\",\"cutover_generation\":\"1\",\"domain\":\"v3.10-cl7-runtime-cash-authority\",\"environment\":\"SANDBOX\",\"ever_exact_activated\":true,\"identity_key_id\":\"CL5_TEST_KEY_V1\",\"ledger_head_sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"ledger_revision\":\"5\",\"opening_cutoff\":\"2026-09-11T10:00:00.000000000Z\",\"opening_record_sha256\":\"7777777777777777777777777777777777777777777777777777777777777777\",\"operations_complete_through\":\"2026-09-11T10:00:00.000000001Z\",\"pending_dispatch_proof_sha256\":null,\"post_attempt_count\":\"0\",\"previous_record_sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"record_revision\":\"5\",\"state\":\"EXACT_CASH_ARMED\",\"transition_at\":\"2026-09-11T10:00:05.000000000Z\",\"transition_kind\":\"ARM_EXACT\",\"version\":1}",
+    "sha256": "ed8146dd11385e70fb5a0c41b9c93006f8810ab1cf916b3429bf4beb5872f3bf"
+  },
+  "intent_scope_sha256": "b2b1ed88b2fa5b5eb29414fda5990ef241c97d53ff09d8f3a45680aedb999551",
+  "proof_identity_sha256": "82441ccd5fbc1f0f65e9a81715af753a2a008dc7ea142384a96a3684e64ada9c",
+  "locked_dispatch_proof_sha256": "28277dfa964d864f9f0e1a1aa4fb61cae99536cb8f0690df20f37f32a32dc2a1",
+  "pending_record_sha256": "a082ea89b08fd86172728b3aef627086a0d59349f699eddc11582c4fa6034829",
+  "phrases": {
+    "prepare": "PREPARE V3.10 CL7 EXACT CASH CUTOVER",
+    "confirm": "CONFIRM V3.10 CL7 EXACT CASH CUTOVER",
+    "activate": "ACTIVATE V3.10 CL7 EXACT CASH AUTHORITY",
+    "arm": "ARM V3.10 CL7 SANDBOX EXACT CASH EXECUTION",
+    "rollback": "ROLLBACK V3.10 CL7 TO LEGACY CASH AUTHORITY"
+  }
+}

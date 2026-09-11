@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import json
+import logging
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from math import ceil
-import json
-import logging
 from pathlib import Path
-import time
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -15,9 +15,20 @@ import pandas as pd
 
 from . import __version__
 from .candle_policy import candle_interval_policy, strategy_lookback_days
+from .crash_injection import CrashInjector
 from .journal import EventJournal, JournalEvent
 from .locking import InterProcessFileLock, LockUnavailableError
 from .market_idle import classify_market_status, seconds_since
+from .orders import (
+    OrderLifecycle,
+    executed_lots,
+    executed_order_price,
+    is_terminal_order_status,
+    lifecycle_for_status,
+    normalize_execution_status,
+    signed_lot_delta,
+    transition_intent,
+)
 from .portfolio_manager import CanonicalPortfolioManager
 from .portfolio_preflight import (
     PortfolioPreflightDecision,
@@ -30,24 +41,18 @@ from .post_fill_portfolio import (
     PostFillPortfolioCoordinator,
     PostFillPortfolioResult,
 )
-from .crash_injection import CrashInjector
-from .orders import (
-    OrderLifecycle,
-    executed_lots,
-    executed_order_price,
-    is_terminal_order_status,
-    lifecycle_for_status,
-    normalize_execution_status,
-    signed_lot_delta,
-    transition_intent,
-)
-from .resilience import CircuitBreakerConfig, PersistentCircuitBreaker
 from .recovery import RecoveryAction, RecoveryDecision, StartupRecoveryCoordinator
+from .resilience import CircuitBreakerConfig, PersistentCircuitBreaker
 from .risk import portfolio_risk_inputs
 from .risk_runtime import (
     RiskExecutionOutcome,
     RiskRuntimeAdapter,
     RiskRuntimeOutcome,
+)
+from .runtime_cash_authority import (
+    CL7RuntimeError,
+    RuntimeCashAuthorityStore,
+    legacy_execution_guard,
 )
 from .state_persistence import (
     StatePersistenceError,
@@ -63,7 +68,6 @@ from .strategy_runtime import (
     strategy_suite_from_bot_config,
 )
 from .tbank_sandbox import TBankAPIError, TBankSandboxClient
-
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +247,7 @@ class SandboxTradingBot:
         require_risk_runtime_for_execution: bool = False,
         recovery_coordinator: StartupRecoveryCoordinator | None = None,
         crash_injector: CrashInjector | None = None,
+        authority_store: RuntimeCashAuthorityStore | None = None,
     ) -> None:
         self.api = api
         self.account_id = str(account_id)
@@ -281,6 +286,9 @@ class SandboxTradingBot:
         self.instrument: dict[str, Any] | None = None
         self.instrument_id: str | None = None
         self.state_path = Path(config.state_file)
+        self.authority_store = authority_store or RuntimeCashAuthorityStore(
+            self.state_path.parent
+        )
         journal_path = (
             Path(config.journal_file)
             if config.journal_file
@@ -1609,486 +1617,505 @@ class SandboxTradingBot:
                 "position_reconciled": True,
             }
 
-        order_id = self._deterministic_order_id(
-            candle_time,
-            action,
-            target_lots,
-            risk_decision_id=(risk_outcome.decision_id if risk_outcome else None),
-        )
-        intent: dict[str, Any] = {
-            "order_id": order_id,
-            "run_id": run_id,
-            "candle_time": candle_time,
-            "action": action,
-            "lots": lots,
-            "target_lots": target_lots,
-            "current_lots_before": current_lots,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "order_type": self.config.order_type,
-            "time_in_force": self.config.time_in_force,
-            "strategy_id": self.primary_strategy,
-            "strategy_version": primary_decision.strategy_version,
-            "strategy_config_hash": self.primary_config_hash,
-            "strategy_suite_hash": self.suite_hash,
-            "strategy_reason": primary_decision.reason,
-            "target_weight": primary_decision.target_weight,
-            "stop_level": primary_decision.stop_level,
-            "decision_price_rub": primary_decision.indicators.get("close"),
-            "lot_size": max(1, int((self.instrument or {}).get("lot", 1) or 1)),
-            "risk_enforced": risk_outcome is not None,
-            "risk_mode": risk_outcome.mode if risk_outcome else None,
-            "risk_status": risk_outcome.status if risk_outcome else "NOT_ENFORCED",
-            "risk_decision_id": risk_outcome.decision_id if risk_outcome else None,
-            "risk_policy_hash": risk_outcome.policy_hash if risk_outcome else None,
-            "risk_requested_target_lots": strategy_target_lots,
-            "risk_approved_target_lots": target_lots,
-            "risk_breaches": (
-                list(risk_outcome.assessment.decision.breaches)
-                if risk_outcome and risk_outcome.assessment
-                else []
-            ),
-            "risk_reasons": (
-                list(risk_outcome.assessment.decision.reasons)
-                if risk_outcome and risk_outcome.assessment
-                else []
-            ),
-            "risk_execution_status": (
-                "PENDING" if risk_outcome is not None else "NOT_ENFORCED"
-            ),
-            "portfolio_preflight_enabled": self.portfolio_preflight_enabled,
-            "portfolio_snapshot_revision": (
-                portfolio_preflight_lease.revision
-                if portfolio_preflight_lease is not None
-                else None
-            ),
-            "portfolio_snapshot_decision_checksum": (
-                portfolio_preflight_lease.decision_checksum
-                if portfolio_preflight_lease is not None
-                else None
-            ),
-            "portfolio_snapshot_document_checksum": (
-                portfolio_preflight_lease.document_checksum
-                if portfolio_preflight_lease is not None
-                else None
-            ),
-            "portfolio_preflight_context": (
-                portfolio_preflight_decision.context.to_dict()
-                if portfolio_preflight_decision is not None
-                else None
-            ),
-            "portfolio_legacy_view": (
-                portfolio_preflight_legacy.to_dict()
-                if portfolio_preflight_legacy is not None
-                else None
-            ),
-        }
-        transition_intent(intent, OrderLifecycle.PRECHECK_PASSED)
-        transition_intent(intent, OrderLifecycle.INTENT_SAVED)
-        bot_state["pending_order"] = intent
-        self._save_state(root_state)
-        self._record_order_transition_safe(intent, run_id)
-        self._crash_checkpoint(OrderLifecycle.INTENT_SAVED, intent=intent)
-
-        if portfolio_preflight_lease is not None:
-            revision_check = self._recheck_portfolio_revision(
-                portfolio_preflight_lease,
-                run_id=run_id,
-            )
-            intent["portfolio_revision_check"] = revision_check.to_dict()
-            if not revision_check.unchanged:
-                transition_intent(
-                    intent,
-                    OrderLifecycle.SUBMISSION_FAILED,
-                    details={
-                        "accepted": False,
-                        "submission_attempted": False,
-                        "failure_stage": "PRE_POST_PORTFOLIO_REVISION_RECHECK",
-                        "portfolio_revision_changed": True,
-                        "portfolio_revision_check": revision_check.to_dict(),
-                    },
+        try:
+            with legacy_execution_guard(self.authority_store):
+                order_id = self._deterministic_order_id(
+                    candle_time,
+                    action,
+                    target_lots,
+                    risk_decision_id=(risk_outcome.decision_id if risk_outcome else None),
                 )
-                bot_state.pop("pending_order", None)
-                bot_state["last_portfolio_revision_block"] = revision_check.to_dict()
+                intent: dict[str, Any] = {
+                    "order_id": order_id,
+                    "run_id": run_id,
+                    "candle_time": candle_time,
+                    "action": action,
+                    "lots": lots,
+                    "target_lots": target_lots,
+                    "current_lots_before": current_lots,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "order_type": self.config.order_type,
+                    "time_in_force": self.config.time_in_force,
+                    "strategy_id": self.primary_strategy,
+                    "strategy_version": primary_decision.strategy_version,
+                    "strategy_config_hash": self.primary_config_hash,
+                    "strategy_suite_hash": self.suite_hash,
+                    "strategy_reason": primary_decision.reason,
+                    "target_weight": primary_decision.target_weight,
+                    "stop_level": primary_decision.stop_level,
+                    "decision_price_rub": primary_decision.indicators.get("close"),
+                    "lot_size": max(1, int((self.instrument or {}).get("lot", 1) or 1)),
+                    "risk_enforced": risk_outcome is not None,
+                    "risk_mode": risk_outcome.mode if risk_outcome else None,
+                    "risk_status": risk_outcome.status if risk_outcome else "NOT_ENFORCED",
+                    "risk_decision_id": risk_outcome.decision_id if risk_outcome else None,
+                    "risk_policy_hash": risk_outcome.policy_hash if risk_outcome else None,
+                    "risk_requested_target_lots": strategy_target_lots,
+                    "risk_approved_target_lots": target_lots,
+                    "risk_breaches": (
+                        list(risk_outcome.assessment.decision.breaches)
+                        if risk_outcome and risk_outcome.assessment
+                        else []
+                    ),
+                    "risk_reasons": (
+                        list(risk_outcome.assessment.decision.reasons)
+                        if risk_outcome and risk_outcome.assessment
+                        else []
+                    ),
+                    "risk_execution_status": (
+                        "PENDING" if risk_outcome is not None else "NOT_ENFORCED"
+                    ),
+                    "portfolio_preflight_enabled": self.portfolio_preflight_enabled,
+                    "portfolio_snapshot_revision": (
+                        portfolio_preflight_lease.revision
+                        if portfolio_preflight_lease is not None
+                        else None
+                    ),
+                    "portfolio_snapshot_decision_checksum": (
+                        portfolio_preflight_lease.decision_checksum
+                        if portfolio_preflight_lease is not None
+                        else None
+                    ),
+                    "portfolio_snapshot_document_checksum": (
+                        portfolio_preflight_lease.document_checksum
+                        if portfolio_preflight_lease is not None
+                        else None
+                    ),
+                    "portfolio_preflight_context": (
+                        portfolio_preflight_decision.context.to_dict()
+                        if portfolio_preflight_decision is not None
+                        else None
+                    ),
+                    "portfolio_legacy_view": (
+                        portfolio_preflight_legacy.to_dict()
+                        if portfolio_preflight_legacy is not None
+                        else None
+                    ),
+                }
+                transition_intent(intent, OrderLifecycle.PRECHECK_PASSED)
+                transition_intent(intent, OrderLifecycle.INTENT_SAVED)
+                bot_state["pending_order"] = intent
                 self._save_state(root_state)
                 self._record_order_transition_safe(intent, run_id)
-                return {
-                    **base_result,
-                    "action": action,
-                    "status": "portfolio_revision_changed",
-                    "order_id": order_id,
-                    "order_was_sent": False,
-                    "order_may_have_been_sent": False,
-                    "accepted": False,
-                    "executed": False,
-                    "executed_lots": 0,
-                    "position_reconciled": False,
-                    "new_orders_blocked": True,
-                    "retryable_block": True,
-                    "execution_block_reason": revision_check.reason,
-                    "portfolio_revision_check": revision_check.to_dict(),
-                    "pending_order": None,
-                }
+                self._crash_checkpoint(OrderLifecycle.INTENT_SAVED, intent=intent)
 
-        transition_intent(
-            intent,
-            OrderLifecycle.ORDER_SUBMITTED,
-            details={"submission_attempted": True},
-        )
-        bot_state["pending_order"] = intent
-        self._save_state(root_state)
-        self._record_order_transition_safe(intent, run_id)
-        self._crash_checkpoint(OrderLifecycle.ORDER_SUBMITTED, intent=intent)
-
-        try:
-            self._order_submission_attempted_in_cycle = True
-            with self._measure_phase("order_submission"):
-                order_response = self.api.post_order(
-                    self.account_id,
-                    self.instrument_id,
-                    lots,
-                    action,
-                    order_id=order_id,
-                    order_type=self.config.order_type,
-                    time_in_force=self.config.time_in_force,
-                )
-        except TBankAPIError as exc:
-            # A transient transport failure is ambiguous: the provider may
-            # have accepted the order even though the response was lost. Keep
-            # the persisted intent and recover it by the same deterministic
-            # orderId on the next cycle. A concrete non-transient HTTP error,
-            # however, proves that this submission was rejected and must not
-            # be automatically repeated forever.
-            if exc.transient or exc.status_code is None or exc.status_code < 400:
-                raise
-            transition_intent(
-                intent,
-                OrderLifecycle.SUBMISSION_FAILED,
-                details={
-                    "accepted": False,
-                    "submission_error": str(exc),
-                    "status_code": exc.status_code,
-                    "tracking_id": exc.tracking_id,
-                },
-            )
-            self._record_order_transition_safe(
-                intent,
-                run_id,
-                payload={"api_error": exc.details},
-            )
-            bot_state.pop("pending_order", None)
-            self._consume_candle(
-                bot_state,
-                candle_time,
-                dry_run=False,
-                order_id=order_id,
-                reason="SUBMISSION_FAILED",
-            )
-            self._save_state(root_state)
-            return {
-                **base_result,
-                "action": action,
-                "order_was_sent": True,
-                "status": "submission_failed",
-                "order_id": order_id,
-                "order_status": "REJECTED",
-                "order_lifecycle_state": intent.get("lifecycle_state"),
-                "accepted": False,
-                "executed": False,
-                "executed_lots": 0,
-                "position_reconciled": True,
-                "pending_order": None,
-                "error": str(exc),
-                "api_status_code": exc.status_code,
-                "tracking_id": exc.tracking_id,
-            }
-        transition_intent(
-            intent,
-            OrderLifecycle.ORDER_ACCEPTED,
-            details={"accepted": True},
-        )
-        bot_state["pending_order"] = intent
-        self._save_state(root_state)
-        self._record_order_transition_safe(
-            intent,
-            run_id,
-            payload={"order_response": order_response},
-        )
-        self._crash_checkpoint(OrderLifecycle.ORDER_ACCEPTED, intent=intent)
-
-        with self._measure_phase("order_state_read"):
-            order_state = self.api.get_order_state(
-                self.account_id,
-                order_id,
-                by_request_id=True,
-            )
-        final_payload = order_state or order_response
-        order_status = normalize_execution_status(final_payload)
-        filled_lots = executed_lots(final_payload)
-        lifecycle = lifecycle_for_status(order_status)
-        transition_intent(
-            intent,
-            lifecycle,
-            details={
-                "last_known_status": order_status,
-                "executed_lots": filled_lots,
-            },
-        )
-        bot_state["pending_order"] = intent
-        self._save_state(root_state)
-        self._record_order_transition_safe(
-            intent,
-            run_id,
-            payload={"order_state": order_state},
-        )
-        self._crash_checkpoint(lifecycle, intent=intent)
-
-        position_reconciled = False
-        actual_lots_after: int | None = None
-        expected_lots_after = current_lots + signed_lot_delta(
-            action,
-            filled_lots,
-        )
-        result_status = "order_pending"
-
-        if is_terminal_order_status(order_status, self.config.time_in_force):
-            with self._measure_phase("position_reconciliation"):
-                reconciliation = self._reconcile_position(
-                    expected_lots=expected_lots_after,
-                )
-            position_reconciled = reconciliation["position_reconciled"]
-            actual_lots_after = reconciliation["actual_lots_after"]
-            if position_reconciled:
-                canonical_result = self._canonical_post_fill_reconcile(
-                    root_state=root_state,
-                    bot_state=bot_state,
-                    intent=intent,
-                    reconciliation=reconciliation,
-                    expected_lots=expected_lots_after,
-                    run_id=run_id,
-                )
-                canonical_ok = (
-                    canonical_result is None or canonical_result.success
-                )
-                if not canonical_ok:
-                    position_reconciled = False
-                    transition_intent(
-                        intent,
-                        OrderLifecycle.RECONCILIATION_REQUIRED,
-                        details={
-                            "expected_lots_after": expected_lots_after,
-                            "actual_lots_after": actual_lots_after,
-                            "canonical_reconciliation_required": True,
-                            "post_fill_canonical": canonical_result.to_dict(),
-                        },
-                    )
-                    bot_state["pending_order"] = intent
-                    self._save_state(root_state)
-                    self._record_order_transition_safe(intent, run_id)
-                    self._record_incident_safe(
-                        event_type="POST_FILL_CANONICAL_RECONCILIATION_FAILED",
-                        severity="ERROR",
+                if portfolio_preflight_lease is not None:
+                    revision_check = self._recheck_portfolio_revision(
+                        portfolio_preflight_lease,
                         run_id=run_id,
-                        bot_state=bot_state,
-                        payload={
-                            "order_id": order_id,
-                            "expected_lots_after": expected_lots_after,
-                            "actual_lots_after": actual_lots_after,
-                            "post_fill_canonical": canonical_result.to_dict(),
-                        },
                     )
-                    result_status = "canonical_reconciliation_pending"
-                else:
-                    if canonical_result is not None:
-                        proof = dict(
-                            reconciliation.get("reconciliation_proof") or {}
+                    intent["portfolio_revision_check"] = revision_check.to_dict()
+                    if not revision_check.unchanged:
+                        transition_intent(
+                            intent,
+                            OrderLifecycle.SUBMISSION_FAILED,
+                            details={
+                                "accepted": False,
+                                "submission_attempted": False,
+                                "failure_stage": "PRE_POST_PORTFOLIO_REVISION_RECHECK",
+                                "portfolio_revision_changed": True,
+                                "portfolio_revision_check": revision_check.to_dict(),
+                            },
                         )
-                        proof.update(
-                            {
-                                "canonical_reconciled": True,
-                                "canonical_revision": canonical_result.revision,
-                                "canonical_decision_checksum": (
-                                    canonical_result.decision_checksum
-                                ),
-                                "canonical_snapshot_at": canonical_result.snapshot_at,
-                            }
+                        bot_state.pop("pending_order", None)
+                        bot_state["last_portfolio_revision_block"] = revision_check.to_dict()
+                        self._save_state(root_state)
+                        self._record_order_transition_safe(intent, run_id)
+                        return {
+                            **base_result,
+                            "action": action,
+                            "status": "portfolio_revision_changed",
+                            "order_id": order_id,
+                            "order_was_sent": False,
+                            "order_may_have_been_sent": False,
+                            "accepted": False,
+                            "executed": False,
+                            "executed_lots": 0,
+                            "position_reconciled": False,
+                            "new_orders_blocked": True,
+                            "retryable_block": True,
+                            "execution_block_reason": revision_check.reason,
+                            "portfolio_revision_check": revision_check.to_dict(),
+                            "pending_order": None,
+                        }
+
+                transition_intent(
+                    intent,
+                    OrderLifecycle.ORDER_SUBMITTED,
+                    details={"submission_attempted": True},
+                )
+                bot_state["pending_order"] = intent
+                self._save_state(root_state)
+                self._record_order_transition_safe(intent, run_id)
+                self._crash_checkpoint(OrderLifecycle.ORDER_SUBMITTED, intent=intent)
+
+                try:
+                    self._order_submission_attempted_in_cycle = True
+                    with self._measure_phase("order_submission"):
+                        order_response = self.api.post_order(
+                            self.account_id,
+                            self.instrument_id,
+                            lots,
+                            action,
+                            order_id=order_id,
+                            order_type=self.config.order_type,
+                            time_in_force=self.config.time_in_force,
                         )
-                        reconciliation["reconciliation_proof"] = proof
-                        intent["post_fill_canonical"] = canonical_result.to_dict()
+                except TBankAPIError as exc:
+                    # A transient transport failure is ambiguous: the provider may
+                    # have accepted the order even though the response was lost. Keep
+                    # the persisted intent and recover it by the same deterministic
+                    # orderId on the next cycle. A concrete non-transient HTTP error,
+                    # however, proves that this submission was rejected and must not
+                    # be automatically repeated forever.
+                    if exc.transient or exc.status_code is None or exc.status_code < 400:
+                        raise
                     transition_intent(
                         intent,
-                        OrderLifecycle.PORTFOLIO_RECONCILED,
+                        OrderLifecycle.SUBMISSION_FAILED,
                         details={
-                            "expected_lots_after": expected_lots_after,
-                            "actual_lots_after": actual_lots_after,
-                            "reconcile_attempts_used": reconciliation.get(
-                                "reconcile_attempts_used"
-                            ),
-                            "reconciliation_confirmed_at": reconciliation.get(
-                                "reconciliation_confirmed_at"
-                            ),
-                            "reconciliation_proof": reconciliation.get(
-                                "reconciliation_proof"
-                            ),
+                            "accepted": False,
+                            "submission_error": str(exc),
+                            "status_code": exc.status_code,
+                            "tracking_id": exc.tracking_id,
                         },
                     )
-                    bot_state["pending_order"] = intent
-                    self._save_state(root_state)
                     self._record_order_transition_safe(
                         intent,
                         run_id,
-                        payload={
-                            "reconciliation_proof": reconciliation.get(
-                                "reconciliation_proof"
-                            )
-                        },
+                        payload={"api_error": exc.details},
                     )
-                    self._crash_checkpoint(
-                        OrderLifecycle.PORTFOLIO_RECONCILED,
-                        intent=intent,
+                    bot_state.pop("pending_order", None)
+                    self._consume_candle(
+                        bot_state,
+                        candle_time,
+                        dry_run=False,
+                        order_id=order_id,
+                        reason="SUBMISSION_FAILED",
                     )
+                    self._save_state(root_state)
+                    return {
+                        **base_result,
+                        "action": action,
+                        "order_was_sent": True,
+                        "status": "submission_failed",
+                        "order_id": order_id,
+                        "order_status": "REJECTED",
+                        "order_lifecycle_state": intent.get("lifecycle_state"),
+                        "accepted": False,
+                        "executed": False,
+                        "executed_lots": 0,
+                        "position_reconciled": True,
+                        "pending_order": None,
+                        "error": str(exc),
+                        "api_status_code": exc.status_code,
+                        "tracking_id": exc.tracking_id,
+                    }
+                transition_intent(
+                    intent,
+                    OrderLifecycle.ORDER_ACCEPTED,
+                    details={"accepted": True},
+                )
+                bot_state["pending_order"] = intent
+                self._save_state(root_state)
+                self._record_order_transition_safe(
+                    intent,
+                    run_id,
+                    payload={"order_response": order_response},
+                )
+                self._crash_checkpoint(OrderLifecycle.ORDER_ACCEPTED, intent=intent)
 
-                    risk_execution = self._register_risk_execution(
-                        intent=intent,
-                        final_payload=final_payload,
-                        fallback_payload=order_response,
-                        reconciliation=reconciliation,
-                        run_id=run_id,
+                with self._measure_phase("order_state_read"):
+                    order_state = self.api.get_order_state(
+                        self.account_id,
+                        order_id,
+                        by_request_id=True,
                     )
-                    if risk_execution is not None and risk_execution.status in {
-                        "RECORDED",
-                        "DUPLICATE",
-                    }:
-                        self._crash_checkpoint("EXECUTION_RECORDED", intent=intent)
-                    if (
-                        risk_execution is not None
-                        and risk_execution.status == "RUNTIME_ERROR"
-                    ):
-                        transition_intent(
-                            intent,
-                            OrderLifecycle.RISK_ACCOUNTING_REQUIRED,
-                            details={
-                                "expected_lots_after": expected_lots_after,
-                                "actual_lots_after": actual_lots_after,
-                                "reconciliation_confirmed_at": reconciliation.get(
-                                    "reconciliation_confirmed_at"
-                                ),
-                                "risk_execution_error": risk_execution.error,
-                            },
+                final_payload = order_state or order_response
+                order_status = normalize_execution_status(final_payload)
+                filled_lots = executed_lots(final_payload)
+                lifecycle = lifecycle_for_status(order_status)
+                transition_intent(
+                    intent,
+                    lifecycle,
+                    details={
+                        "last_known_status": order_status,
+                        "executed_lots": filled_lots,
+                    },
+                )
+                bot_state["pending_order"] = intent
+                self._save_state(root_state)
+                self._record_order_transition_safe(
+                    intent,
+                    run_id,
+                    payload={"order_state": order_state},
+                )
+                self._crash_checkpoint(lifecycle, intent=intent)
+
+                position_reconciled = False
+                actual_lots_after: int | None = None
+                expected_lots_after = current_lots + signed_lot_delta(
+                    action,
+                    filled_lots,
+                )
+                result_status = "order_pending"
+
+                if is_terminal_order_status(order_status, self.config.time_in_force):
+                    with self._measure_phase("position_reconciliation"):
+                        reconciliation = self._reconcile_position(
+                            expected_lots=expected_lots_after,
                         )
-                        bot_state["pending_order"] = intent
-                        self._save_state(root_state)
-                        self._record_order_transition_safe(intent, run_id)
-                        self._record_incident_safe(
-                            event_type="RISK_EXECUTION_ACCOUNTING_FAILED",
-                            severity="ERROR",
-                            run_id=run_id,
+                    position_reconciled = reconciliation["position_reconciled"]
+                    actual_lots_after = reconciliation["actual_lots_after"]
+                    if position_reconciled:
+                        canonical_result = self._canonical_post_fill_reconcile(
+                            root_state=root_state,
                             bot_state=bot_state,
-                            payload={
-                                "order_id": order_id,
-                                "risk_decision_id": intent.get("risk_decision_id"),
-                                "risk_policy_hash": intent.get("risk_policy_hash"),
-                                "reconciliation_confirmed_at": reconciliation.get(
-                                    "reconciliation_confirmed_at"
-                                ),
-                                "error": risk_execution.error,
-                            },
+                            intent=intent,
+                            reconciliation=reconciliation,
+                            expected_lots=expected_lots_after,
+                            run_id=run_id,
                         )
-                        result_status = "risk_accounting_pending"
-                    else:
-                        if risk_execution is not None:
+                        canonical_ok = (
+                            canonical_result is None or canonical_result.success
+                        )
+                        if not canonical_ok:
+                            position_reconciled = False
                             transition_intent(
                                 intent,
-                                OrderLifecycle.RISK_ACCOUNTED,
+                                OrderLifecycle.RECONCILIATION_REQUIRED,
                                 details={
-                                    "risk_execution_status": risk_execution.status,
-                                    "risk_execution_duplicate": (
-                                        risk_execution.duplicate
-                                    ),
-                                    "reconciliation_confirmed_at": (
-                                        risk_execution.reconciliation_confirmed_at
-                                    ),
+                                    "expected_lots_after": expected_lots_after,
+                                    "actual_lots_after": actual_lots_after,
+                                    "canonical_reconciliation_required": True,
+                                    "post_fill_canonical": canonical_result.to_dict(),
                                 },
                             )
                             bot_state["pending_order"] = intent
                             self._save_state(root_state)
                             self._record_order_transition_safe(intent, run_id)
+                            self._record_incident_safe(
+                                event_type="POST_FILL_CANONICAL_RECONCILIATION_FAILED",
+                                severity="ERROR",
+                                run_id=run_id,
+                                bot_state=bot_state,
+                                payload={
+                                    "order_id": order_id,
+                                    "expected_lots_after": expected_lots_after,
+                                    "actual_lots_after": actual_lots_after,
+                                    "post_fill_canonical": canonical_result.to_dict(),
+                                },
+                            )
+                            result_status = "canonical_reconciliation_pending"
+                        else:
+                            if canonical_result is not None:
+                                proof = dict(
+                                    reconciliation.get("reconciliation_proof") or {}
+                                )
+                                proof.update(
+                                    {
+                                        "canonical_reconciled": True,
+                                        "canonical_revision": canonical_result.revision,
+                                        "canonical_decision_checksum": (
+                                            canonical_result.decision_checksum
+                                        ),
+                                        "canonical_snapshot_at": canonical_result.snapshot_at,
+                                    }
+                                )
+                                reconciliation["reconciliation_proof"] = proof
+                                intent["post_fill_canonical"] = canonical_result.to_dict()
+                            transition_intent(
+                                intent,
+                                OrderLifecycle.PORTFOLIO_RECONCILED,
+                                details={
+                                    "expected_lots_after": expected_lots_after,
+                                    "actual_lots_after": actual_lots_after,
+                                    "reconcile_attempts_used": reconciliation.get(
+                                        "reconcile_attempts_used"
+                                    ),
+                                    "reconciliation_confirmed_at": reconciliation.get(
+                                        "reconciliation_confirmed_at"
+                                    ),
+                                    "reconciliation_proof": reconciliation.get(
+                                        "reconciliation_proof"
+                                    ),
+                                },
+                            )
+                            bot_state["pending_order"] = intent
+                            self._save_state(root_state)
+                            self._record_order_transition_safe(
+                                intent,
+                                run_id,
+                                payload={
+                                    "reconciliation_proof": reconciliation.get(
+                                        "reconciliation_proof"
+                                    )
+                                },
+                            )
                             self._crash_checkpoint(
-                                OrderLifecycle.RISK_ACCOUNTED,
+                                OrderLifecycle.PORTFOLIO_RECONCILED,
                                 intent=intent,
                             )
-                        bot_state.pop("pending_order", None)
-                        bot_state["last_confirmed_current_lots"] = actual_lots_after
-                        bot_state["last_confirmed_target_lots"] = actual_lots_after
-                        self._consume_candle(
-                            bot_state,
-                            candle_time,
-                            dry_run=False,
-                            order_id=order_id,
-                            reason=order_status or "TERMINAL",
-                        )
-                        result_status = "processed"
-            else:
-                transition_intent(
-                    intent,
-                    OrderLifecycle.RECONCILIATION_REQUIRED,
-                    details={
-                        "expected_lots_after": expected_lots_after,
-                        "actual_lots_after": actual_lots_after,
-                    },
-                )
-                bot_state["pending_order"] = intent
-                self._record_order_transition_safe(intent, run_id)
-                self._record_incident_safe(
-                    event_type="POSITION_RECONCILIATION_MISMATCH",
-                    severity="ERROR",
-                    run_id=run_id,
-                    bot_state=bot_state,
-                    payload={
-                        "order_id": order_id,
-                        "expected_lots_after": expected_lots_after,
-                        "actual_lots_after": actual_lots_after,
-                    },
-                )
-        else:
-            bot_state["pending_order"] = intent
 
-        self._save_state(root_state)
-        logger.warning(
-            "SANDBOX ORDER: %s %s lot(s) %s order_id=%s status=%s "
-            "executed_lots=%s reconciled=%s",
-            action,
-            lots,
-            self.config.ticker,
-            order_id,
-            order_status,
-            filled_lots,
-            position_reconciled,
-        )
-        return {
-            **base_result,
-            "action": action,
-            "order_was_sent": True,
-            "status": result_status,
-            "order_id": order_id,
-            "order_status": order_status,
-            "order_lifecycle_state": intent.get("lifecycle_state"),
-            "accepted": True,
-            "executed": filled_lots > 0 or order_status == "FILL",
-            "executed_lots": filled_lots,
-            "expected_lots_after": expected_lots_after,
-            "actual_lots_after": actual_lots_after,
-            "position_reconciled": position_reconciled,
-            "pending_order": bot_state.get("pending_order"),
-            "risk_execution": intent.get("risk_execution"),
-            "risk_execution_status": intent.get("risk_execution_status"),
-            "post_fill_canonical": intent.get("post_fill_canonical"),
-            "new_orders_blocked": result_status in {
-                "risk_accounting_pending",
-                "canonical_reconciliation_pending",
-            },
-            "order_response": order_response,
-            "order_state": order_state,
-        }
+                            risk_execution = self._register_risk_execution(
+                                intent=intent,
+                                final_payload=final_payload,
+                                fallback_payload=order_response,
+                                reconciliation=reconciliation,
+                                run_id=run_id,
+                            )
+                            if risk_execution is not None and risk_execution.status in {
+                                "RECORDED",
+                                "DUPLICATE",
+                            }:
+                                self._crash_checkpoint("EXECUTION_RECORDED", intent=intent)
+                            if (
+                                risk_execution is not None
+                                and risk_execution.status == "RUNTIME_ERROR"
+                            ):
+                                transition_intent(
+                                    intent,
+                                    OrderLifecycle.RISK_ACCOUNTING_REQUIRED,
+                                    details={
+                                        "expected_lots_after": expected_lots_after,
+                                        "actual_lots_after": actual_lots_after,
+                                        "reconciliation_confirmed_at": reconciliation.get(
+                                            "reconciliation_confirmed_at"
+                                        ),
+                                        "risk_execution_error": risk_execution.error,
+                                    },
+                                )
+                                bot_state["pending_order"] = intent
+                                self._save_state(root_state)
+                                self._record_order_transition_safe(intent, run_id)
+                                self._record_incident_safe(
+                                    event_type="RISK_EXECUTION_ACCOUNTING_FAILED",
+                                    severity="ERROR",
+                                    run_id=run_id,
+                                    bot_state=bot_state,
+                                    payload={
+                                        "order_id": order_id,
+                                        "risk_decision_id": intent.get("risk_decision_id"),
+                                        "risk_policy_hash": intent.get("risk_policy_hash"),
+                                        "reconciliation_confirmed_at": reconciliation.get(
+                                            "reconciliation_confirmed_at"
+                                        ),
+                                        "error": risk_execution.error,
+                                    },
+                                )
+                                result_status = "risk_accounting_pending"
+                            else:
+                                if risk_execution is not None:
+                                    transition_intent(
+                                        intent,
+                                        OrderLifecycle.RISK_ACCOUNTED,
+                                        details={
+                                            "risk_execution_status": risk_execution.status,
+                                            "risk_execution_duplicate": (
+                                                risk_execution.duplicate
+                                            ),
+                                            "reconciliation_confirmed_at": (
+                                                risk_execution.reconciliation_confirmed_at
+                                            ),
+                                        },
+                                    )
+                                    bot_state["pending_order"] = intent
+                                    self._save_state(root_state)
+                                    self._record_order_transition_safe(intent, run_id)
+                                    self._crash_checkpoint(
+                                        OrderLifecycle.RISK_ACCOUNTED,
+                                        intent=intent,
+                                    )
+                                bot_state.pop("pending_order", None)
+                                bot_state["last_confirmed_current_lots"] = actual_lots_after
+                                bot_state["last_confirmed_target_lots"] = actual_lots_after
+                                self._consume_candle(
+                                    bot_state,
+                                    candle_time,
+                                    dry_run=False,
+                                    order_id=order_id,
+                                    reason=order_status or "TERMINAL",
+                                )
+                                result_status = "processed"
+                    else:
+                        transition_intent(
+                            intent,
+                            OrderLifecycle.RECONCILIATION_REQUIRED,
+                            details={
+                                "expected_lots_after": expected_lots_after,
+                                "actual_lots_after": actual_lots_after,
+                            },
+                        )
+                        bot_state["pending_order"] = intent
+                        self._record_order_transition_safe(intent, run_id)
+                        self._record_incident_safe(
+                            event_type="POSITION_RECONCILIATION_MISMATCH",
+                            severity="ERROR",
+                            run_id=run_id,
+                            bot_state=bot_state,
+                            payload={
+                                "order_id": order_id,
+                                "expected_lots_after": expected_lots_after,
+                                "actual_lots_after": actual_lots_after,
+                            },
+                        )
+                else:
+                    bot_state["pending_order"] = intent
+
+                self._save_state(root_state)
+                logger.warning(
+                    "SANDBOX ORDER: %s %s lot(s) %s order_id=%s status=%s "
+                    "executed_lots=%s reconciled=%s",
+                    action,
+                    lots,
+                    self.config.ticker,
+                    order_id,
+                    order_status,
+                    filled_lots,
+                    position_reconciled,
+                )
+                return {
+                    **base_result,
+                    "action": action,
+                    "order_was_sent": True,
+                    "status": result_status,
+                    "order_id": order_id,
+                    "order_status": order_status,
+                    "order_lifecycle_state": intent.get("lifecycle_state"),
+                    "accepted": True,
+                    "executed": filled_lots > 0 or order_status == "FILL",
+                    "executed_lots": filled_lots,
+                    "expected_lots_after": expected_lots_after,
+                    "actual_lots_after": actual_lots_after,
+                    "position_reconciled": position_reconciled,
+                    "pending_order": bot_state.get("pending_order"),
+                    "risk_execution": intent.get("risk_execution"),
+                    "risk_execution_status": intent.get("risk_execution_status"),
+                    "post_fill_canonical": intent.get("post_fill_canonical"),
+                    "new_orders_blocked": result_status in {
+                        "risk_accounting_pending",
+                        "canonical_reconciliation_pending",
+                    },
+                    "order_response": order_response,
+                    "order_state": order_state,
+                }
+
+        except CL7RuntimeError as exc:
+            return {
+                **base_result,
+                "action": action,
+                "status": "cl7_legacy_execution_blocked",
+                "order_was_sent": False,
+                "order_may_have_been_sent": False,
+                "accepted": False,
+                "executed": False,
+                "executed_lots": 0,
+                "position_reconciled": False,
+                "new_orders_blocked": True,
+                "retryable_block": False,
+                "execution_block_reason": exc.reason.value,
+                "pending_order": None,
+            }
 
     def _ensure_instrument(self, bot_state: dict[str, Any]) -> None:
         if self.instrument is None:

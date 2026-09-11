@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from .central_order_manager import (
@@ -9,6 +11,7 @@ from .central_order_manager import (
     CentralOrderError,
     CentralOrderIntent,
     CentralOrderManager,
+    CentralOrderState,
 )
 from .market_idle import MarketAvailability, classify_market_status
 from .orders import (
@@ -17,12 +20,21 @@ from .orders import (
     is_terminal_order_status,
     normalize_execution_status,
 )
+from .portfolio_preflight import PortfolioSnapshotLease
 from .portfolio_repository import PortfolioRepository, PortfolioRepositoryError
 from .portfolio_risk_runtime import (
     PortfolioRiskAuthorizationError,
     PortfolioRiskRuntime,
 )
 from .risk_runtime import RiskDispatchAuthorizationError
+from .runtime_cash_authority import (
+    CL7RuntimeError,
+    CL7RuntimeReason,
+    LockedDispatchProof,
+    RuntimeCashAuthorityManager,
+    RuntimeCashAuthorityRecord,
+    RuntimeCashAuthorityState,
+)
 from .tbank_sandbox import TBankAPIError
 
 SANDBOX_EXECUTION_CONFIRMATION = "ENABLE V3.8 SANDBOX EXECUTION"
@@ -44,6 +56,18 @@ class SandboxExecutionTransport(Protocol):
         time_in_force: str,
     ) -> dict[str, Any]: ...
 
+    def post_order_once(
+        self,
+        account_id: str,
+        instrument_id: str,
+        lots: int,
+        direction: str,
+        *,
+        order_id: str,
+        order_type: str,
+        time_in_force: str,
+    ) -> dict[str, Any]: ...
+
     def get_order_state(
         self,
         account_id: str,
@@ -51,6 +75,14 @@ class SandboxExecutionTransport(Protocol):
         *,
         by_request_id: bool = True,
     ) -> dict[str, Any]: ...
+
+    def get_operations_by_cursor_once(
+        self, payload: dict[str, Any], timeout_ns: int
+    ) -> dict[str, Any]: ...
+
+    def get_portfolio(self, account_id: str) -> dict[str, Any]: ...
+
+    def get_positions(self, account_id: str) -> dict[str, Any]: ...
 
 
 class SandboxRiskAuthorizationGate(Protocol):
@@ -110,6 +142,7 @@ class SandboxDispatchResult:
 class SandboxInspectionResult:
     status: str
     intent_id: str | None = None
+    broker_order_id: str | None = None
     provider_status: str | None = None
     executed_lots: int = 0
     terminal: bool = False
@@ -137,6 +170,18 @@ class SandboxExecutionAdapter:
         *,
         risk_runtime: SandboxRiskAuthorizationGate | None = None,
         portfolio_risk_runtime: PortfolioRiskRuntime | None = None,
+        cash_authority_manager: RuntimeCashAuthorityManager | None = None,
+        cl7_identity_key: bytes | None = None,
+        cl7_identity_key_id: str | None = None,
+        cl7_ledger_store: Any | None = None,
+        cl7_proof_builder: Callable[
+            [RuntimeCashAuthorityRecord, CentralOrderState, CentralOrderIntent],
+            LockedDispatchProof,
+        ]
+        | None = None,
+        cl7_clock: Callable[[], str] | None = None,
+        cl7_monotonic_ns: Callable[[], int] | None = None,
+        cl7_wait_ns: Callable[[int], object] | None = None,
     ) -> None:
         if policy.account_id != manager.account_id:
             raise ValueError("Sandbox execution policy account scope mismatch.")
@@ -151,6 +196,19 @@ class SandboxExecutionAdapter:
         self.policy = policy
         self.risk_runtime = risk_runtime
         self.portfolio_risk_runtime = portfolio_risk_runtime
+        self.cash_authority_manager = cash_authority_manager
+        self.cl7_identity_key = cl7_identity_key
+        self.cl7_identity_key_id = cl7_identity_key_id
+        self.cl7_ledger_store = cl7_ledger_store
+        self.cl7_proof_builder = cl7_proof_builder
+        self.cl7_clock = cl7_clock or (
+            lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
+            + "000Z"
+        )
+        self.cl7_monotonic_ns = cl7_monotonic_ns or time.monotonic_ns
+        self.cl7_wait_ns = cl7_wait_ns or (
+            lambda duration: time.sleep(duration / 1_000_000_000)
+        )
         if self.portfolio_risk_runtime is not None and (
             self.portfolio_risk_runtime.account_id != manager.account_id
         ):
@@ -163,6 +221,23 @@ class SandboxExecutionAdapter:
         expected_intent_id: str | None = None,
     ) -> SandboxDispatchResult:
         state = self.manager.state()
+        authority = None
+        if self.cash_authority_manager is not None:
+            try:
+                authority = self.cash_authority_manager.status()
+            except CL7RuntimeError as exc:
+                return SandboxDispatchResult(
+                    status="CL7_RECOVERY_BLOCKED",
+                    error=exc.reason.value,
+                )
+            if (
+                authority.state
+                is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+            ):
+                return SandboxDispatchResult(
+                    status="CL7_DISPATCH_PENDING",
+                    error="DISPATCH_PENDING",
+                )
         blocker = state.blocking_intent
         if blocker is not None:
             return SandboxDispatchResult(
@@ -179,12 +254,351 @@ class SandboxExecutionAdapter:
                 intent_id=intent.intent_id,
                 error="Selected intent is not the current account-wide queue head.",
             )
+        if (
+            authority is not None
+            and authority.state is not RuntimeCashAuthorityState.LEGACY_ACTIVE
+        ):
+            return self._dispatch_exact(
+                intent,
+                portfolio_repository,
+                expected_intent_id=expected,
+            )
         if not self.policy.armed:
             return SandboxDispatchResult(
                 status="DISARMED",
                 intent_id=intent.intent_id,
             )
+        return self._dispatch_legacy_authorized(intent, portfolio_repository)
 
+    def _dispatch_exact(
+        self,
+        intent: CentralOrderIntent,
+        portfolio_repository: PortfolioRepository,
+        *,
+        expected_intent_id: str | None,
+    ) -> SandboxDispatchResult:
+        if expected_intent_id is None:
+            return SandboxDispatchResult(
+                status="OPERATOR_INTENT_REQUIRED",
+                error="CENTRAL_CHANGED",
+            )
+        if (
+            type(self.cl7_identity_key) is not bytes
+            or type(self.cl7_identity_key_id) is not str
+            or self.cl7_ledger_store is None
+        ):
+            return SandboxDispatchResult(
+                status="CL7_CONTEXT_UNAVAILABLE",
+                error="CONTEXT_BLOCKED",
+            )
+        post_once = getattr(self.transport, "post_order_once", None)
+        if not callable(post_once):
+            return SandboxDispatchResult(
+                status="CL7_TRANSPORT_UNAVAILABLE",
+                error="INTERNAL_BOUNDARY_FAILED",
+            )
+        market_result = self._market_precheck(intent)
+        if isinstance(market_result, SandboxDispatchResult):
+            return market_result
+        market = market_result
+        authority_manager = self.cash_authority_manager
+        assert authority_manager is not None
+        try:
+            with authority_manager.store.locked():
+                authority = authority_manager.store._load_unlocked(
+                    allow_missing_legacy=False
+                )
+                if authority.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING:
+                    raise CL7RuntimeError(CL7RuntimeReason.DISPATCH_PENDING)
+                if authority.state is not RuntimeCashAuthorityState.EXACT_CASH_ARMED:
+                    raise CL7RuntimeError(CL7RuntimeReason.DISPATCH_NOT_ARMED)
+                authority_manager._account(
+                    authority,
+                    self.policy.account_id,
+                    self.cl7_identity_key,
+                    self.cl7_identity_key_id,
+                )
+                sync_to = self.cl7_clock()
+                from .broker_read_adapters import RetryPolicy
+
+                authority, _batch = authority_manager.synchronize_operations_locked(
+                    authority,
+                    ledger_store=self.cl7_ledger_store,
+                    raw_account_id=self.policy.account_id,
+                    identity_key=self.cl7_identity_key,
+                    identity_key_id=self.cl7_identity_key_id,
+                    sync_to_exclusive=sync_to,
+                    transport=self.transport.get_operations_by_cursor_once,
+                    monotonic_ns=self.cl7_monotonic_ns,
+                    wait_ns=self.cl7_wait_ns,
+                    absolute_deadline_ns=self.cl7_monotonic_ns()
+                    + 60_000_000_000,
+                    retry_policy=RetryPolicy(
+                        max_attempts=3,
+                        per_attempt_timeout_ns=10_000_000_000,
+                        backoff_ns=(100_000_000, 500_000_000),
+                    ),
+                    transition_at=self.cl7_clock(),
+                )
+                try:
+                    portfolio_response = self.transport.get_portfolio(
+                        self.policy.account_id
+                    )
+                    positions_response = self.transport.get_positions(
+                        self.policy.account_id
+                    )
+                    provider_as_of = self.cl7_clock()
+                except Exception:  # noqa: BLE001 - provider trust boundary
+                    raise CL7RuntimeError(
+                        CL7RuntimeReason.BROKER_READ_FAILED,
+                        stage="CURRENT_CASH_POSITIONS",
+                        retryable=True,
+                    ) from None
+                with portfolio_repository.locked_snapshot(
+                    expected_account_id=self.policy.account_id
+                ) as locked_portfolio:
+                    risk_guard = (
+                        self.risk_runtime.dispatch_authorization_guard(
+                            expected_policy_hash=intent.authorization.risk_policy_hash,
+                            expected_state_guard_hash=(
+                                intent.authorization.risk_state_guard_hash
+                            ),
+                            instrument_id=intent.candidate.instrument_id,
+                        )
+                        if self.risk_runtime is not None
+                        else None
+                    )
+                    if risk_guard is None:
+                        raise CL7RuntimeError(CL7RuntimeReason.RISK_CHANGED)
+                    with risk_guard:
+                        try:
+                            risk_policy, _created = self.risk_runtime._load_policy()
+                            risk_state = self.risk_runtime.state_store.load_account(
+                                self.policy.account_id
+                            )
+                        except Exception:  # noqa: BLE001 - risk custody boundary
+                            raise CL7RuntimeError(
+                                CL7RuntimeReason.RISK_CHANGED
+                            ) from None
+                        evaluated_at = self.cl7_clock()
+                        portfolio_lease = PortfolioSnapshotLease.from_state(
+                            locked_portfolio,
+                            leased_at=_cl7_iso_timestamp(evaluated_at),
+                        )
+                        with authority_manager.ledger_guard(self.cl7_ledger_store):
+                            def validate(
+                                central: CentralOrderState,
+                                queued: CentralOrderIntent,
+                            ) -> LockedDispatchProof:
+                                if self.portfolio_risk_runtime is not None:
+                                    self.portfolio_risk_runtime.validate_dispatch(
+                                        portfolio=locked_portfolio,
+                                        central_orders=central,
+                                        intent=queued,
+                                    )
+                                evidence = authority_manager.build_runtime_context(
+                                    current=authority,
+                                    ledger_store=self.cl7_ledger_store,
+                                    portfolio_response=portfolio_response,
+                                    positions_response=positions_response,
+                                    broker_cash_as_of=provider_as_of,
+                                    broker_positions_as_of=provider_as_of,
+                                    central_state=central,
+                                    portfolio_lease=portfolio_lease,
+                                    risk_policy=risk_policy,
+                                    risk_state=risk_state,
+                                    raw_account_id=self.policy.account_id,
+                                    identity_key=self.cl7_identity_key,
+                                    identity_key_id=self.cl7_identity_key_id,
+                                    evaluated_at=evaluated_at,
+                                    require_ready=True,
+                                )
+                                if self.cl7_proof_builder is None:
+                                    proof = authority_manager.build_locked_dispatch_proof(
+                                        context=evidence.context,
+                                        authority_record=authority,
+                                        raw_intent_id=queued.intent_id,
+                                        identity_key=self.cl7_identity_key,
+                                        reserved_cash=_cl7_reserved_cash(queued),
+                                        current_lots=queued.candidate.current_lots,
+                                        target_lots=queued.candidate.target_lots,
+                                        direction=queued.candidate.direction,
+                                        evaluated_at=evaluated_at,
+                                    )
+                                else:
+                                    proof = self.cl7_proof_builder(
+                                        authority,
+                                        central,
+                                        queued,
+                                    )
+                                if not isinstance(proof, LockedDispatchProof):
+                                    raise CL7RuntimeError(
+                                        CL7RuntimeReason.DISPATCH_PROOF_INVALID
+                                    )
+                                proof.verify_identity(
+                                    raw_intent_id=queued.intent_id,
+                                    identity_key=self.cl7_identity_key,
+                                )
+                                _require_cl7_proof_fresh(proof, self.cl7_clock())
+                                return proof
+
+                            with self.manager.locked_dispatch_lease(
+                                portfolio_repository,
+                                expected_intent_id=expected_intent_id,
+                                locked_portfolio_state=locked_portfolio,
+                                validator=validate,
+                            ) as lease:
+                                try:
+                                    pending = authority_manager.record_dispatch_attempt_locked(
+                                        authority,
+                                        lease.proof,
+                                        transition_at=self.cl7_clock(),
+                                    )
+                                except CL7RuntimeError as exc:
+                                    if exc.reason is CL7RuntimeReason.ATTEMPT_RECORD_FAILED:
+                                        lease.mark_pre_submit_failed(
+                                            reason="CL7_ATTEMPT_RECORD_FAILED"
+                                        )
+                                    raise
+                                try:
+                                    response = self.transport.post_order_once(
+                                        self.policy.account_id,
+                                        lease.intent.candidate.instrument_id,
+                                        lease.intent.candidate.requested_lots,
+                                        lease.intent.candidate.direction,
+                                        order_id=lease.intent.intent_id,
+                                        order_type=lease.intent.candidate.order_type,
+                                        time_in_force=lease.intent.candidate.time_in_force,
+                                    )
+                                except TBankAPIError as exc:
+                                    if _exact_provider_rejection(exc):
+                                        lease.mark_submission_rejected(
+                                            reason="CL7_PROVIDER_EXPLICIT_REJECTION"
+                                        )
+                                        authority_manager.clear_dispatch_locked(
+                                            pending,
+                                            proof=lease.proof,
+                                            central_intent=lease.intent,
+                                            transition_at=self.cl7_clock(),
+                                        )
+                                        return SandboxDispatchResult(
+                                            status="SUBMISSION_REJECTED",
+                                            intent_id=lease.intent.intent_id,
+                                            order_was_sent=True,
+                                            market=market,
+                                            error="PROVIDER_REJECTED",
+                                        )
+                                    lease.mark_uncertain(
+                                        reason="CL7_PROVIDER_OUTCOME_UNCERTAIN"
+                                    )
+                                    return SandboxDispatchResult(
+                                        status="SUBMISSION_UNCERTAIN",
+                                        intent_id=lease.intent.intent_id,
+                                        order_was_sent=True,
+                                        order_may_have_been_sent=True,
+                                        market=market,
+                                        error="PROVIDER_OUTCOME_UNCERTAIN",
+                                    )
+                                except Exception:  # noqa: BLE001 - post outcome boundary
+                                    lease.mark_uncertain(
+                                        reason="CL7_PROVIDER_OUTCOME_UNCERTAIN"
+                                    )
+                                    return SandboxDispatchResult(
+                                        status="SUBMISSION_UNCERTAIN",
+                                        intent_id=lease.intent.intent_id,
+                                        order_was_sent=True,
+                                        order_may_have_been_sent=True,
+                                        market=market,
+                                        error="PROVIDER_OUTCOME_UNCERTAIN",
+                                    )
+                                if not isinstance(response, Mapping):
+                                    lease.mark_uncertain(
+                                        reason="CL7_PROVIDER_CORRELATION_INVALID"
+                                    )
+                                    return SandboxDispatchResult(
+                                        status="SUBMISSION_UNCERTAIN",
+                                        intent_id=lease.intent.intent_id,
+                                        order_was_sent=True,
+                                        order_may_have_been_sent=True,
+                                        market=market,
+                                        error="PROVIDER_OUTCOME_UNCERTAIN",
+                                    )
+                                request_id = response.get("orderRequestId")
+                                broker_order_id = response.get("orderId")
+                                if (
+                                    type(request_id) is not str
+                                    or request_id != lease.intent.intent_id
+                                    or type(broker_order_id) is not str
+                                    or not broker_order_id.strip()
+                                    or len(broker_order_id) > 128
+                                ):
+                                    lease.mark_uncertain(
+                                        reason="CL7_PROVIDER_CORRELATION_INVALID"
+                                    )
+                                    return SandboxDispatchResult(
+                                        status="SUBMISSION_UNCERTAIN",
+                                        intent_id=lease.intent.intent_id,
+                                        order_was_sent=True,
+                                        order_may_have_been_sent=True,
+                                        market=market,
+                                        error="PROVIDER_OUTCOME_UNCERTAIN",
+                                    )
+                                broker_order_id = broker_order_id.strip()
+                                try:
+                                    lease.mark_submitted(
+                                        broker_order_id=broker_order_id
+                                    )
+                                except CentralOrderError:
+                                    return SandboxDispatchResult(
+                                        status="STATE_COMMIT_UNCERTAIN",
+                                        intent_id=lease.intent.intent_id,
+                                        order_was_sent=True,
+                                        order_may_have_been_sent=True,
+                                        market=market,
+                                        error="PROVIDER_OUTCOME_UNCERTAIN",
+                                    )
+                                return SandboxDispatchResult(
+                                    status="SUBMITTED",
+                                    intent_id=lease.intent.intent_id,
+                                    order_was_sent=True,
+                                    market=market,
+                                    broker_order_id=broker_order_id,
+                                    provider_status=normalize_execution_status(response),
+                                    executed_lots=executed_lots(response),
+                                    terminal=is_terminal_order_status(
+                                        normalize_execution_status(response),
+                                        lease.intent.candidate.time_in_force,
+                                    ),
+                                )
+        except CL7RuntimeError as exc:
+            return SandboxDispatchResult(
+                status="CL7_" + exc.reason.value,
+                intent_id=intent.intent_id,
+                retryable=exc.retryable,
+                market=market,
+                error=exc.reason.value,
+            )
+        except (PortfolioRepositoryError, RiskDispatchAuthorizationError) as exc:
+            return SandboxDispatchResult(
+                status="CL7_LOCKED_REVALIDATION_BLOCKED",
+                intent_id=intent.intent_id,
+                retryable=True,
+                market=market,
+                error=type(exc).__name__.upper(),
+            )
+        except Exception:  # noqa: BLE001 - finite dispatch boundary
+            return SandboxDispatchResult(
+                status="CL7_INTERNAL_BOUNDARY_FAILED",
+                intent_id=intent.intent_id,
+                market=market,
+                error="INTERNAL_BOUNDARY_FAILED",
+            )
+
+    def _dispatch_legacy_authorized(
+        self,
+        intent: CentralOrderIntent,
+        portfolio_repository: PortfolioRepository,
+    ) -> SandboxDispatchResult:
         if self.risk_runtime is None:
             return SandboxDispatchResult(
                 status="RISK_AUTHORIZATION_UNAVAILABLE",
@@ -456,6 +870,18 @@ class SandboxExecutionAdapter:
                 error="Sandbox order inspection returned a non-object response.",
             )
         payload = dict(response)
+        broker_order_id = payload.get("orderId")
+        if (
+            type(broker_order_id) is not str
+            or not broker_order_id.strip()
+            or len(broker_order_id.strip()) > 128
+        ):
+            return SandboxInspectionResult(
+                status="INSPECTION_UNCERTAIN",
+                intent_id=blocker.intent_id,
+                retryable=True,
+                error="Sandbox order inspection has no bounded broker order ID.",
+            )
         provider_status = normalize_execution_status(payload)
         filled = executed_lots(payload)
         price, price_source = executed_order_price(payload)
@@ -466,6 +892,7 @@ class SandboxExecutionAdapter:
         return SandboxInspectionResult(
             status="ORDER_OBSERVED",
             intent_id=blocker.intent_id,
+            broker_order_id=broker_order_id.strip(),
             provider_status=provider_status,
             executed_lots=filled,
             terminal=terminal,
@@ -558,6 +985,55 @@ def _ambiguous_api_error(exc: TBankAPIError) -> bool:
         or status >= 500
         or status in _AMBIGUOUS_HTTP_STATUSES
     )
+
+
+def _exact_provider_rejection(exc: TBankAPIError) -> bool:
+    status = exc.status_code
+    return bool(
+        exc.service == "SandboxService"
+        and exc.method == "PostSandboxOrder"
+        and type(status) is int
+        and 400 <= status <= 499
+        and status not in _AMBIGUOUS_HTTP_STATUSES
+        and exc.transient is False
+        and getattr(exc, "direct_response", False) is True
+        and getattr(exc, "redirect_followed", False) is False
+    )
+
+
+def _cl7_timestamp_ns(value: str) -> int:
+    if not isinstance(value, str) or len(value) != 30 or not value.endswith("Z"):
+        raise CL7RuntimeError(CL7RuntimeReason.TIMESTAMP_INVALID)
+    try:
+        base = datetime.fromisoformat(value[:19] + "+00:00")
+        fraction = int(value[20:29])
+    except (TypeError, ValueError):
+        raise CL7RuntimeError(CL7RuntimeReason.TIMESTAMP_INVALID) from None
+    return int(base.timestamp()) * 1_000_000_000 + fraction
+
+
+def _cl7_iso_timestamp(value: str) -> str:
+    """Convert canonical CL1 nanoseconds to predecessor Portfolio ISO UTC."""
+
+    _cl7_timestamp_ns(value)
+    return value[:26] + "+00:00"
+
+
+def _cl7_reserved_cash(intent: CentralOrderIntent):
+    from .cash_ledger_domain import Money
+
+    try:
+        value = intent.reserved_cash_kopecks * 10_000_000
+        return Money(currency="RUB", minor_units=value)
+    except Exception:  # noqa: BLE001 - finite CL7 reason mapping
+        raise CL7RuntimeError(CL7RuntimeReason.CENTRAL_CHANGED) from None
+
+
+def _require_cl7_proof_fresh(proof: LockedDispatchProof, now: str) -> None:
+    evaluated = _cl7_timestamp_ns(proof.evaluated_at)
+    current = _cl7_timestamp_ns(now)
+    if evaluated > current or current - evaluated > 10_000_000_000:
+        raise CL7RuntimeError(CL7RuntimeReason.CONTEXT_STALE)
 
 
 def _reconciliation_outcome(provider_status: str | None) -> str | None:

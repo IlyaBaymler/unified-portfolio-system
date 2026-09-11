@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
 import logging
-from pathlib import Path
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -22,9 +22,13 @@ from .orders import (
 )
 from .risk_persistence import RiskProfileStore, RiskStateStore
 from .risk_runtime import RiskExecutionOutcome, RiskRuntimeAdapter
+from .runtime_cash_authority import (
+    CL7RuntimeError,
+    RuntimeCashAuthorityStore,
+    legacy_execution_guard,
+)
 from .state_persistence import atomic_write_json
 from .tbank_sandbox import TBankAPIError, TBankSandboxClient
-
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +80,7 @@ class SandboxOrderDiagnostics:
         *,
         risk_runtime: RiskRuntimeAdapter | None = None,
         require_risk_accounting: bool | None = None,
+        authority_store: RuntimeCashAuthorityStore | None = None,
     ) -> None:
         self.api = api
         self.account_id = str(account_id)
@@ -89,6 +94,9 @@ class SandboxOrderDiagnostics:
         self.instrument = api.find_instrument(config.ticker, config.class_code)
         self.instrument_id = api.instrument_id(self.instrument)
         self.state_path = Path(config.state_file)
+        self.authority_store = authority_store or RuntimeCashAuthorityStore(
+            self.state_path.parent
+        )
         journal_path = (
             Path(config.journal_file)
             if config.journal_file
@@ -290,175 +298,187 @@ class SandboxOrderDiagnostics:
                     "run_id": run_id,
                 }
 
-        snapshot = self.snapshot()
-        current_lots = int(snapshot["current_lots"])
-        if (
-            require_exact_current_lots is not None
-            and current_lots != int(require_exact_current_lots)
-        ):
-            return {
-                **snapshot,
-                "status": "execution_blocked",
-                "direction": direction,
-                "reason": (
-                    "Broker position changed before the recovery close: "
-                    f"expected {require_exact_current_lots}, actual {current_lots}."
-                ),
-                "run_id": run_id,
-            }
-        trading_status = snapshot["trading_status"]
-        if self.config.order_type.upper() == "MARKET":
-            available = self.api.market_order_available(trading_status)
-        else:
-            available = self.api.best_price_available(trading_status)
-        if not available:
-            return {
-                **snapshot,
-                "status": "execution_blocked",
-                "direction": direction,
-                "reason": "Instrument is not available for the selected order type.",
-                "run_id": run_id,
-            }
-        if direction == "BUY":
-            maximum = snapshot.get("broker_max_buy_lots")
-            if maximum is not None and int(maximum) < lots:
-                return {
-                    **snapshot,
-                    "status": "execution_blocked",
-                    "direction": direction,
-                    "reason": "Broker reports insufficient buy capacity.",
-                    "run_id": run_id,
-                }
-        if direction == "SELL" and current_lots < lots:
-            return {
-                **snapshot,
-                "status": "execution_blocked",
-                "direction": direction,
-                "reason": "There are not enough long lots available to sell.",
-                "run_id": run_id,
-            }
-
-        risk_authorization = self._risk_authorization(
-            direction=direction,
-            purpose=purpose,
-        )
-        if risk_authorization.get("blocked"):
-            return {
-                **snapshot,
-                "status": "execution_blocked",
-                "direction": direction,
-                "reason": risk_authorization.get("reason"),
-                "risk_authorization": risk_authorization,
-                "run_id": run_id,
-            }
-
-        sequence = int(state.get("sequence", 0)) + 1
-        order_id = self._order_id(sequence, direction)
-        intent: dict[str, Any] = {
-            "order_id": order_id,
-            "run_id": run_id,
-            "sequence": sequence,
-            "action": direction,
-            "lots": lots,
-            "current_lots_before": current_lots,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "order_type": self.config.order_type,
-            "time_in_force": self.config.time_in_force,
-            "diagnostic": True,
-            "purpose": purpose,
-            "execution_source": risk_authorization.get("execution_source"),
-            "operator_override": risk_authorization.get("operator_override"),
-            "risk_policy_hash": risk_authorization.get("risk_policy_hash"),
-            "risk_authorization": risk_authorization,
-        }
-        transition_intent(intent, OrderLifecycle.PRECHECK_PASSED)
-        transition_intent(intent, OrderLifecycle.INTENT_SAVED)
-        state["pending_order"] = intent
-        state["sequence"] = sequence
-        self._save_state(root)
-        self._record_transition(intent, run_id)
-
-        transition_intent(
-            intent,
-            OrderLifecycle.ORDER_SUBMITTED,
-            details={"submission_attempted": True},
-        )
-        state["pending_order"] = intent
-        self._save_state(root)
-        self._record_transition(intent, run_id)
-
         try:
-            response = self.api.post_order(
-                self.account_id,
-                self.instrument_id,
-                lots,
-                direction,
-                order_id=order_id,
-                order_type=self.config.order_type,
-                time_in_force=self.config.time_in_force,
-            )
-        except TBankAPIError as exc:
-            if exc.transient or exc.status_code is None or exc.status_code < 400:
-                raise
-            transition_intent(
-                intent,
-                OrderLifecycle.SUBMISSION_FAILED,
-                details={
-                    "accepted": False,
-                    "submission_error": str(exc),
-                    "status_code": exc.status_code,
-                    "tracking_id": exc.tracking_id,
-                },
-            )
-            self._record_transition(intent, run_id, {"api_error": exc.details})
-            state.pop("pending_order", None)
-            state["last_order_id"] = order_id
-            state["last_action"] = direction
-            state["last_failure_at"] = datetime.now(timezone.utc).isoformat()
-            self._save_state(root)
-            return {
-                "status": "submission_failed",
-                "ticker": self.config.ticker,
-                "instrument_id": self.instrument_id,
-                "account_id": self.account_id,
-                "direction": direction,
-                "requested_lots": lots,
-                "executed_lots": 0,
-                "order_id": order_id,
-                "order_status": "REJECTED",
-                "order_lifecycle_state": intent.get("lifecycle_state"),
-                "position_reconciled": True,
-                "pending_order": None,
-                "error": str(exc),
-                "api_status_code": exc.status_code,
-                "tracking_id": exc.tracking_id,
-                "run_id": run_id,
-                "purpose": purpose,
-            }
-        transition_intent(
-            intent,
-            OrderLifecycle.ORDER_ACCEPTED,
-            details={"accepted": True},
-        )
-        state["pending_order"] = intent
-        self._save_state(root)
-        self._record_transition(intent, run_id, {"order_response": response})
+            with legacy_execution_guard(self.authority_store):
+                snapshot = self.snapshot()
+                current_lots = int(snapshot["current_lots"])
+                if (
+                    require_exact_current_lots is not None
+                    and current_lots != int(require_exact_current_lots)
+                ):
+                    return {
+                        **snapshot,
+                        "status": "execution_blocked",
+                        "direction": direction,
+                        "reason": (
+                            "Broker position changed before the recovery close: "
+                            f"expected {require_exact_current_lots}, actual {current_lots}."
+                        ),
+                        "run_id": run_id,
+                    }
+                trading_status = snapshot["trading_status"]
+                if self.config.order_type.upper() == "MARKET":
+                    available = self.api.market_order_available(trading_status)
+                else:
+                    available = self.api.best_price_available(trading_status)
+                if not available:
+                    return {
+                        **snapshot,
+                        "status": "execution_blocked",
+                        "direction": direction,
+                        "reason": "Instrument is not available for the selected order type.",
+                        "run_id": run_id,
+                    }
+                if direction == "BUY":
+                    maximum = snapshot.get("broker_max_buy_lots")
+                    if maximum is not None and int(maximum) < lots:
+                        return {
+                            **snapshot,
+                            "status": "execution_blocked",
+                            "direction": direction,
+                            "reason": "Broker reports insufficient buy capacity.",
+                            "run_id": run_id,
+                        }
+                if direction == "SELL" and current_lots < lots:
+                    return {
+                        **snapshot,
+                        "status": "execution_blocked",
+                        "direction": direction,
+                        "reason": "There are not enough long lots available to sell.",
+                        "run_id": run_id,
+                    }
 
-        order_state = self.api.get_order_state(
-            self.account_id,
-            order_id,
-            by_request_id=True,
-        )
-        result = self._finalise_order(
-            root,
-            state,
-            intent,
-            order_state,
-            run_id=run_id,
-            response=response,
-        )
-        result["purpose"] = purpose
-        return result
+                risk_authorization = self._risk_authorization(
+                    direction=direction,
+                    purpose=purpose,
+                )
+                if risk_authorization.get("blocked"):
+                    return {
+                        **snapshot,
+                        "status": "execution_blocked",
+                        "direction": direction,
+                        "reason": risk_authorization.get("reason"),
+                        "risk_authorization": risk_authorization,
+                        "run_id": run_id,
+                    }
+
+                sequence = int(state.get("sequence", 0)) + 1
+                order_id = self._order_id(sequence, direction)
+                intent: dict[str, Any] = {
+                    "order_id": order_id,
+                    "run_id": run_id,
+                    "sequence": sequence,
+                    "action": direction,
+                    "lots": lots,
+                    "current_lots_before": current_lots,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "order_type": self.config.order_type,
+                    "time_in_force": self.config.time_in_force,
+                    "diagnostic": True,
+                    "purpose": purpose,
+                    "execution_source": risk_authorization.get("execution_source"),
+                    "operator_override": risk_authorization.get("operator_override"),
+                    "risk_policy_hash": risk_authorization.get("risk_policy_hash"),
+                    "risk_authorization": risk_authorization,
+                }
+                transition_intent(intent, OrderLifecycle.PRECHECK_PASSED)
+                transition_intent(intent, OrderLifecycle.INTENT_SAVED)
+                state["pending_order"] = intent
+                state["sequence"] = sequence
+                self._save_state(root)
+                self._record_transition(intent, run_id)
+
+                transition_intent(
+                    intent,
+                    OrderLifecycle.ORDER_SUBMITTED,
+                    details={"submission_attempted": True},
+                )
+                state["pending_order"] = intent
+                self._save_state(root)
+                self._record_transition(intent, run_id)
+
+                try:
+                    response = self.api.post_order(
+                        self.account_id,
+                        self.instrument_id,
+                        lots,
+                        direction,
+                        order_id=order_id,
+                        order_type=self.config.order_type,
+                        time_in_force=self.config.time_in_force,
+                    )
+                except TBankAPIError as exc:
+                    if exc.transient or exc.status_code is None or exc.status_code < 400:
+                        raise
+                    transition_intent(
+                        intent,
+                        OrderLifecycle.SUBMISSION_FAILED,
+                        details={
+                            "accepted": False,
+                            "submission_error": str(exc),
+                            "status_code": exc.status_code,
+                            "tracking_id": exc.tracking_id,
+                        },
+                    )
+                    self._record_transition(intent, run_id, {"api_error": exc.details})
+                    state.pop("pending_order", None)
+                    state["last_order_id"] = order_id
+                    state["last_action"] = direction
+                    state["last_failure_at"] = datetime.now(timezone.utc).isoformat()
+                    self._save_state(root)
+                    return {
+                        "status": "submission_failed",
+                        "ticker": self.config.ticker,
+                        "instrument_id": self.instrument_id,
+                        "account_id": self.account_id,
+                        "direction": direction,
+                        "requested_lots": lots,
+                        "executed_lots": 0,
+                        "order_id": order_id,
+                        "order_status": "REJECTED",
+                        "order_lifecycle_state": intent.get("lifecycle_state"),
+                        "position_reconciled": True,
+                        "pending_order": None,
+                        "error": str(exc),
+                        "api_status_code": exc.status_code,
+                        "tracking_id": exc.tracking_id,
+                        "run_id": run_id,
+                        "purpose": purpose,
+                    }
+                transition_intent(
+                    intent,
+                    OrderLifecycle.ORDER_ACCEPTED,
+                    details={"accepted": True},
+                )
+                state["pending_order"] = intent
+                self._save_state(root)
+                self._record_transition(intent, run_id, {"order_response": response})
+
+                order_state = self.api.get_order_state(
+                    self.account_id,
+                    order_id,
+                    by_request_id=True,
+                )
+                result = self._finalise_order(
+                    root,
+                    state,
+                    intent,
+                    order_state,
+                    run_id=run_id,
+                    response=response,
+                )
+                result["purpose"] = purpose
+                return result
+
+        except CL7RuntimeError as exc:
+            return {
+                "status": "cl7_legacy_execution_blocked",
+                "direction": direction,
+                "reason": exc.reason.value,
+                "order_was_sent": False,
+                "order_may_have_been_sent": False,
+                "run_id": run_id,
+            }
 
     def recover_pending(self, *, run_id: str | None = None) -> dict[str, Any]:
         run_id = run_id or str(uuid4())
@@ -501,82 +521,15 @@ class SandboxOrderDiagnostics:
             except TBankAPIError as exc:
                 if exc.status_code != 404:
                     raise
-                # Same orderId makes this retry idempotent. The saved intent
-                # proves that this diagnostic action had been explicitly
-                # confirmed. This path is forbidden once reconciliation has
-                # already confirmed an economic fill.
-                try:
-                    response = self.api.post_order(
-                        self.account_id,
-                        self.instrument_id,
-                        int(intent.get("lots", 1)),
-                        str(intent["action"]),
-                        order_id=order_id,
-                        order_type=str(
-                            intent.get("order_type", self.config.order_type)
-                        ),
-                        time_in_force=str(
-                            intent.get("time_in_force", self.config.time_in_force)
-                        ),
-                    )
-                except TBankAPIError as submit_error:
-                    if (
-                        submit_error.transient
-                        or submit_error.status_code is None
-                        or submit_error.status_code < 400
-                    ):
-                        raise
-                    transition_intent(
-                        intent,
-                        OrderLifecycle.SUBMISSION_FAILED,
-                        details={
-                            "accepted": False,
-                            "submission_error": str(submit_error),
-                            "status_code": submit_error.status_code,
-                            "tracking_id": submit_error.tracking_id,
-                        },
-                    )
-                    self._record_transition(
-                        intent,
-                        run_id,
-                        {"api_error": submit_error.details, "recovery": True},
-                    )
-                    state.pop("pending_order", None)
-                    state["last_order_id"] = order_id
-                    state["last_action"] = intent.get("action")
-                    state["last_failure_at"] = datetime.now(
-                        timezone.utc
-                    ).isoformat()
-                    self._save_state(root)
-                    return {
-                        "status": "submission_failed",
-                        "ticker": self.config.ticker,
-                        "instrument_id": self.instrument_id,
-                        "account_id": self.account_id,
-                        "direction": intent.get("action"),
-                        "requested_lots": int(intent.get("lots", 1)),
-                        "executed_lots": 0,
-                        "order_id": order_id,
-                        "order_status": "REJECTED",
-                        "order_lifecycle_state": intent.get("lifecycle_state"),
-                        "position_reconciled": True,
-                        "pending_order": None,
-                        "error": str(submit_error),
-                        "api_status_code": submit_error.status_code,
-                        "tracking_id": submit_error.tracking_id,
-                        "run_id": run_id,
-                    }
-                order_state = self.api.get_order_state(
-                    self.account_id,
-                    order_id,
-                    by_request_id=True,
-                )
-                order_state = {**order_state, "recoveredByResubmit": True}
-                self._record_transition(
-                    intent,
-                    run_id,
-                    {"order_response": response},
-                )
+                # CL7 removes every automatic provider resubmit path. A
+                # missing exact lookup remains durable for operator recovery.
+                return {
+                    "status": "unknown_submit_state",
+                    "resubmitted": False,
+                    "reason": "Persisted diagnostic request was not found by exact lookup.",
+                    "position_reconciled": False,
+                    "run_id": run_id,
+                }
 
         return self._finalise_order(
             root,

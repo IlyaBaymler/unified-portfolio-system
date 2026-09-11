@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import json
 import logging
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from dotenv import load_dotenv
-
 from trading_robot.bot import BotConfig, SandboxTradingBot
 from trading_robot.config_persistence import (
     StrategyProfileError,
@@ -18,6 +17,11 @@ from trading_robot.config_persistence import (
 )
 from trading_robot.logging_setup import configure_file_logging
 from trading_robot.risk_runtime import RiskRuntimeAdapter
+from trading_robot.runtime_cash_authority import (
+    CL7RuntimeError,
+    RuntimeCashAuthorityState,
+    RuntimeCashAuthorityStore,
+)
 from trading_robot.tbank_sandbox import TBankSandboxClient
 
 
@@ -253,6 +257,19 @@ def main() -> None:
         debug_enabled=True,
         console=True,
     )
+
+    if args.execute:
+        try:
+            authority = RuntimeCashAuthorityStore(Path.cwd()).load()
+        except CL7RuntimeError as exc:
+            raise SystemExit(
+                "CL7 authority custody blocks legacy execution: " + exc.reason.value
+            ) from None
+        if authority.state is not RuntimeCashAuthorityState.LEGACY_ACTIVE:
+            raise SystemExit(
+                "Legacy --execute is disabled by CL7 authority state "
+                f"{authority.state.value}. Use v3_10_runtime_cash_cutover.py."
+            )
 
     token = os.getenv("TBANK_SANDBOX_TOKEN", "").strip()
     if not token:
