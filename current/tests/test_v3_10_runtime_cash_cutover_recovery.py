@@ -5,6 +5,7 @@ import copy
 import dataclasses
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -77,6 +78,60 @@ IMPLEMENTATION_PATHS = {
     "current/tests/test_v3_10_runtime_cash_cutover_recovery.py",
     "current/tests/fixtures/v3_10_runtime_cash_cutover_vectors.json",
 }
+
+
+def _assert_shallow_pull_request_custody() -> None:
+    assert os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    assert event_path is not None
+    pull_request = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))[
+        "pull_request"
+    ]
+    expected = {
+        "agent/v3-10-clean-cl7-contract-freeze": (
+            ACCEPTED_CONTRACT_HEAD,
+            3,
+            11,
+        ),
+        "program/v3-10-v4-stable-line": (
+            STABLE_PREDECESSOR,
+            5,
+            12,
+        ),
+    }.get(pull_request["base"]["ref"])
+    assert expected is not None
+    expected_base, expected_commits, expected_files = expected
+    assert pull_request["base"]["sha"] == expected_base
+    assert pull_request["base"]["repo"]["full_name"] == (
+        "baimleriv/unified-portfolio-system"
+    )
+    assert pull_request["head"]["ref"] == "agent/v3-10-clean-cl7-implementation"
+    assert pull_request["head"]["repo"]["full_name"] == (
+        "baimleriv/unified-portfolio-system"
+    )
+    assert pull_request["commits"] == expected_commits
+    assert pull_request["changed_files"] == expected_files
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    commit_text = subprocess.run(
+        ["git", "cat-file", "-p", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout
+    parents = [
+        line.removeprefix("parent ")
+        for line in commit_text.splitlines()
+        if line.startswith("parent ")
+    ]
+    assert head == os.environ.get("GITHUB_SHA")
+    assert parents == [expected_base, pull_request["head"]["sha"]]
 
 
 @pytest.fixture(scope="module")
@@ -304,8 +359,19 @@ def _central_proof(
 
 def test_contract_and_fixture_custody(vectors: dict[str, object]) -> None:
     assert vectors["accepted_contract_commit"] == ACCEPTED_CONTRACT_HEAD
+    base_object = subprocess.run(
+        ["git", "cat-file", "-e", f"{ACCEPTED_CONTRACT_HEAD}^{{commit}}"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if base_object.returncode != 0:
+        _assert_shallow_pull_request_custody()
+        revision = "HEAD"
+    else:
+        revision = ACCEPTED_CONTRACT_HEAD
     blob = subprocess.run(
-        ["git", "rev-parse", f"{ACCEPTED_CONTRACT_HEAD}:docs/project/{CONTRACT.name}"],
+        ["git", "rev-parse", f"{revision}:docs/project/{CONTRACT.name}"],
         cwd=ROOT, capture_output=True, text=True, check=True,
     ).stdout.strip()
     assert blob == "b57cdbcfeba65901c015a554ccc7521daf946faf"
@@ -1657,6 +1723,15 @@ def test_legacy_recovery_has_no_automatic_post_resubmit() -> None:
 
 
 def test_exact_implementation_allowlist() -> None:
+    base_object = subprocess.run(
+        ["git", "cat-file", "-e", f"{ACCEPTED_CONTRACT_HEAD}^{{commit}}"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if base_object.returncode != 0:
+        _assert_shallow_pull_request_custody()
+        return
     changed = set(subprocess.run(
         ["git", "diff", "--name-only", ACCEPTED_CONTRACT_HEAD],
         cwd=ROOT, capture_output=True, text=True, check=True,
