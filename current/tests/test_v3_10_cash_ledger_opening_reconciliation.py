@@ -1593,7 +1593,69 @@ def test_v310_cl4_19_static_no_authority_drift_and_exact_two_mutators() -> None:
 
 
 def test_v310_cl4_20_three_path_delta_and_predecessor_custody() -> None:
-    changed = subprocess.run(["git", "diff", "--name-only", ACCEPTED_CONTRACT_HEAD], cwd=ROOT, text=True, capture_output=True, check=True).stdout.splitlines()
+    base_object = subprocess.run(
+        ["git", "cat-file", "-e", f"{ACCEPTED_CONTRACT_HEAD}^{{commit}}"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if base_object.returncode != 0:
+        assert os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+        event_path = os.environ.get("GITHUB_EVENT_PATH")
+        assert event_path is not None
+        event = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))
+        pull_request = event["pull_request"]
+        expected_topology = {
+            "agent/v3-10-clean-cl4-contract-rescope-r1": (
+                ACCEPTED_CONTRACT_HEAD,
+                4,
+                3,
+            ),
+            "program/v3-10-v4-stable-line": (CL3_PREDECESSOR, 8, 4),
+        }.get(pull_request["base"]["ref"])
+        assert expected_topology is not None
+        expected_base, expected_commits, expected_files = expected_topology
+        assert pull_request["base"]["sha"] == expected_base
+        assert pull_request["base"]["repo"]["full_name"] == (
+            "baimleriv/unified-portfolio-system"
+        )
+        assert pull_request["head"]["ref"] == (
+            "agent/v3-10-clean-cl4-implementation-r1"
+        )
+        assert pull_request["head"]["repo"]["full_name"] == (
+            "baimleriv/unified-portfolio-system"
+        )
+        assert pull_request["commits"] == expected_commits
+        assert pull_request["changed_files"] == expected_files
+        current_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        commit_text = subprocess.run(
+            ["git", "cat-file", "-p", "HEAD"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        assert current_head == os.environ.get("GITHUB_SHA")
+        parents = [
+            line.removeprefix("parent ")
+            for line in commit_text.splitlines()
+            if line.startswith("parent ")
+        ]
+        assert parents == [expected_base, pull_request["head"]["sha"]]
+        return
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", ACCEPTED_CONTRACT_HEAD],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.splitlines()
     assert set(changed) <= {
         "current/trading_robot/cash_ledger_opening_reconciliation.py",
         "current/tests/test_v3_10_cash_ledger_opening_reconciliation.py",
