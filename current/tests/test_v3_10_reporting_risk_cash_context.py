@@ -25,6 +25,9 @@ MODULE_PATH = CURRENT / "trading_robot" / "reporting_risk_cash_context.py"
 FIXTURE_PATH = (
     CURRENT / "tests" / "fixtures" / "v3_10_reporting_risk_cash_context_vectors.json"
 )
+FIXTURE_REPOSITORY_PATH = (
+    "current/tests/fixtures/v3_10_reporting_risk_cash_context_vectors.json"
+)
 ACCEPTED_CONTRACT_HEAD = "ef34c8018d18268de0982da484fd873cd2159894"
 STABLE_PREDECESSOR = "864963dd69cb4c907cbc762b66ed12f012f32741"
 IMPLEMENTATION_PATHS = {
@@ -383,6 +386,54 @@ def _portfolio_lease_with_pending() -> tuple[
     )
 
 
+def _assert_shallow_pull_request_custody(safe: str, head: str) -> None:
+    assert os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    assert event_path is not None
+    pull_request = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))[
+        "pull_request"
+    ]
+    expected_topology = {
+        "agent/v3-10-clean-cl6-contract-freeze": (
+            ACCEPTED_CONTRACT_HEAD,
+            3,
+            len(IMPLEMENTATION_PATHS),
+        ),
+        "program/v3-10-v4-stable-line": (
+            STABLE_PREDECESSOR,
+            5,
+            len(IMPLEMENTATION_PATHS) + 1,
+        ),
+    }.get(pull_request["base"]["ref"])
+    assert expected_topology is not None
+    expected_base, expected_commits, expected_files = expected_topology
+    assert pull_request["base"]["sha"] == expected_base
+    assert pull_request["base"]["repo"]["full_name"] == (
+        "baimleriv/unified-portfolio-system"
+    )
+    assert pull_request["head"]["ref"] == "agent/v3-10-clean-cl6-implementation"
+    assert pull_request["head"]["repo"]["full_name"] == (
+        "baimleriv/unified-portfolio-system"
+    )
+    assert pull_request["commits"] == expected_commits
+    assert pull_request["changed_files"] == expected_files
+    assert head == os.environ.get("GITHUB_SHA")
+    commit_text = subprocess.run(
+        ["git", "-c", f"safe.directory={safe}", "cat-file", "-p", head],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    parents = [
+        line.removeprefix("parent ")
+        for line in commit_text.splitlines()
+        if line.startswith("parent ")
+    ]
+    assert parents == [expected_base, pull_request["head"]["sha"]]
+    assert all((ROOT / path).is_file() for path in IMPLEMENTATION_PATHS)
+
+
 def test_v310_cl6_01_exact_contract_lineage_and_three_path_delta() -> None:
     safe = str(ROOT).replace("\\", "/")
     head = subprocess.run(
@@ -392,6 +443,22 @@ def test_v310_cl6_01_exact_contract_lineage_and_three_path_delta() -> None:
         capture_output=True,
         text=True,
     ).stdout.strip()
+    base_object = subprocess.run(
+        [
+            "git",
+            "-c",
+            f"safe.directory={safe}",
+            "cat-file",
+            "-e",
+            f"{ACCEPTED_CONTRACT_HEAD}^{{commit}}",
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+    )
+    if base_object.returncode != 0:
+        _assert_shallow_pull_request_custody(safe, head)
+        return
     merge_base = subprocess.run(
         [
             "git",
@@ -485,10 +552,24 @@ def test_v310_cl6_02_import_and_ast_authority_boundary() -> None:
 def test_v310_cl6_03_fixture_is_canonical_and_contains_valid_export(
     vectors: dict[str, object],
 ) -> None:
-    raw = FIXTURE_PATH.read_bytes()
-    assert raw == (
+    expected_text = (
         json.dumps(vectors, ensure_ascii=True, sort_keys=True, indent=2) + "\n"
-    ).encode("ascii")
+    )
+    assert FIXTURE_PATH.read_text(encoding="ascii") == expected_text
+    safe = str(ROOT).replace("\\", "/")
+    committed = subprocess.run(
+        [
+            "git",
+            "-c",
+            f"safe.directory={safe}",
+            "show",
+            f"HEAD:{FIXTURE_REPOSITORY_PATH}",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert committed == expected_text.encode("ascii")
     assert vectors["version"] == 1
     exported = _export(vectors)
     assert (
