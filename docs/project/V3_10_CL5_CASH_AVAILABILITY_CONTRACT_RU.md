@@ -338,9 +338,25 @@ MAX_STRING_SCALARS = 4096
 MAX_KEY_SCALARS = 128
 
 MAX_CENTRAL_INTENTS = 100_000
+
+MAX_CENTRAL_STATE_DEPTH = 32
+
+MAX_CENTRAL_STATE_NODES = 2_000_000
+
+MAX_CENTRAL_STATE_CANONICAL_BYTES = 16_777_216
+
+MAX_CENTRAL_TRANSITIONS_PER_INTENT = 64
+
+MAX_CENTRAL_STRING_SCALARS = 4096
 ```
 
-Revision bounds reuse accepted Central/CL2 integer ranges.
+All plain integers occurring in caller-supplied provider response graphs or direct Central DTO scalar fields are in the inclusive signed-64-bit range:
+
+```text
+-9_223_372_036_854_775_808 .. 9_223_372_036_854_775_807
+```
+
+Narrower non-negative/positive bounds from accepted Central/CL2 remain in force. Exact CL1 `Money.minor_units` retains the accepted CL1 range and is encoded as a decimal string inside canonical objects; it is not narrowed to signed-64-bit by this rule.
 
 Python `bool` is never accepted as integer.
 
@@ -518,7 +534,7 @@ PROOF_INCOMPLETE
 
 ## 13. Response bounds
 
-До semantic interpretation CL5 выполняет bounded traversal всего response graph.
+До semantic interpretation CL5 выполняет bounded traversal всего detached response graph.
 
 Разрешены только exact built-ins:
 
@@ -542,6 +558,19 @@ None
 - Decimal;
 - arbitrary objects.
 
+Exact counting rules:
+
+1. root depth is `1`; every child depth is parent depth plus `1`; all limits are inclusive;
+2. every occurrence of root, container or scalar is one node; a dict key is not a node;
+3. dict values are visited in insertion order and list elements in index order;
+4. depth/node/key/string bounds are checked immediately after the affected item is observed and before its descendants are visited;
+5. each dict independently satisfies `len(mapping) <= MAX_MAPPING_KEYS`;
+6. every string value independently satisfies `len(value) <= MAX_STRING_SCALARS` Unicode scalars;
+7. every key is exact `str`, contains no surrogate and independently satisfies `len(key) <= MAX_KEY_SCALARS` Unicode scalars;
+8. every plain integer is in the inclusive signed-64-bit range; exact `bool` is the separate boolean type and never an integer;
+9. a container identity is inserted into one traversal-wide `seen` set before visiting children; a repeated identity, including a cycle, is rejected;
+10. after traversal succeeds, CL5 builds a detached exact-built-in snapshot, canonicalizes it once, requires `len(canonical_bytes) <= MAX_RESPONSE_CANONICAL_BYTES`, parses those bytes with duplicate-key rejection, canonicalizes the parsed value again and requires byte equality.
+
 Bounds:
 
 ```text
@@ -558,7 +587,17 @@ key scalars <= MAX_KEY_SCALARS
 canonical bytes <= MAX_RESPONSE_CANONICAL_BYTES
 ```
 
-Cycle и repeated container identity запрещены.
+Any violation of rules 1–9 returns:
+
+```text
+RESPONSE_BOUNDS_EXCEEDED
+```
+
+Failure of the detach/canonical parse-reencode check returns:
+
+```text
+CANONICAL_FORMAT_INVALID
+```
 
 Ignored provider fields также участвуют в bounds и canonical response hash.
 
@@ -741,24 +780,45 @@ This creates no new account identity version.
 
 ## 18. BrokerPositionsCashProof identity
 
-Exact HMAC preimage:
+`proof_identity_sha256` is HMAC-SHA-256 of this exact canonical preimage:
 
 ```json
 {
   "account_scope_sha256": "<sha>",
   "as_of": "<timestamp>",
-  "blocked_rub": "<exact nested CL1 Money canonical object>",
-  "domain": "v3.10-cl5-broker-positions-cash-proof",
+  "blocked_rub": <exact nested CL1 Money canonical object>,
+  "domain": "v3.10-cl5-broker-positions-cash-proof-identity",
   "environment": "SANDBOX",
-  "foreign_cash_present": false,
+  "foreign_cash_present": <actual exact bool>,
   "identity_key_id": "<TOKEN>",
-  "positions_money_rub": "<exact nested CL1 Money canonical object>",
+  "positions_money_rub": <exact nested CL1 Money canonical object>,
   "provider": "TBANK",
   "response_canonical_sha256": "<sha>",
+  "response_complete": true,
   "rpc": "tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxPositions",
   "version": 1
 }
 ```
+
+The exact canonical `BrokerPositionsCashProof` object contains the same fields, replaces the domain with:
+
+```text
+v3.10-cl5-broker-positions-cash-proof
+```
+
+and additionally contains:
+
+```text
+proof_identity_sha256 = <the HMAC above>
+```
+
+No other key is permitted. Its public plain identity is:
+
+```text
+proof.sha256 = SHA256(proof.canonical_bytes)
+```
+
+where `canonical_bytes` is section 9 canonical JSON of that exact object. The plain SHA is never an HMAC substitute.
 
 Changing any authoritative field changes proof identity.
 
@@ -843,17 +903,51 @@ CL5 does not redefine Central lifecycle.
 
 `project_central_reservations` accepts exact `CentralOrderState`.
 
-Before projection the implementation must:
+Before any `to_dict`, `from_dict`, property, hash helper or other virtual dispatch, the implementation must traverse the accepted slot fields directly and require this exact recursive DTO graph:
 
-1. require exact accepted DTO type;
-2. serialize through existing `to_dict`;
-3. reconstruct through accepted `CentralOrderState.from_dict`;
-4. require semantically/structurally identical reconstruction;
-5. enforce `len(intents) <= MAX_CENTRAL_INTENTS`;
-6. recompute:
+```text
+type(state) is CentralOrderState
+type(state.intents) is tuple
+type(each intent) is CentralOrderIntent
+type(intent.candidate) is CentralOrderCandidate
+type(intent.authorization) is ExecutionAuthorization
+type(intent.authorization.portfolio_risk) is PortfolioRiskAuthorizationProof or exact None
+type(intent.transitions) is tuple
+type(each transition) is OrderTransition
+type(authorization.pending_order_ids) is tuple
+type(authorization.uncertain_order_ids) is tuple
+type(portfolio_risk.excluded_reservation_ids) is tuple, when present
+```
+
+No subclass, proxy or replacement container is accepted at any level.
+
+The direct-field traversal uses the section 13 depth/node/scalar occurrence rules, with `MAX_CENTRAL_STATE_*` in place of `MAX_RESPONSE_*`, except that exact accepted DTO instances and exact tuple containers are the only containers. Every DTO scalar field must have the exact accepted schema type before normalization; every string independently satisfies `MAX_CENTRAL_STRING_SCALARS`; every plain integer is signed-64-bit; exact bool remains separate. Tuple identity may repeat and each occurrence is counted independently, because accepted immutable DTOs commonly reuse the singleton empty tuple and the exact field topology contains no recursive container edge. It also requires:
+
+```text
+len(state.intents) <= MAX_CENTRAL_INTENTS
+len(intent.transitions) <= MAX_CENTRAL_TRANSITIONS_PER_INTENT
+```
+
+Any exact-type, depth, node, string, integer or collection-limit violation is:
+
+```text
+CENTRAL_STATE_INVALID
+```
+
+Only after that preflight the implementation must:
+
+1. invoke the accepted unbound `CentralOrderState.to_dict(state)` path;
+2. canonicalize the resulting exact-built-in graph and enforce `MAX_CENTRAL_STATE_CANONICAL_BYTES`;
+3. parse/re-encode the canonical bytes and require byte equality;
+4. reconstruct through accepted `CentralOrderState.from_dict`;
+5. require semantically and structurally identical reconstruction;
+6. require `state.updated_at <= evaluated_at`; an updated state from the future is `DEPENDENCY_FROM_FUTURE`;
+7. recompute:
    `central_reservation_projection_hash(state, excluded_reservation_ids=())`;
-7. use exact `state.revision`;
-8. use full-account projection only.
+8. use exact `state.revision`;
+9. use full-account projection only.
+
+The Central canonical-bytes overflow or parse/re-encode failure is `CENTRAL_STATE_INVALID` and precedes account-scope/hash/lifecycle work.
 
 No reservation exclusions are permitted in CL5.
 
@@ -988,7 +1082,45 @@ projection_identity_sha256
 version
 ```
 
-Exact identity HMAC binds all fields above except `projection_identity_sha256` itself.
+`projection_identity_sha256` is HMAC-SHA-256 of the exact section 9 canonical object:
+
+```json
+{
+  "account_scope_sha256": "<sha>",
+  "ambiguous_count": <plain int>,
+  "ambiguous_reserved_cash": <exact nested CL1 Money canonical object>,
+  "central_order_revision": "<canonical non-negative decimal string>",
+  "central_reservation_projection_hash": "<sha>",
+  "domain": "v3.10-cl5-central-reservation-projection-identity",
+  "environment": "SANDBOX",
+  "evaluated_at": "<timestamp>",
+  "identity_key_id": "<TOKEN>",
+  "queued_count": <plain int>,
+  "queued_reserved_cash": <exact nested CL1 Money canonical object>,
+  "total_reserved_cash": <exact nested CL1 Money canonical object>,
+  "version": 1
+}
+```
+
+The exact canonical `CentralReservationProjection` object contains the same fields, replaces the domain with:
+
+```text
+v3.10-cl5-central-reservation-projection
+```
+
+and additionally contains:
+
+```text
+projection_identity_sha256 = <the HMAC above>
+```
+
+No other key is permitted. Its public plain identity is:
+
+```text
+projection.sha256 = SHA256(projection.canonical_bytes)
+```
+
+where `canonical_bytes` is section 9 canonical JSON of that exact object. Counts are plain non-negative signed-64-bit integers; money values are exact nested CL1 Money objects.
 
 No:
 
@@ -1264,21 +1396,21 @@ No rounding.
 
 ---
 
-## 30. Cross-proof skew
+## 30. Cross-evidence skew
 
-Absolute difference:
+The three observation/capture timestamps:
 
 ```text
-abs(
-    reconciliation.proof.as_of
-    -
-    positions.as_of
-)
+reconciliation.proof.as_of
+positions.as_of
+reservations.evaluated_at
 ```
 
-must not exceed:
+must satisfy the pairwise-equivalent bound:
 
 ```text
+max(the three timestamps) - min(the three timestamps)
+<=
 MAX_CROSS_PROOF_SKEW_NS
 ```
 
@@ -1287,7 +1419,7 @@ for READY.
 Otherwise:
 
 ```text
-MIXED_BROKER_SNAPSHOT
+MIXED_EVIDENCE_SNAPSHOT
 ```
 
 and status:
@@ -1296,15 +1428,28 @@ and status:
 BLOCKED
 ```
 
-Exact amount equality does not override an excessive timestamp skew.
+Exact amount equality does not override an excessive timestamp skew. `reservations.evaluated_at` is the caller-supplied completion time of the bounded Central-state capture performed by `project_central_reservations`; `state.updated_at` remains state-change time and is not substituted for capture time.
 
 ---
 
 ## 31. Freshness at snapshot evaluation
 
-At `build_cash_availability(... evaluated_at=...)`:
+At `build_cash_availability(... evaluated_at=...)`, these dependency evaluation/capture times must not be later than snapshot `evaluated_at`:
 
-both:
+```text
+reconciliation.evaluated_at
+reconciliation.proof.as_of
+positions.as_of
+reservations.evaluated_at
+```
+
+Any violation raises:
+
+```text
+DEPENDENCY_FROM_FUTURE
+```
+
+Both broker proof observation times:
 
 ```text
 reconciliation.proof.as_of
@@ -1314,13 +1459,18 @@ positions.as_of
 must still satisfy:
 
 ```text
-not future
 age <= MAX_PROOF_AGE_NS
 ```
 
-A proof may have been fresh when created and stale when CL5 snapshot is built.
+and the Central projection capture time must satisfy:
 
-CL5 rechecks freshness.
+```text
+evaluated_at - reservations.evaluated_at <= MAX_PROOF_AGE_NS
+```
+
+A broker proof or Central projection may have been fresh when created and stale when the CL5 snapshot is built.
+
+CL5 rechecks all these relations. Stale broker evidence yields `BROKER_PROOF_STALE`; a stale Central projection yields `CENTRAL_PROJECTION_STALE`. No maximum-age rule is applied to `state.updated_at`: an unchanged old state may be captured freshly, while section 21 still forbids a state timestamp later than its projection capture.
 
 ---
 
@@ -1368,7 +1518,9 @@ MATCHED / complete / NONE
 
 broker proofs fresh
 
-cross-proof skew within bound
+Central projection fresh
+
+cross-evidence skew within bound
 
 account/environment/currency equal
 
@@ -1498,7 +1650,9 @@ CL4_NOT_READY
 
 BROKER_PROOF_STALE
 
-MIXED_BROKER_SNAPSHOT
+CENTRAL_PROJECTION_STALE
+
+MIXED_EVIDENCE_SNAPSHOT
 
 BROKER_VIEW_MISMATCH
 
@@ -1521,22 +1675,25 @@ After structural validation succeeds, valid-but-unsafe evidence is resolved in t
 2. either broker proof stale at snapshot time:
    `BROKER_PROOF_STALE / BLOCKED`
 
-3. proof skew above bound:
-   `MIXED_BROKER_SNAPSHOT / BLOCKED`
+3. Central projection stale at snapshot time:
+   `CENTRAL_PROJECTION_STALE / BLOCKED`
 
-4. provider cash views do not match:
+4. cross-evidence skew above bound:
+   `MIXED_EVIDENCE_SNAPSHOT / BLOCKED`
+
+5. provider cash views do not match:
    `BROKER_VIEW_MISMATCH / BLOCKED`
 
-5. foreign cash present:
+6. foreign cash present:
    `FOREIGN_CASH_PRESENT / BLOCKED`
 
-6. ambiguous Central reservation amount > 0:
+7. ambiguous Central reservation amount > 0:
    `CENTRAL_PROVIDER_OVERLAP_UNKNOWN / MANUAL_REVIEW_REQUIRED`
 
-7. known-disjoint subtraction would become negative:
+8. known-disjoint subtraction would become negative:
    `INSUFFICIENT_AFTER_RESERVATIONS / BLOCKED`
 
-8. otherwise:
+9. otherwise:
    `READY / READY`
 
 Exactly one primary reason is emitted.
@@ -1555,6 +1712,14 @@ environment
 currency
 
 evaluated_at
+
+cl4_reconciliation_evaluated_at
+
+broker_cash_as_of
+
+broker_positions_as_of
+
+central_projection_evaluated_at
 
 reconciliation_sha256
 
@@ -1613,7 +1778,15 @@ v3.10-cl5-cash-availability
 - exact Money only after broker-view proof succeeds;
 - otherwise null.
 
-All revision values use canonical decimal-string encoding.
+All four timestamp fields use the exact section 9 timestamp format and make temporal correlation independently auditable from the immutable snapshot. All revision values use canonical decimal-string encoding.
+
+The exact canonical snapshot object also contains:
+
+```text
+domain = v3.10-cl5-cash-availability
+```
+
+No other key is permitted.
 
 ---
 
@@ -1628,6 +1801,7 @@ Snapshot SHA binds:
 - exact CL4 ledger revision/head;
 - exact positions proof;
 - exact Central revision/projection hash;
+- CL4 evaluation, both broker observation times and Central projection capture time;
 - all exact monetary components;
 - overlap disposition;
 - final availability status/reason;
@@ -1658,6 +1832,8 @@ central revision
 reservation projection hash
 ledger revision/head
 broker proof freshness
+Central projection freshness
+all four snapshot-bound time relations
 ```
 
 under a later separately accepted locked boundary.
@@ -1688,6 +1864,8 @@ TIMESTAMP_INVALID
 PROOF_FROM_FUTURE
 
 PROOF_STALE
+
+DEPENDENCY_FROM_FUTURE
 
 PROOF_INCOMPLETE
 
@@ -1774,25 +1952,30 @@ Public boundaries use deterministic primary-reason order.
 
 1. exact public argument types;
 2. environment/account/key/timestamp;
-3. exact Central DTO round-trip;
-4. intent count bounds;
-5. account-scope match;
-6. exact Central projection hash;
-7. lifecycle partition;
-8. exact kopeck conversion;
-9. arithmetic overflow;
-10. projection identity.
+3. exact recursive Central DTO/container types, before virtual dispatch;
+4. direct-field depth/node/string/integer/intent/transition bounds;
+5. unbound serialization, canonical-byte bound and parse/re-encode equality;
+6. exact Central DTO round-trip;
+7. `state.updated_at <= evaluated_at`;
+8. account-scope match;
+9. exact Central projection hash;
+10. lifecycle partition;
+11. exact kopeck conversion;
+12. arithmetic overflow;
+13. projection identity and plain SHA.
 
 ### build_cash_availability
 
 1. exact public argument types;
 2. evaluated timestamp/key;
 3. CL4 revalidation through public CL4 boundary;
-4. positions proof reconstruction/HMAC;
-5. Central projection reconstruction/HMAC;
-6. account/environment/currency correlation;
-7. structural arithmetic;
-8. deterministic disposition precedence from section 37.
+4. positions proof exact canonical reconstruction/HMAC/plain SHA;
+5. Central projection exact canonical reconstruction/HMAC/plain SHA;
+6. all dependency-not-from-future relations;
+7. account/environment/currency correlation;
+8. structural arithmetic;
+9. broker/Central freshness and three-way cross-evidence skew;
+10. deterministic disposition precedence from section 37.
 
 Representative multi-invalid cases are mandatory tests.
 
@@ -1867,6 +2050,66 @@ contains public synthetic values only.
 
 Production code never reads fixture.
 
+### Contract-owned CL5-KAT-01
+
+These values are normative ASCII bytes and lowercase digests. Future fixture values MUST reproduce them; fixture and production code may not redefine them.
+
+```text
+identity_key_hex = 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+identity_key_id = CL5_TEST_KEY_V1
+as_of = evaluated_at = 2026-09-11T10:00:00.000000000Z
+```
+
+CL3 account-scope vector:
+
+```text
+preimage_ascii = {"account_id":"sandbox-account-0001","domain":"v3.10-cl3-account-scope","environment":"SANDBOX","identity_key_id":"CL5_TEST_KEY_V1","provider":"TBANK","version":1}
+account_scope_sha256 = 15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3
+```
+
+Bounded provider response vector:
+
+```text
+response_canonical_ascii = {"accountId":"sandbox-account-0001","blocked":[{"currency":"RUB","nano":0,"units":"20"}],"futures":[],"limitsLoadingInProgress":false,"money":[{"currency":"RUB","nano":0,"units":"80"}],"options":[],"securities":[]}
+response_canonical_sha256 = 8536a2edc952eb45dbab5238f2e5ebf476746eba14806f835e6aad02d9457949
+```
+
+BrokerPositionsCashProof vector:
+
+```text
+hmac_preimage_ascii = {"account_scope_sha256":"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3","as_of":"2026-09-11T10:00:00.000000000Z","blocked_rub":{"amount":"20.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"20000000000","scale":9,"version":1},"domain":"v3.10-cl5-broker-positions-cash-proof-identity","environment":"SANDBOX","foreign_cash_present":false,"identity_key_id":"CL5_TEST_KEY_V1","positions_money_rub":{"amount":"80.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"80000000000","scale":9,"version":1},"provider":"TBANK","response_canonical_sha256":"8536a2edc952eb45dbab5238f2e5ebf476746eba14806f835e6aad02d9457949","response_complete":true,"rpc":"tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxPositions","version":1}
+proof_identity_sha256 = 66893e4b8a21a7dabaebbf1c59058a741e48b52382c62ceea79ca59d965e900b
+proof_canonical_ascii = {"account_scope_sha256":"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3","as_of":"2026-09-11T10:00:00.000000000Z","blocked_rub":{"amount":"20.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"20000000000","scale":9,"version":1},"domain":"v3.10-cl5-broker-positions-cash-proof","environment":"SANDBOX","foreign_cash_present":false,"identity_key_id":"CL5_TEST_KEY_V1","positions_money_rub":{"amount":"80.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"80000000000","scale":9,"version":1},"proof_identity_sha256":"66893e4b8a21a7dabaebbf1c59058a741e48b52382c62ceea79ca59d965e900b","provider":"TBANK","response_canonical_sha256":"8536a2edc952eb45dbab5238f2e5ebf476746eba14806f835e6aad02d9457949","response_complete":true,"rpc":"tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxPositions","version":1}
+proof_sha256 = 96a9c34f60c7317ac44e0facab9f853805a26d4565ef33f28468d251454be22d
+```
+
+Foreign-cash mutation vector:
+
+```text
+foreign_response_canonical_ascii = {"accountId":"sandbox-account-0001","blocked":[{"currency":"RUB","nano":0,"units":"20"}],"futures":[],"limitsLoadingInProgress":false,"money":[{"currency":"RUB","nano":0,"units":"80"},{"currency":"USD","nano":0,"units":"1"}],"options":[],"securities":[]}
+foreign_response_canonical_sha256 = 71aac2f99b4a686f355768683a847d0840eeb7f952ef0415bd3ea9bc75d09c7c
+foreign_cash_present_true_hmac = 8d6583962f244691dd2aed4f2bb618430279878ebe4113cc0742f98a92f92bd4
+same_preimage_with_foreign_cash_present_false_hmac = 8316790a43bcfa0dbd6abb9d7990df84d653bb9ba5c35f9ae41b36b0ff1ec230
+```
+
+The two mutation HMAC preimages are the section 18 proof preimage using the foreign response SHA and differ in exactly the JSON boolean value `true` versus `false`. A proof built from the foreign response MUST contain `true` and the first HMAC. Mutating that proof's boolean to `false` while retaining the first HMAC is `PROOF_IDENTITY_INVALID`; the distinct second HMAC is a domain-separation known answer only and MUST NOT be emitted by `build_broker_positions_cash_proof` for this response.
+
+CentralReservationProjection vector uses `central_reservation_projection_hash = 55` repeated 32 times, revision `7`, queued `30 RUB`/count `1`, ambiguous `0 RUB`/count `0`:
+
+```text
+hmac_preimage_ascii = {"account_scope_sha256":"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3","ambiguous_count":0,"ambiguous_reserved_cash":{"amount":"0.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"0","scale":9,"version":1},"central_order_revision":"7","central_reservation_projection_hash":"5555555555555555555555555555555555555555555555555555555555555555","domain":"v3.10-cl5-central-reservation-projection-identity","environment":"SANDBOX","evaluated_at":"2026-09-11T10:00:00.000000000Z","identity_key_id":"CL5_TEST_KEY_V1","queued_count":1,"queued_reserved_cash":{"amount":"30.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"30000000000","scale":9,"version":1},"total_reserved_cash":{"amount":"30.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"30000000000","scale":9,"version":1},"version":1}
+projection_identity_sha256 = bdd984ef909c6217711e94f01c55031d0f93c5bc4e52a8c8b10401b98a9dcfe5
+projection_canonical_ascii = {"account_scope_sha256":"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3","ambiguous_count":0,"ambiguous_reserved_cash":{"amount":"0.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"0","scale":9,"version":1},"central_order_revision":"7","central_reservation_projection_hash":"5555555555555555555555555555555555555555555555555555555555555555","domain":"v3.10-cl5-central-reservation-projection","environment":"SANDBOX","evaluated_at":"2026-09-11T10:00:00.000000000Z","identity_key_id":"CL5_TEST_KEY_V1","projection_identity_sha256":"bdd984ef909c6217711e94f01c55031d0f93c5bc4e52a8c8b10401b98a9dcfe5","queued_count":1,"queued_reserved_cash":{"amount":"30.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"30000000000","scale":9,"version":1},"total_reserved_cash":{"amount":"30.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"30000000000","scale":9,"version":1},"version":1}
+projection_sha256 = 24505cbf486c30f5c85a2bb456db3587dc3d97f8ce9f5afc96f9b1405f511048
+```
+
+READY snapshot vector additionally uses reconciliation SHA `11` repeated 32 times, adoption-candidate SHA `22` repeated 32 times, ledger-export SHA `33` repeated 32 times, ledger-head SHA `44` repeated 32 times, ledger revision `5`, broker total `100 RUB`, blocked `20 RUB`, unblocked `80 RUB`, queued `30 RUB` and free `50 RUB`:
+
+```text
+snapshot_canonical_ascii = {"account_scope_sha256":"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3","availability_reason":"READY","broker_blocked_cash":{"amount":"20.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"20000000000","scale":9,"version":1},"broker_cash_as_of":"2026-09-11T10:00:00.000000000Z","broker_positions_as_of":"2026-09-11T10:00:00.000000000Z","broker_positions_cash_proof_sha256":"96a9c34f60c7317ac44e0facab9f853805a26d4565ef33f28468d251454be22d","broker_total_cash":{"amount":"100.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"100000000000","scale":9,"version":1},"broker_unblocked_cash":{"amount":"80.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"80000000000","scale":9,"version":1},"central_ambiguous_reserved_cash":{"amount":"0.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"0","scale":9,"version":1},"central_order_revision":"7","central_projection_evaluated_at":"2026-09-11T10:00:00.000000000Z","central_queued_reserved_cash":{"amount":"30.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"30000000000","scale":9,"version":1},"central_reservation_projection_hash":"5555555555555555555555555555555555555555555555555555555555555555","central_reservation_projection_sha256":"24505cbf486c30f5c85a2bb456db3587dc3d97f8ce9f5afc96f9b1405f511048","central_total_reserved_cash":{"amount":"30.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"30000000000","scale":9,"version":1},"cl4_adoption_candidate_sha256":"2222222222222222222222222222222222222222222222222222222222222222","cl4_reconciliation_evaluated_at":"2026-09-11T10:00:00.000000000Z","currency":"RUB","domain":"v3.10-cl5-cash-availability","environment":"SANDBOX","evaluated_at":"2026-09-11T10:00:00.000000000Z","free_investable_cash":{"amount":"50.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"50000000000","scale":9,"version":1},"ledger_export_sha256":"3333333333333333333333333333333333333333333333333333333333333333","ledger_head_sha256":"4444444444444444444444444444444444444444444444444444444444444444","ledger_revision":"5","overlap_disposition":"QUEUED_DISJOINT","reconciliation_sha256":"1111111111111111111111111111111111111111111111111111111111111111","status":"READY","version":1}
+snapshot_sha256 = cd375c47f6dc528ae8e64a13dfb7de9145f5964988893c7ef20561050411e238
+```
+
 Required known-answer cases include:
 
 1. zero cash / zero blocked / zero reservations;
@@ -1882,12 +2125,13 @@ Required known-answer cases include:
 11. foreign cash present → blocked;
 12. CL4 incomplete → blocked;
 13. stale positions proof → blocked;
-14. proof timestamp skew above bound → blocked;
-15. reservation exceeds unblocked cash → blocked;
-16. canonical proof/snapshot bytes and SHA;
-17. account-scope HMAC known answer;
-18. positions-proof HMAC known answer;
-19. Central projection HMAC known answer.
+14. three-way evidence timestamp skew above bound → blocked;
+15. Central projection stale and dependency-from-future boundaries;
+16. reservation exceeds unblocked cash → blocked;
+17. canonical proof/projection/snapshot bytes and plain SHA;
+18. account-scope HMAC known answer;
+19. positions-proof HMAC and foreign-bool mutation known answers;
+20. Central projection HMAC known answer.
 
 All arbitrary Money integers are decimal strings in fixture.
 
@@ -1904,7 +2148,7 @@ V310-CL5-01
 exact predecessor + cumulative allowlist
 
 V310-CL5-02
-positions response graph bounds
+positions response exact graph counting/bounds, aliases and int64 edges
 
 V310-CL5-03
 Sandbox account-scope identity exact
@@ -1919,13 +2163,13 @@ V310-CL5-06
 foreign-cash detection
 
 V310-CL5-07
-BrokerPositionsCashProof canonical/HMAC vectors
+BrokerPositionsCashProof canonical/HMAC/plain-SHA and foreign-bool mutation vectors
 
 V310-CL5-08
 proof future/stale/age edges
 
 V310-CL5-09
-Central exact DTO round-trip
+Central recursive exact-type/pre-dispatch bounds/round-trip/state-time checks
 
 V310-CL5-10
 exact existing reservation projection hash binding
@@ -1943,7 +2187,7 @@ V310-CL5-14
 CL4 public revalidation and ledger-export binding
 
 V310-CL5-15
-broker proof cross-skew boundaries
+dependency-from-future, broker/Central freshness and three-way skew boundaries
 
 V310-CL5-16
 broker total = money + blocked exact correlation
