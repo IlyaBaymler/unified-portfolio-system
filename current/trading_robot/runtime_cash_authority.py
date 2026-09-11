@@ -381,6 +381,20 @@ class RuntimeCashAuthorityRecord:
                 or self.cutover_generation != 0
                 or self.ever_exact_activated
                 or self.post_attempt_count != 0
+                or any(
+                    value is not None
+                    for value in (
+                        self.account_scope_sha256,
+                        self.activation_context_sha256,
+                        self.identity_key_id,
+                        self.ledger_head_sha256,
+                        self.ledger_revision,
+                        self.opening_cutoff,
+                        self.opening_record_sha256,
+                        self.operations_complete_through,
+                        self.pending_dispatch_proof_sha256,
+                    )
+                )
             ):
                 _fail(CL7RuntimeReason.STATE_INVALID)
         elif self.previous_record_sha256 is None:
@@ -871,19 +885,22 @@ class RuntimeCashAuthorityStore:
             if self.custody_exists():
                 return self._load_unlocked(allow_missing_legacy=False)
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self._replace_temp(self.path, record.canonical_bytes)
-            self._replace_temp(self.checksum_path, (record.sha256 + "\n").encode("ascii"))
+            active_temp = self._write_temp(self.path, record.canonical_bytes)
+            checksum_temp: Path | None = None
+            try:
+                checksum_temp = self._write_temp(
+                    self.checksum_path,
+                    (record.sha256 + "\n").encode("ascii"),
+                )
+                self._replace_prepared(active_temp, self.path)
+                self._sync_parent()
+                self._replace_prepared(checksum_temp, self.checksum_path)
+                self._sync_parent()
+            finally:
+                active_temp.unlink(missing_ok=True)
+                if checksum_temp is not None:
+                    checksum_temp.unlink(missing_ok=True)
             return self._load_unlocked(allow_missing_legacy=False)
-
-    def commit(
-        self,
-        candidate: RuntimeCashAuthorityRecord,
-        *,
-        expected_revision: int,
-        expected_sha256: str,
-    ) -> RuntimeCashAuthorityRecord:
-        with self.locked():
-            return self._commit_unlocked(candidate, expected_revision=expected_revision, expected_sha256=expected_sha256)
 
     def _commit_unlocked(
         self,
@@ -896,12 +913,38 @@ class RuntimeCashAuthorityStore:
         if current.record_revision != expected_revision or not hmac.compare_digest(current.sha256, expected_sha256):
             _fail(CL7RuntimeReason.CAS_CONFLICT)
         _transition_pair(current, candidate)
-        self._replace_temp(self.lastgood_path, current.canonical_bytes)
-        self._sync_parent()
-        self._replace_temp(self.path, candidate.canonical_bytes)
-        self._sync_parent()
-        self._replace_temp(self.checksum_path, (candidate.sha256 + "\n").encode("ascii"))
-        self._sync_parent()
+        next_temp = self._write_temp(self.path, candidate.canonical_bytes)
+        checksum_temp: Path | None = None
+        lastgood_temp: Path | None = None
+        try:
+            prepared = RuntimeCashAuthorityRecord.from_canonical_bytes(
+                next_temp.read_bytes()
+            )
+            if not hmac.compare_digest(
+                prepared.canonical_bytes,
+                candidate.canonical_bytes,
+            ):
+                _fail(CL7RuntimeReason.AUTHORITY_RECORD_CORRUPT)
+            checksum_temp = self._write_temp(
+                self.checksum_path,
+                (candidate.sha256 + "\n").encode("ascii"),
+            )
+            lastgood_temp = self._write_temp(
+                self.lastgood_path,
+                current.canonical_bytes,
+            )
+            self._replace_prepared(lastgood_temp, self.lastgood_path)
+            self._sync_parent()
+            self._replace_prepared(next_temp, self.path)
+            self._sync_parent()
+            self._replace_prepared(checksum_temp, self.checksum_path)
+            self._sync_parent()
+        finally:
+            next_temp.unlink(missing_ok=True)
+            if checksum_temp is not None:
+                checksum_temp.unlink(missing_ok=True)
+            if lastgood_temp is not None:
+                lastgood_temp.unlink(missing_ok=True)
         readback = self._load_unlocked(allow_missing_legacy=False)
         if not hmac.compare_digest(readback.canonical_bytes, candidate.canonical_bytes):
             _fail(CL7RuntimeReason.AUTHORITY_RECORD_CORRUPT)
@@ -922,12 +965,9 @@ class RuntimeCashAuthorityStore:
             temporary.unlink(missing_ok=True)
             raise
 
-    def _replace_temp(self, path: Path, value: bytes) -> None:
-        temporary = self._write_temp(path, value)
-        try:
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+    @staticmethod
+    def _replace_prepared(temporary: Path, path: Path) -> None:
+        os.replace(temporary, path)
 
     def _sync_parent(self) -> None:
         try:
@@ -1708,12 +1748,12 @@ class RuntimeCashAuthorityManager:
         runtime_dir = inputs.pop("runtime_dir", None)
         clock = inputs.get("clock")
         observed = self.store.load(allow_missing_legacy=False)
-        if observed.state is not RuntimeCashAuthorityState.EXACT_CASH_DISARMED:
-            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
         if observed.post_attempt_count != 0:
             _fail(CL7RuntimeReason.ROLLBACK_FORBIDDEN_AFTER_ATTEMPT)
         if observed.pending_dispatch_proof_sha256 is not None:
             _fail(CL7RuntimeReason.DISPATCH_PENDING)
+        if observed.state is not RuntimeCashAuthorityState.EXACT_CASH_DISARMED:
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
         self._phrase(confirmation, self.ROLLBACK_PHRASE)
         self._account(
             observed,
@@ -1774,84 +1814,164 @@ class RuntimeCashAuthorityManager:
 
         with self.store.locked():
             current = self.store._load_unlocked(allow_missing_legacy=False)
-            self._account(
+            return self._recover_runtime_locked(
                 current,
-                raw_account_id,
-                identity_key,
-                identity_key_id,
+                central_manager=central_manager,
+                raw_account_id=raw_account_id,
+                identity_key=identity_key,
+                identity_key_id=identity_key_id,
+                transition_at=transition_at,
             )
-            if current.state is RuntimeCashAuthorityState.EXACT_CASH_ARMED:
-                try:
-                    intent = central_manager.resolve_cl7_pre_submit(
-                        authority_record_revision=current.record_revision,
-                        authority_record_sha256=current.sha256,
-                    )
-                    proof = LockedDispatchProof.from_canonical_dict(
-                        intent.cl7_locked_dispatch_proof
-                    )
-                    proof.verify_identity(
-                        raw_intent_id=intent.intent_id,
-                        identity_key=identity_key,
-                    )
-                except CL7RuntimeError:
-                    raise
-                except Exception:
-                    _fail(CL7RuntimeReason.RECOVERY_REQUIRED, stage="D3")
-                return current, "D3_PRE_SUBMIT_FAILED"
-            if current.state is not RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING:
-                _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
 
-            def resolve(central: Any) -> RuntimeCashAuthorityRecord:
-                matches = tuple(
-                    item
-                    for item in central.intents
-                    if item.cl7_locked_dispatch_proof_sha256
-                    == current.pending_dispatch_proof_sha256
-                )
-                if len(matches) != 1:
-                    _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
-                intent = matches[0]
-                proof = LockedDispatchProof.from_canonical_dict(
-                    intent.cl7_locked_dispatch_proof
-                )
+    def _recovery_intent_from_state(
+        self,
+        current: RuntimeCashAuthorityRecord,
+        central: Any,
+        *,
+        identity_key: bytes,
+        allow_absent_d3: bool = False,
+    ) -> Any | None:
+        matches: list[tuple[Any, LockedDispatchProof]] = []
+        for item in central.intents:
+            proof_raw = item.cl7_locked_dispatch_proof
+            if proof_raw is None:
+                continue
+            proof = LockedDispatchProof.from_canonical_dict(proof_raw)
+            pending_match = (
+                current.state
+                is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+                and proof.sha256 == current.pending_dispatch_proof_sha256
+                and proof.authority_record_revision + 1 == current.record_revision
+                and proof.authority_record_sha256 == current.previous_record_sha256
+            )
+            d3_match = (
+                current.state is RuntimeCashAuthorityState.EXACT_CASH_ARMED
+                and item.status == "IN_FLIGHT"
+                and proof.authority_record_revision == current.record_revision
+                and proof.authority_record_sha256 == current.sha256
+                and central.revision == proof.central_order_revision + 1
+            )
+            if pending_match or d3_match:
                 proof.verify_identity(
-                    raw_intent_id=intent.intent_id,
+                    raw_intent_id=item.intent_id,
                     identity_key=identity_key,
                 )
                 if (
                     proof.account_scope_sha256 != current.account_scope_sha256
-                    or proof.authority_record_revision + 1
-                    != current.record_revision
-                    or proof.authority_record_sha256
-                    != current.previous_record_sha256
+                    or proof.identity_key_id != current.identity_key_id
+                    or proof.ledger_revision != current.ledger_revision
+                    or proof.ledger_head_sha256 != current.ledger_head_sha256
+                    or central.revision < proof.central_order_revision + 1
                 ):
                     _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
-                fully_resolved = (
-                    intent.status == "FAILED"
-                    and intent.outcome == "SUBMISSION_REJECTED"
-                ) or intent.status == "RECONCILED"
-                if not fully_resolved:
-                    _fail(CL7RuntimeReason.RECOVERY_REQUIRED)
-                candidate = self._change(
-                    current,
-                    at=_timestamp(transition_at),
-                    kind="RECOVERY_CLOSED_DISARMED",
-                    state=RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
-                    pending_dispatch_proof_sha256=None,
-                )
-                return self.store._commit_unlocked(
-                    candidate,
-                    expected_revision=current.record_revision,
-                    expected_sha256=current.sha256,
-                )
+                matches.append((item, proof))
+        if not matches and allow_absent_d3 and (
+            current.state is RuntimeCashAuthorityState.EXACT_CASH_ARMED
+        ):
+            return None
+        if len(matches) != 1:
+            _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
+        return matches[0][0]
 
+    def _recovery_intent_locked(
+        self,
+        current: RuntimeCashAuthorityRecord,
+        *,
+        central_manager: Any,
+        identity_key: bytes,
+        allow_absent_d3: bool = False,
+    ) -> Any | None:
+        try:
+            return central_manager.inspect_locked(
+                lambda central: self._recovery_intent_from_state(
+                    current,
+                    central,
+                    identity_key=identity_key,
+                    allow_absent_d3=allow_absent_d3,
+                )
+            )
+        except CL7RuntimeError:
+            raise
+        except Exception:
+            _fail(CL7RuntimeReason.RECOVERY_REQUIRED, stage="CENTRAL_CUSTODY")
+
+    def _recover_runtime_locked(
+        self,
+        current: RuntimeCashAuthorityRecord,
+        *,
+        central_manager: Any,
+        raw_account_id: str,
+        identity_key: bytes,
+        identity_key_id: str,
+        transition_at: str,
+    ) -> tuple[RuntimeCashAuthorityRecord, str]:
+        self._account(
+            current,
+            raw_account_id,
+            identity_key,
+            identity_key_id,
+        )
+        if current.state is RuntimeCashAuthorityState.EXACT_CASH_ARMED:
+            intent = self._recovery_intent_locked(
+                current,
+                central_manager=central_manager,
+                identity_key=identity_key,
+            )
+            proof = LockedDispatchProof.from_canonical_dict(
+                intent.cl7_locked_dispatch_proof
+            )
             try:
-                result = central_manager.inspect_locked(resolve)
+                central_manager.resolve_cl7_pre_submit(
+                    expected_intent_id=intent.intent_id,
+                    expected_proof_sha256=proof.sha256,
+                    authority_record_revision=current.record_revision,
+                    authority_record_sha256=current.sha256,
+                    account_scope_sha256=current.account_scope_sha256,
+                    identity_key_id=current.identity_key_id,
+                    identity_key=identity_key,
+                    ledger_revision=current.ledger_revision,
+                    ledger_head_sha256=current.ledger_head_sha256,
+                )
             except CL7RuntimeError:
                 raise
             except Exception:
-                _fail(CL7RuntimeReason.RECOVERY_REQUIRED, stage="CENTRAL_CUSTODY")
-            return result, "RECOVERY_CLOSED_DISARMED"
+                _fail(CL7RuntimeReason.RECOVERY_REQUIRED, stage="D3")
+            return current, "D3_PRE_SUBMIT_FAILED"
+        if current.state is not RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING:
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+
+        def resolve(central: Any) -> RuntimeCashAuthorityRecord:
+            intent = self._recovery_intent_from_state(
+                current,
+                central,
+                identity_key=identity_key,
+            )
+            fully_resolved = (
+                intent.status == "FAILED"
+                and intent.outcome == "SUBMISSION_REJECTED"
+            ) or intent.status == "RECONCILED"
+            if not fully_resolved:
+                _fail(CL7RuntimeReason.RECOVERY_REQUIRED)
+            candidate = self._change(
+                current,
+                at=_timestamp(transition_at),
+                kind="RECOVERY_CLOSED_DISARMED",
+                state=RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+                pending_dispatch_proof_sha256=None,
+            )
+            return self.store._commit_unlocked(
+                candidate,
+                expected_revision=current.record_revision,
+                expected_sha256=current.sha256,
+            )
+
+        try:
+            result = central_manager.inspect_locked(resolve)
+        except CL7RuntimeError:
+            raise
+        except Exception:
+            _fail(CL7RuntimeReason.RECOVERY_REQUIRED, stage="CENTRAL_CUSTODY")
+        return result, "RECOVERY_CLOSED_DISARMED"
 
     @staticmethod
     def _phrase(value: object, expected: str) -> None:
@@ -1891,78 +2011,10 @@ class RuntimeCashAuthorityManager:
                 expected_sha256=current.sha256,
             )
 
-    def prepare(self, *, raw_account_id: str, identity_key: bytes, identity_key_id: str, confirmation: str, transition_at: str) -> RuntimeCashAuthorityRecord:
-        if not (
-            type(raw_account_id) is str
-            and type(identity_key) is bytes
-            and type(identity_key_id) is str
-            and type(confirmation) is str
-            and type(transition_at) is str
-        ):
-            _fail(CL7RuntimeReason.TYPE_INVALID)
-        observed = self.store.load(allow_missing_legacy=False)
-        if observed.state is not RuntimeCashAuthorityState.LEGACY_ACTIVE:
-            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-        self._phrase(confirmation, self.PREPARE_PHRASE)
-        account = derive_account_scope(raw_account_id, identity_key=identity_key, identity_key_id=identity_key_id)
-        def build(current: RuntimeCashAuthorityRecord) -> RuntimeCashAuthorityRecord:
-            if current.state is not RuntimeCashAuthorityState.LEGACY_ACTIVE:
-                _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-            if current.cutover_generation >= _INT64_MAX:
-                _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-            return self._change(
-                current, at=transition_at, kind="PREPARE_CUTOVER", state=RuntimeCashAuthorityState.CUTOVER_PREPARED,
-                cutover_generation=current.cutover_generation + 1, account_scope_sha256=account,
-                identity_key_id=identity_key_id, activation_context_sha256=None,
-                ledger_head_sha256=None, ledger_revision=None, opening_cutoff=None,
-                opening_record_sha256=None, operations_complete_through=None,
-                pending_dispatch_proof_sha256=None,
-            )
-        return self._commit_after_precheck(observed, build)
-
-    def bind_preparation_evidence(self, *, ledger_revision: int, ledger_head_sha256: str, opening_cutoff: str, opening_record_sha256: str, operations_complete_through: str, transition_at: str) -> RuntimeCashAuthorityRecord:
-        values = (_plain_int(ledger_revision, CL7RuntimeReason.LEDGER_CHANGED), _hash(ledger_head_sha256, CL7RuntimeReason.LEDGER_CHANGED), _timestamp(opening_cutoff), _hash(opening_record_sha256, CL7RuntimeReason.OPENING_INVALID), _timestamp(operations_complete_through))
-        def build(current: RuntimeCashAuthorityRecord) -> RuntimeCashAuthorityRecord:
-            if current.state is not RuntimeCashAuthorityState.CUTOVER_PREPARED:
-                _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-            return self._change(current, at=transition_at, kind="PREPARATION_EVIDENCE_BOUND", state=current.state, ledger_revision=values[0], ledger_head_sha256=values[1], opening_cutoff=values[2], opening_record_sha256=values[3], operations_complete_through=values[4])
-        return self._locked_change(build)
-
     def _account(self, current: RuntimeCashAuthorityRecord, raw_account_id: str, identity_key: bytes, identity_key_id: str) -> None:
         account = derive_account_scope(raw_account_id, identity_key=identity_key, identity_key_id=identity_key_id)
         if current.account_scope_sha256 != account or current.identity_key_id != identity_key_id:
             _fail(CL7RuntimeReason.ACCOUNT_SCOPE_INVALID)
-
-    def confirm(self, *, raw_account_id: str, identity_key: bytes, identity_key_id: str, confirmation: str, transition_at: str, quiescent: bool) -> RuntimeCashAuthorityRecord:
-        observed = self.store.load(allow_missing_legacy=False)
-        if observed.state is not RuntimeCashAuthorityState.CUTOVER_PREPARED:
-            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-        self._phrase(confirmation, self.CONFIRM_PHRASE)
-        self._account(observed, raw_account_id, identity_key, identity_key_id)
-        def build(current: RuntimeCashAuthorityRecord) -> RuntimeCashAuthorityRecord:
-            if current.state is not RuntimeCashAuthorityState.CUTOVER_PREPARED:
-                _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-            self._account(current, raw_account_id, identity_key, identity_key_id)
-            if not quiescent:
-                _fail(CL7RuntimeReason.CUTOVER_NOT_QUIESCENT)
-            return self._change(current, at=transition_at, kind="CONFIRM_CUTOVER", state=RuntimeCashAuthorityState.CUTOVER_CONFIRMED)
-        return self._commit_after_precheck(observed, build)
-
-    def activate(self, *, raw_account_id: str, identity_key: bytes, identity_key_id: str, confirmation: str, transition_at: str, activation_context_sha256: str, ledger_revision: int, ledger_head_sha256: str, operations_complete_through: str, quiescent: bool) -> RuntimeCashAuthorityRecord:
-        observed = self.store.load(allow_missing_legacy=False)
-        if observed.state is not RuntimeCashAuthorityState.CUTOVER_CONFIRMED:
-            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-        self._phrase(confirmation, self.ACTIVATE_PHRASE)
-        self._account(observed, raw_account_id, identity_key, identity_key_id)
-        context_hash = _hash(activation_context_sha256, CL7RuntimeReason.CONTEXT_BLOCKED)
-        def build(current: RuntimeCashAuthorityRecord) -> RuntimeCashAuthorityRecord:
-            if current.state is not RuntimeCashAuthorityState.CUTOVER_CONFIRMED:
-                _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-            self._account(current, raw_account_id, identity_key, identity_key_id)
-            if quiescent is not True:
-                _fail(CL7RuntimeReason.CUTOVER_NOT_QUIESCENT)
-            return self._change(current, at=transition_at, kind="ACTIVATE_EXACT", state=RuntimeCashAuthorityState.EXACT_CASH_DISARMED, ever_exact_activated=True, activation_context_sha256=context_hash, ledger_revision=_plain_int(ledger_revision, CL7RuntimeReason.LEDGER_CHANGED), ledger_head_sha256=_hash(ledger_head_sha256, CL7RuntimeReason.LEDGER_CHANGED), operations_complete_through=_timestamp(operations_complete_through))
-        return self._commit_after_precheck(observed, build)
 
     def arm(self, *, raw_account_id: str, identity_key: bytes, identity_key_id: str, confirmation: str, transition_at: str) -> RuntimeCashAuthorityRecord:
         observed = self.store.load(allow_missing_legacy=False)
@@ -1988,23 +2040,6 @@ class RuntimeCashAuthorityManager:
                 _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
             return self._change(current, at=transition_at, kind="CANCEL_CUTOVER", state=RuntimeCashAuthorityState.LEGACY_ACTIVE)
         return self._locked_change(build)
-
-    def sync_advanced(self, *, ledger_revision: int, ledger_head_sha256: str, operations_complete_through: str, transition_at: str) -> RuntimeCashAuthorityRecord:
-        revision = _plain_int(ledger_revision, CL7RuntimeReason.LEDGER_CHANGED)
-        head = _hash(ledger_head_sha256, CL7RuntimeReason.LEDGER_CHANGED)
-        watermark = _timestamp(operations_complete_through)
-        def build(current: RuntimeCashAuthorityRecord) -> RuntimeCashAuthorityRecord:
-            if current.state not in {RuntimeCashAuthorityState.CUTOVER_PREPARED, RuntimeCashAuthorityState.EXACT_CASH_DISARMED, RuntimeCashAuthorityState.EXACT_CASH_ARMED}:
-                _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-            if (current.ledger_revision, current.ledger_head_sha256, current.operations_complete_through) == (revision, head, watermark):
-                return current
-            return self._change(current, at=transition_at, kind="SYNC_ADVANCED", state=current.state, ledger_revision=revision, ledger_head_sha256=head, operations_complete_through=watermark)
-        with self.store.locked():
-            current = self.store._load_unlocked(allow_missing_legacy=False)
-            candidate = build(current)
-            if candidate is current:
-                return current
-            return self.store._commit_unlocked(candidate, expected_revision=current.record_revision, expected_sha256=current.sha256)
 
     def synchronize_operations(
         self,
@@ -2202,20 +2237,7 @@ class RuntimeCashAuthorityManager:
         )
         return committed, batch
 
-    def record_dispatch_attempt(self, proof: LockedDispatchProof, *, transition_at: str) -> RuntimeCashAuthorityRecord:
-        if type(proof) is not LockedDispatchProof:
-            _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
-        def build(current: RuntimeCashAuthorityRecord) -> RuntimeCashAuthorityRecord:
-            if current.state is not RuntimeCashAuthorityState.EXACT_CASH_ARMED:
-                _fail(CL7RuntimeReason.DISPATCH_NOT_ARMED)
-            if proof.authority_record_revision != current.record_revision or proof.authority_record_sha256 != current.sha256 or proof.account_scope_sha256 != current.account_scope_sha256 or proof.ledger_revision != current.ledger_revision or proof.ledger_head_sha256 != current.ledger_head_sha256:
-                _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
-            if current.post_attempt_count >= _INT64_MAX:
-                _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-            return self._change(current, at=transition_at, kind="DISPATCH_ATTEMPT_RECORDED", state=RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING, post_attempt_count=current.post_attempt_count + 1, pending_dispatch_proof_sha256=proof.sha256)
-        return self._locked_change(build)
-
-    def record_dispatch_attempt_locked(
+    def _record_dispatch_attempt_locked(
         self,
         current: RuntimeCashAuthorityRecord,
         proof: LockedDispatchProof,
@@ -2268,7 +2290,7 @@ class RuntimeCashAuthorityManager:
                 _fail(CL7RuntimeReason.ATTEMPT_RECORD_FAILED, stage="PRE_POST")
             _fail(CL7RuntimeReason.RECOVERY_REQUIRED, stage="ATTEMPT_RECORD")
 
-    def clear_dispatch_locked(
+    def _clear_dispatch_locked(
         self,
         current: RuntimeCashAuthorityRecord,
         *,
@@ -2312,26 +2334,6 @@ class RuntimeCashAuthorityManager:
             expected_revision=current.record_revision,
             expected_sha256=current.sha256,
         )
-
-    def rollback(self, *, raw_account_id: str, identity_key: bytes, identity_key_id: str, confirmation: str, transition_at: str, quiescent: bool) -> RuntimeCashAuthorityRecord:
-        observed = self.store.load(allow_missing_legacy=False)
-        if observed.state is not RuntimeCashAuthorityState.EXACT_CASH_DISARMED:
-            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-        if observed.post_attempt_count != 0:
-            _fail(CL7RuntimeReason.ROLLBACK_FORBIDDEN_AFTER_ATTEMPT)
-        if observed.pending_dispatch_proof_sha256 is not None:
-            _fail(CL7RuntimeReason.DISPATCH_PENDING)
-        self._phrase(confirmation, self.ROLLBACK_PHRASE)
-        def build(current: RuntimeCashAuthorityRecord) -> RuntimeCashAuthorityRecord:
-            if current.state is not RuntimeCashAuthorityState.EXACT_CASH_DISARMED:
-                _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-            if current.post_attempt_count != 0:
-                _fail(CL7RuntimeReason.ROLLBACK_FORBIDDEN_AFTER_ATTEMPT)
-            self._account(current, raw_account_id, identity_key, identity_key_id)
-            if quiescent is not True:
-                _fail(CL7RuntimeReason.CUTOVER_NOT_QUIESCENT)
-            return self._change(current, at=transition_at, kind="ROLLBACK_TO_LEGACY", state=RuntimeCashAuthorityState.LEGACY_ACTIVE)
-        return self._commit_after_precheck(observed, build)
 
     @staticmethod
     def build_locked_dispatch_proof(*, context: Any, authority_record: RuntimeCashAuthorityRecord, raw_intent_id: str, identity_key: bytes, reserved_cash: Money, current_lots: int, target_lots: int, direction: str, evaluated_at: str) -> LockedDispatchProof:

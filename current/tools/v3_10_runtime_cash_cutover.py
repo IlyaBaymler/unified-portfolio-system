@@ -255,7 +255,7 @@ def _safe_dispatch(result: SandboxDispatchResult) -> dict[str, object]:
 def _safe_inspection(result: SandboxInspectionResult) -> dict[str, object]:
     return {
         "executed_lots": result.executed_lots,
-            "provider_status": _operator_token(result.provider_status),
+        "provider_status": _operator_token(result.provider_status),
         "retryable": result.retryable,
         "status": result.status,
         "terminal": result.terminal,
@@ -341,50 +341,94 @@ def main(argv: list[str] | None = None) -> int:
             payload["context_sha256"] = evidence.context.sha256
             payload["context_status"] = evidence.context.status.value
         elif args.command == "inspect":
-            record = runtime.authority.status()
-            payload = _safe(record)
-            payload["central_blocking_count"] = sum(
-                item.status in {"IN_FLIGHT", "SUBMITTED", "UNCERTAIN"}
-                for item in runtime.central.state().intents
-            )
-            payload["inspection"] = _safe_inspection(
-                runtime.adapter().inspect_blocking_order()
-            )
-        elif args.command == "recover":
-            record = runtime.authority.status()
-            if record.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING:
-                inspection = runtime.adapter().inspect_blocking_order()
-                if inspection.status == "ORDER_OBSERVED":
-                    blocker = runtime.central.state().blocking_intent
-                    if blocker is None:
-                        raise CL7RuntimeError(CL7RuntimeReason.RECOVERY_REQUIRED)
-                    if blocker.status == "IN_FLIGHT":
-                        if inspection.broker_order_id is None:
-                            raise CL7RuntimeError(CL7RuntimeReason.RECOVERY_REQUIRED)
-                        blocker = runtime.central.mark_submitted(
-                            blocker.intent_id,
-                            broker_order_id=inspection.broker_order_id,
-                        )
-                    if not inspection.terminal:
-                        raise CL7RuntimeError(CL7RuntimeReason.RECOVERY_REQUIRED)
-                    if blocker.status not in {"SUBMITTED", "UNCERTAIN"}:
-                        raise CL7RuntimeError(CL7RuntimeReason.RECOVERY_REQUIRED)
-                    runtime.central.mark_reconciled(
-                        blocker.intent_id,
-                        portfolio_repository=runtime.portfolio,
-                        outcome=inspection.suggested_reconciliation_outcome,
-                        executed_lots=inspection.executed_lots,
-                        risk_runtime=runtime.adapter().risk_runtime,
-                        execution_price_rub=inspection.execution_price_rub,
-                        execution_price_source=inspection.execution_price_source,
+            with runtime.authority.store.locked():
+                record = runtime.authority.store._load_unlocked(
+                    allow_missing_legacy=False
+                )
+                adapter = runtime.adapter()
+                if record.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING:
+                    intent = runtime.authority._recovery_intent_locked(
+                        record,
+                        central_manager=runtime.central,
+                        identity_key=runtime.identity_key,
                     )
-            record, disposition = runtime.authority.recover_runtime(
-                central_manager=runtime.central,
-                raw_account_id=runtime.raw_account,
-                identity_key=runtime.identity_key,
-                identity_key_id=runtime.identity_key_id,
-                transition_at=_timestamp(),
-            )
+                    inspection = adapter._inspect_order(intent)
+                elif record.state is RuntimeCashAuthorityState.EXACT_CASH_ARMED:
+                    d3_intent = runtime.authority._recovery_intent_locked(
+                        record,
+                        central_manager=runtime.central,
+                        identity_key=runtime.identity_key,
+                        allow_absent_d3=True,
+                    )
+                    inspection = SandboxInspectionResult(
+                        status=("D3_PRE_SUBMIT" if d3_intent is not None else "IDLE")
+                    )
+                elif record.state is RuntimeCashAuthorityState.EXACT_CASH_DISARMED:
+                    inspection = SandboxInspectionResult(status="IDLE")
+                else:
+                    inspection = adapter.inspect_blocking_order()
+                payload = _safe(record)
+                payload["central_blocking_count"] = sum(
+                    item.status in {"IN_FLIGHT", "SUBMITTED", "UNCERTAIN"}
+                    for item in runtime.central.state().intents
+                )
+                payload["inspection"] = _safe_inspection(inspection)
+        elif args.command == "recover":
+            with runtime.authority.store.locked():
+                record = runtime.authority.store._load_unlocked(
+                    allow_missing_legacy=False
+                )
+                if record.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING:
+                    blocker = runtime.authority._recovery_intent_locked(
+                        record,
+                        central_manager=runtime.central,
+                        identity_key=runtime.identity_key,
+                    )
+                    fully_resolved = (
+                        blocker.status == "FAILED"
+                        and blocker.outcome == "SUBMISSION_REJECTED"
+                    ) or blocker.status == "RECONCILED"
+                    if not fully_resolved:
+                        adapter = runtime.adapter()
+                        inspection = adapter._inspect_order(blocker)
+                        if inspection.status != "ORDER_OBSERVED":
+                            raise CL7RuntimeError(
+                                CL7RuntimeReason.RECOVERY_REQUIRED
+                            )
+                        if blocker.status == "IN_FLIGHT":
+                            if inspection.broker_order_id is None:
+                                raise CL7RuntimeError(
+                                    CL7RuntimeReason.RECOVERY_REQUIRED
+                                )
+                            blocker = runtime.central.mark_submitted(
+                                blocker.intent_id,
+                                broker_order_id=inspection.broker_order_id,
+                            )
+                        if not inspection.terminal:
+                            raise CL7RuntimeError(
+                                CL7RuntimeReason.RECOVERY_REQUIRED
+                            )
+                        if blocker.status not in {"SUBMITTED", "UNCERTAIN"}:
+                            raise CL7RuntimeError(
+                                CL7RuntimeReason.RECOVERY_REQUIRED
+                            )
+                        runtime.central.mark_reconciled(
+                            blocker.intent_id,
+                            portfolio_repository=runtime.portfolio,
+                            outcome=inspection.suggested_reconciliation_outcome,
+                            executed_lots=inspection.executed_lots,
+                            risk_runtime=adapter.risk_runtime,
+                            execution_price_rub=inspection.execution_price_rub,
+                            execution_price_source=inspection.execution_price_source,
+                        )
+                record, disposition = runtime.authority._recover_runtime_locked(
+                    record,
+                    central_manager=runtime.central,
+                    raw_account_id=runtime.raw_account,
+                    identity_key=runtime.identity_key,
+                    identity_key_id=runtime.identity_key_id,
+                    transition_at=_timestamp(),
+                )
             payload = _safe(record)
             payload["recovery_disposition"] = disposition
         else:

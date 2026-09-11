@@ -34,6 +34,8 @@ from .runtime_cash_authority import (
     RuntimeCashAuthorityManager,
     RuntimeCashAuthorityRecord,
     RuntimeCashAuthorityState,
+    RuntimeCashAuthorityStore,
+    legacy_execution_guard,
 )
 from .tbank_sandbox import TBankAPIError
 
@@ -196,7 +198,14 @@ class SandboxExecutionAdapter:
         self.policy = policy
         self.risk_runtime = risk_runtime
         self.portfolio_risk_runtime = portfolio_risk_runtime
-        self.cash_authority_manager = cash_authority_manager
+        self.cash_authority_manager = cash_authority_manager or (
+            RuntimeCashAuthorityManager(
+                RuntimeCashAuthorityStore(
+                    manager.store.path.parent,
+                    lock_timeout_seconds=manager.store.lock_timeout_seconds,
+                )
+            )
+        )
         self.cl7_identity_key = cl7_identity_key
         self.cl7_identity_key_id = cl7_identity_key_id
         self.cl7_ledger_store = cl7_ledger_store
@@ -221,23 +230,18 @@ class SandboxExecutionAdapter:
         expected_intent_id: str | None = None,
     ) -> SandboxDispatchResult:
         state = self.manager.state()
-        authority = None
-        if self.cash_authority_manager is not None:
-            try:
-                authority = self.cash_authority_manager.status()
-            except CL7RuntimeError as exc:
-                return SandboxDispatchResult(
-                    status="CL7_RECOVERY_BLOCKED",
-                    error=exc.reason.value,
-                )
-            if (
-                authority.state
-                is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
-            ):
-                return SandboxDispatchResult(
-                    status="CL7_DISPATCH_PENDING",
-                    error="DISPATCH_PENDING",
-                )
+        try:
+            authority = self.cash_authority_manager.status()
+        except CL7RuntimeError as exc:
+            return SandboxDispatchResult(
+                status="CL7_RECOVERY_BLOCKED",
+                error=exc.reason.value,
+            )
+        if authority.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING:
+            return SandboxDispatchResult(
+                status="CL7_DISPATCH_PENDING",
+                error="DISPATCH_PENDING",
+            )
         blocker = state.blocking_intent
         if blocker is not None:
             return SandboxDispatchResult(
@@ -254,10 +258,7 @@ class SandboxExecutionAdapter:
                 intent_id=intent.intent_id,
                 error="Selected intent is not the current account-wide queue head.",
             )
-        if (
-            authority is not None
-            and authority.state is not RuntimeCashAuthorityState.LEGACY_ACTIVE
-        ):
+        if authority.state is not RuntimeCashAuthorityState.LEGACY_ACTIVE:
             return self._dispatch_exact(
                 intent,
                 portfolio_repository,
@@ -268,7 +269,38 @@ class SandboxExecutionAdapter:
                 status="DISARMED",
                 intent_id=intent.intent_id,
             )
-        return self._dispatch_legacy_authorized(intent, portfolio_repository)
+        try:
+            with legacy_execution_guard(self.cash_authority_manager.store):
+                locked_state = self.manager.state()
+                locked_blocker = locked_state.blocking_intent
+                if locked_blocker is not None:
+                    return SandboxDispatchResult(
+                        status="ACCOUNT_BLOCKED",
+                        intent_id=locked_blocker.intent_id,
+                    )
+                if not locked_state.queued:
+                    return SandboxDispatchResult(status="IDLE")
+                locked_intent = locked_state.queued[0]
+                if expected is not None and expected != locked_intent.intent_id:
+                    return SandboxDispatchResult(
+                        status="OPERATOR_INTENT_MISMATCH",
+                        intent_id=locked_intent.intent_id,
+                        error=(
+                            "Selected intent is not the current account-wide "
+                            "queue head."
+                        ),
+                    )
+                return self._dispatch_legacy_authorized(
+                    locked_intent,
+                    portfolio_repository,
+                )
+        except CL7RuntimeError as exc:
+            return SandboxDispatchResult(
+                status="CL7_" + exc.reason.value,
+                intent_id=intent.intent_id,
+                retryable=exc.retryable,
+                error=exc.reason.value,
+            )
 
     def _dispatch_exact(
         self,
@@ -449,7 +481,7 @@ class SandboxExecutionAdapter:
                                 validator=validate,
                             ) as lease:
                                 try:
-                                    pending = authority_manager.record_dispatch_attempt_locked(
+                                    pending = authority_manager._record_dispatch_attempt_locked(
                                         authority,
                                         lease.proof,
                                         transition_at=self.cl7_clock(),
@@ -475,7 +507,7 @@ class SandboxExecutionAdapter:
                                         lease.mark_submission_rejected(
                                             reason="CL7_PROVIDER_EXPLICIT_REJECTION"
                                         )
-                                        authority_manager.clear_dispatch_locked(
+                                        authority_manager._clear_dispatch_locked(
                                             pending,
                                             proof=lease.proof,
                                             central_intent=lease.intent,
@@ -835,6 +867,20 @@ class SandboxExecutionAdapter:
         blocker = self.manager.state().blocking_intent
         if blocker is None:
             return SandboxInspectionResult(status="IDLE")
+        return self._inspect_order(blocker)
+
+    def _inspect_order(
+        self,
+        blocker: CentralOrderIntent,
+    ) -> SandboxInspectionResult:
+        """Inspect one caller-validated request identity without resubmission."""
+
+        if type(blocker) is not CentralOrderIntent:
+            return SandboxInspectionResult(
+                status="INSPECTION_UNCERTAIN",
+                retryable=False,
+                error="CENTRAL_CHANGED",
+            )
         try:
             response = self.transport.get_order_state(
                 self.policy.account_id,

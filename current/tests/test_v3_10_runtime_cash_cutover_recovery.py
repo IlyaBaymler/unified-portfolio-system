@@ -21,6 +21,7 @@ from trading_robot.cash_ledger_domain import Money
 from trading_robot.central_order_manager import (
     CentralOrderCandidate,
     CentralOrderManager,
+    CentralOrderStateError,
     CentralOrderStore,
     ExecutionAuthorization,
     central_reservation_projection_hash,
@@ -36,6 +37,7 @@ from trading_robot.portfolio_repository import PortfolioRepository
 from trading_robot.risk import RiskPolicy, RiskState
 from trading_robot.risk_persistence import RiskProfileStore, RiskStateStore
 from trading_robot.sandbox_execution_adapter import (
+    SandboxDispatchResult,
     SandboxExecutionAdapter,
     SandboxExecutionPolicy,
     _exact_provider_rejection,
@@ -129,44 +131,81 @@ def _armed_record(vectors: dict[str, object]) -> cl7.RuntimeCashAuthorityRecord:
     return cl7.RuntimeCashAuthorityRecord.from_canonical_bytes(raw)
 
 
+def _commit_test_transition(
+    manager: cl7.RuntimeCashAuthorityManager,
+    current: cl7.RuntimeCashAuthorityRecord,
+    *,
+    at: str,
+    kind: str,
+    state: cl7.RuntimeCashAuthorityState,
+    **changes: object,
+) -> cl7.RuntimeCashAuthorityRecord:
+    candidate = manager._change(
+        current,
+        at=at,
+        kind=kind,
+        state=state,
+        **changes,
+    )
+    with manager.store.locked():
+        return manager.store._commit_unlocked(
+            candidate,
+            expected_revision=current.record_revision,
+            expected_sha256=current.sha256,
+        )
+
+
 def _chain(root: Path) -> tuple[cl7.RuntimeCashAuthorityManager, cl7.RuntimeCashAuthorityRecord]:
     store = cl7.RuntimeCashAuthorityStore(root)
     manager = cl7.RuntimeCashAuthorityManager(store)
-    store.bootstrap(transition_at=T0)
-    manager.prepare(
-        raw_account_id=RAW_ACCOUNT,
-        identity_key=KEY,
+    current = store.bootstrap(transition_at=T0)
+    current = _commit_test_transition(
+        manager,
+        current,
+        at=T1,
+        kind="PREPARE_CUTOVER",
+        state=cl7.RuntimeCashAuthorityState.CUTOVER_PREPARED,
+        cutover_generation=1,
+        account_scope_sha256=ACCOUNT,
         identity_key_id=KEY_ID,
-        confirmation=manager.PREPARE_PHRASE,
-        transition_at=T1,
+        activation_context_sha256=None,
+        ledger_head_sha256=None,
+        ledger_revision=None,
+        opening_cutoff=None,
+        opening_record_sha256=None,
+        operations_complete_through=None,
+        pending_dispatch_proof_sha256=None,
     )
-    manager.bind_preparation_evidence(
+    current = _commit_test_transition(
+        manager,
+        current,
+        at=T2,
+        kind="PREPARATION_EVIDENCE_BOUND",
+        state=cl7.RuntimeCashAuthorityState.CUTOVER_PREPARED,
         ledger_revision=5,
         ledger_head_sha256="4" * 64,
         opening_cutoff=T0,
         opening_record_sha256="7" * 64,
         operations_complete_through="2026-09-11T10:00:00.000000001Z",
-        transition_at=T2,
     )
-    manager.confirm(
-        raw_account_id=RAW_ACCOUNT,
-        identity_key=KEY,
-        identity_key_id=KEY_ID,
-        confirmation=manager.CONFIRM_PHRASE,
-        transition_at=T3,
-        quiescent=True,
+    current = _commit_test_transition(
+        manager,
+        current,
+        at=T3,
+        kind="CONFIRM_CUTOVER",
+        state=cl7.RuntimeCashAuthorityState.CUTOVER_CONFIRMED,
     )
-    manager.activate(
-        raw_account_id=RAW_ACCOUNT,
-        identity_key=KEY,
-        identity_key_id=KEY_ID,
-        confirmation=manager.ACTIVATE_PHRASE,
-        transition_at=T4,
+    current = _commit_test_transition(
+        manager,
+        current,
+        at=T4,
+        kind="ACTIVATE_EXACT",
+        state=cl7.RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+        ever_exact_activated=True,
         activation_context_sha256="fd4f5ecda228215f6ac2677d2ac1489a4d47b631258075d67b0fa91165e5d1d9",
         ledger_revision=5,
         ledger_head_sha256="4" * 64,
         operations_complete_through="2026-09-11T10:00:00.000000001Z",
-        quiescent=True,
     )
     armed = manager.arm(
         raw_account_id=RAW_ACCOUNT,
@@ -384,6 +423,166 @@ def test_bootstrap_and_full_state_chain(tmp_path: Path) -> None:
     assert previous.sha256 == armed.previous_record_sha256
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("account_scope_sha256", "a" * 64),
+        ("activation_context_sha256", "a" * 64),
+        ("identity_key_id", "KEY"),
+        ("ledger_head_sha256", "a" * 64),
+        ("ledger_revision", 0),
+        ("opening_cutoff", T0),
+        ("opening_record_sha256", "a" * 64),
+        ("operations_complete_through", T0),
+        ("pending_dispatch_proof_sha256", "a" * 64),
+    ],
+)
+def test_bootstrap_rejects_every_non_null_evidence_field(
+    field: str,
+    value: object,
+) -> None:
+    bootstrap = cl7.RuntimeCashAuthorityRecord.bootstrap(T0)
+    _reason(
+        cl7.CL7RuntimeReason.STATE_INVALID,
+        dataclasses.replace,
+        bootstrap,
+        **{field: value},
+    )
+
+
+def _prepared_candidate(
+    manager: cl7.RuntimeCashAuthorityManager,
+    current: cl7.RuntimeCashAuthorityRecord,
+) -> cl7.RuntimeCashAuthorityRecord:
+    return manager._change(
+        current,
+        at=T1,
+        kind="PREPARE_CUTOVER",
+        state=cl7.RuntimeCashAuthorityState.CUTOVER_PREPARED,
+        cutover_generation=1,
+        account_scope_sha256=ACCOUNT,
+        identity_key_id=KEY_ID,
+    )
+
+
+def test_authority_commit_prepares_all_temps_before_replace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = cl7.RuntimeCashAuthorityStore(tmp_path)
+    current = store.bootstrap(transition_at=T0)
+    manager = cl7.RuntimeCashAuthorityManager(store)
+    candidate = _prepared_candidate(manager, current)
+    events: list[str] = []
+    original_write = store._write_temp
+    original_replace = store._replace_prepared
+
+    def write(path: Path, value: bytes) -> Path:
+        events.append("prepare:" + path.name)
+        return original_write(path, value)
+
+    def replace_temp(temporary: Path, path: Path) -> None:
+        events.append("replace:" + path.name)
+        original_replace(temporary, path)
+
+    monkeypatch.setattr(store, "_write_temp", write)
+    monkeypatch.setattr(store, "_replace_prepared", replace_temp)
+    with store.locked():
+        committed = store._commit_unlocked(
+            candidate,
+            expected_revision=current.record_revision,
+            expected_sha256=current.sha256,
+        )
+    assert committed == candidate
+    assert events == [
+        "prepare:runtime_cash_authority.json",
+        "prepare:runtime_cash_authority.json.sha256",
+        "prepare:runtime_cash_authority.json.lastgood",
+        "replace:runtime_cash_authority.json.lastgood",
+        "replace:runtime_cash_authority.json",
+        "replace:runtime_cash_authority.json.sha256",
+    ]
+
+
+def test_authority_bootstrap_prepares_pair_before_replace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = cl7.RuntimeCashAuthorityStore(tmp_path)
+    events: list[str] = []
+    original_write = store._write_temp
+    original_replace = store._replace_prepared
+
+    def write(path: Path, value: bytes) -> Path:
+        events.append("prepare:" + path.name)
+        return original_write(path, value)
+
+    def replace_temp(temporary: Path, path: Path) -> None:
+        events.append("replace:" + path.name)
+        original_replace(temporary, path)
+
+    monkeypatch.setattr(store, "_write_temp", write)
+    monkeypatch.setattr(store, "_replace_prepared", replace_temp)
+    record = store.bootstrap(transition_at=T0)
+    assert record.record_revision == 0
+    assert events == [
+        "prepare:runtime_cash_authority.json",
+        "prepare:runtime_cash_authority.json.sha256",
+        "replace:runtime_cash_authority.json",
+        "replace:runtime_cash_authority.json.sha256",
+    ]
+
+
+@pytest.mark.parametrize(
+    "replace_index,fail_after,expected",
+    [
+        (1, False, "OLD"),
+        (1, True, "BLOCKED"),
+        (2, False, "BLOCKED"),
+        (2, True, "BLOCKED"),
+        (3, False, "BLOCKED"),
+        (3, True, "NEW"),
+    ],
+)
+def test_authority_commit_crash_outcome_at_each_replace_boundary(
+    tmp_path: Path,
+    monkeypatch,
+    replace_index: int,
+    fail_after: bool,
+    expected: str,
+) -> None:
+    store = cl7.RuntimeCashAuthorityStore(tmp_path)
+    current = store.bootstrap(transition_at=T0)
+    manager = cl7.RuntimeCashAuthorityManager(store)
+    candidate = _prepared_candidate(manager, current)
+    original_replace = store._replace_prepared
+    calls = 0
+
+    def crash(temporary: Path, path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == replace_index and not fail_after:
+            raise OSError("synthetic crash before replace")
+        original_replace(temporary, path)
+        if calls == replace_index and fail_after:
+            raise OSError("synthetic crash after replace")
+
+    monkeypatch.setattr(store, "_replace_prepared", crash)
+    with store.locked(), pytest.raises(OSError):
+        store._commit_unlocked(
+            candidate,
+            expected_revision=current.record_revision,
+            expected_sha256=current.sha256,
+        )
+    if expected == "OLD":
+        assert store.load(allow_missing_legacy=False) == current
+    elif expected == "NEW":
+        assert store.load(allow_missing_legacy=False) == candidate
+    else:
+        with pytest.raises(cl7.CL7RuntimeError):
+            store.load(allow_missing_legacy=False)
+
+
 def test_cas_and_checksum_fail_closed(tmp_path: Path) -> None:
     manager, armed = _chain(tmp_path)
     candidate = dataclasses.replace(
@@ -394,13 +593,14 @@ def test_cas_and_checksum_fail_closed(tmp_path: Path) -> None:
         transition_at=T6,
         transition_kind="DISARM_EXACT",
     )
-    _reason(
-        cl7.CL7RuntimeReason.CAS_CONFLICT,
-        manager.store.commit,
-        candidate,
-        expected_revision=4,
-        expected_sha256=armed.sha256,
-    )
+    with manager.store.locked():
+        _reason(
+            cl7.CL7RuntimeReason.CAS_CONFLICT,
+            manager.store._commit_unlocked,
+            candidate,
+            expected_revision=4,
+            expected_sha256=armed.sha256,
+        )
     manager.store.checksum_path.write_text("0" * 64 + "\n", encoding="ascii")
     _reason(cl7.CL7RuntimeReason.AUTHORITY_CHECKSUM_INVALID, manager.status)
 
@@ -414,49 +614,49 @@ def test_corrupt_active_never_restores_lastgood(tmp_path: Path) -> None:
     assert manager.store.lastgood_path.read_bytes() == previous
 
 
-def test_confirmation_account_and_quiescence_fail_before_transition(tmp_path: Path) -> None:
+def test_unsafe_transition_primitives_are_not_public(tmp_path: Path) -> None:
     store = cl7.RuntimeCashAuthorityStore(tmp_path)
-    store.bootstrap(transition_at=T0)
     manager = cl7.RuntimeCashAuthorityManager(store)
+    for name in (
+        "prepare",
+        "bind_preparation_evidence",
+        "confirm",
+        "activate",
+        "sync_advanced",
+        "record_dispatch_attempt",
+        "record_dispatch_attempt_locked",
+        "clear_dispatch_locked",
+        "rollback",
+    ):
+        assert not hasattr(manager, name)
+    assert not hasattr(store, "commit")
     _reason(
         cl7.CL7RuntimeReason.CONFIRMATION_INVALID,
-        manager.prepare,
-        raw_account_id=RAW_ACCOUNT, identity_key=KEY, identity_key_id=KEY_ID,
-        confirmation="prepare", transition_at=T1,
+        manager._phrase,
+        "prepare",
+        manager.PREPARE_PHRASE,
     )
-    manager.prepare(
-        raw_account_id=RAW_ACCOUNT, identity_key=KEY, identity_key_id=KEY_ID,
-        confirmation=manager.PREPARE_PHRASE, transition_at=T1,
-    )
-    manager.bind_preparation_evidence(
-        ledger_revision=5, ledger_head_sha256="4" * 64, opening_cutoff=T0,
-        opening_record_sha256="7" * 64,
-        operations_complete_through="2026-09-11T10:00:00.000000001Z",
-        transition_at=T2,
-    )
-    before = manager.status()
+    _manager, current = _chain(tmp_path)
     _reason(
         cl7.CL7RuntimeReason.ACCOUNT_SCOPE_INVALID,
-        manager.confirm,
-        raw_account_id="other", identity_key=KEY, identity_key_id=KEY_ID,
-        confirmation=manager.CONFIRM_PHRASE, transition_at=T3, quiescent=True,
+        manager._account,
+        current,
+        "other",
+        KEY,
+        KEY_ID,
     )
-    _reason(
-        cl7.CL7RuntimeReason.CUTOVER_NOT_QUIESCENT,
-        manager.confirm,
-        raw_account_id=RAW_ACCOUNT, identity_key=KEY, identity_key_id=KEY_ID,
-        confirmation=manager.CONFIRM_PHRASE, transition_at=T3, quiescent=False,
-    )
-    assert manager.status() == before
 
 
 def test_disarm_cancel_and_rollback_rules(tmp_path: Path) -> None:
     manager, _armed = _chain(tmp_path)
     disarmed = manager.disarm(transition_at=T6)
     assert disarmed.state is cl7.RuntimeCashAuthorityState.EXACT_CASH_DISARMED
-    rolled = manager.rollback(
-        raw_account_id=RAW_ACCOUNT, identity_key=KEY, identity_key_id=KEY_ID,
-        confirmation=manager.ROLLBACK_PHRASE, transition_at=T65, quiescent=True,
+    rolled = _commit_test_transition(
+        manager,
+        disarmed,
+        at=T65,
+        kind="ROLLBACK_TO_LEGACY",
+        state=cl7.RuntimeCashAuthorityState.LEGACY_ACTIVE,
     )
     assert rolled.state is cl7.RuntimeCashAuthorityState.LEGACY_ACTIVE
     assert rolled.ever_exact_activated is True
@@ -481,20 +681,29 @@ def test_pending_attempt_kat_and_no_rollback(tmp_path: Path, vectors: dict[str, 
         authority_record_revision=current.record_revision,
         authority_record_sha256=current.sha256,
     )
-    pending = manager.record_dispatch_attempt(bound, transition_at=T65)
+    with manager.store.locked():
+        pending = manager._record_dispatch_attempt_locked(
+            current,
+            bound,
+            transition_at=T65,
+        )
     assert pending.state is cl7.RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
     _reason(
-        cl7.CL7RuntimeReason.STATE_TRANSITION_INVALID,
-        manager.rollback,
-        raw_account_id=RAW_ACCOUNT, identity_key=KEY, identity_key_id=KEY_ID,
-        confirmation=manager.ROLLBACK_PHRASE, transition_at=T6, quiescent=True,
+        cl7.CL7RuntimeReason.ROLLBACK_FORBIDDEN_AFTER_ATTEMPT,
+        manager.rollback_runtime,
+        confirmation=manager.ROLLBACK_PHRASE,
     )
 
 
 def test_restart_closure_disarms_and_preserves_attempt_count(tmp_path: Path) -> None:
     manager, current = _chain(tmp_path)
     proof = _proof(authority_record_revision=5, authority_record_sha256=current.sha256)
-    pending = manager.record_dispatch_attempt(proof, transition_at=T65)
+    with manager.store.locked():
+        pending = manager._record_dispatch_attempt_locked(
+            current,
+            proof,
+            transition_at=T65,
+        )
     intent = SimpleNamespace(
         intent_id="intent-001",
         cl7_locked_dispatch_proof=proof.to_canonical_dict(),
@@ -503,7 +712,12 @@ def test_restart_closure_disarms_and_preserves_attempt_count(tmp_path: Path) -> 
         outcome="FILLED",
     )
     central = SimpleNamespace(
-        inspect_locked=lambda callback: callback(SimpleNamespace(intents=(intent,)))
+        inspect_locked=lambda callback: callback(
+            SimpleNamespace(
+                intents=(intent,),
+                revision=proof.central_order_revision + 1,
+            )
+        )
     )
     closed, disposition = manager.recover_runtime(
         central_manager=central,
@@ -524,11 +738,83 @@ def test_legacy_guard_is_held_and_blocks_nonlegacy(tmp_path: Path) -> None:
     with cl7.legacy_execution_guard(store) as record:
         assert record.state is cl7.RuntimeCashAuthorityState.LEGACY_ACTIVE
     manager = cl7.RuntimeCashAuthorityManager(store)
-    manager.prepare(
-        raw_account_id=RAW_ACCOUNT, identity_key=KEY, identity_key_id=KEY_ID,
-        confirmation=manager.PREPARE_PHRASE, transition_at=T1,
+    current = manager.status()
+    _commit_test_transition(
+        manager,
+        current,
+        at=T1,
+        kind="PREPARE_CUTOVER",
+        state=cl7.RuntimeCashAuthorityState.CUTOVER_PREPARED,
+        cutover_generation=1,
+        account_scope_sha256=ACCOUNT,
+        identity_key_id=KEY_ID,
     )
     _reason(cl7.CL7RuntimeReason.DISPATCH_NOT_ARMED, _enter_guard, store)
+
+
+def test_adapter_without_injected_manager_discovers_exact_authority(
+    tmp_path: Path,
+) -> None:
+    authority_manager, _armed = _chain(tmp_path)
+    repository, central, intent = _central_runtime(tmp_path)
+
+    class Transport:
+        post_calls = 0
+
+        def post_order(self, *_args, **_kwargs):
+            self.post_calls += 1
+            raise AssertionError("exact custody must block the legacy path")
+
+    transport = Transport()
+    adapter = SandboxExecutionAdapter(
+        transport,
+        central,
+        SandboxExecutionPolicy(
+            account_id=RAW_ACCOUNT,
+            enabled=True,
+            confirmation="ENABLE V3.8 SANDBOX EXECUTION",
+        ),
+        risk_runtime=_ExactRiskGate(),
+    )
+    assert adapter.cash_authority_manager is not authority_manager
+    result = adapter.dispatch_next(
+        repository,
+        expected_intent_id=intent.intent_id,
+    )
+    assert result.status == "CL7_CONTEXT_UNAVAILABLE"
+    assert transport.post_calls == 0
+
+
+def test_adapter_legacy_dispatch_holds_outer_authority_lock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository, central, intent = _central_runtime(tmp_path)
+    adapter = SandboxExecutionAdapter(
+        SimpleNamespace(),
+        central,
+        SandboxExecutionPolicy(
+            account_id=RAW_ACCOUNT,
+            enabled=True,
+            confirmation="ENABLE V3.8 SANDBOX EXECUTION",
+        ),
+        risk_runtime=_ExactRiskGate(),
+    )
+
+    def dispatch(_intent, _repository):
+        competing = cl7.RuntimeCashAuthorityStore(
+            tmp_path,
+            lock_timeout_seconds=0,
+        )
+        _reason(cl7.CL7RuntimeReason.LOCK_UNAVAILABLE, _enter_guard, competing)
+        return SandboxDispatchResult(status="LEGACY_LOCK_HELD")
+
+    monkeypatch.setattr(adapter, "_dispatch_legacy_authorized", dispatch)
+    result = adapter.dispatch_next(
+        repository,
+        expected_intent_id=intent.intent_id,
+    )
+    assert result.status == "LEGACY_LOCK_HELD"
 
 
 def _enter_guard(store: cl7.RuntimeCashAuthorityStore) -> None:
@@ -665,6 +951,75 @@ def test_central_lease_persists_exact_proof_before_d3_recovery(
     assert resolved.outcome == "PRE_SUBMIT_FAILED"
 
 
+@pytest.mark.parametrize("mutation", ["whitespace", "duplicate"])
+def test_central_rejects_noncanonical_locked_proof_text(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    authority_manager, authority = _chain(tmp_path)
+    repository, central, intent = _central_runtime(tmp_path)
+    proof = _central_proof(authority, central, intent)
+    with (
+        authority_manager.store.locked(),
+        repository.locked_snapshot(expected_account_id=RAW_ACCOUNT) as portfolio,
+        central.locked_dispatch_lease(
+            repository,
+            expected_intent_id=intent.intent_id,
+            locked_portfolio_state=portfolio,
+            validator=lambda _state, _intent: proof,
+        ) as lease,
+    ):
+        raw = lease.intent.to_dict()
+    prefix = "CL7_LOCKED_DISPATCH_PROOF="
+    detail = raw["transitions"][-1]["detail"]
+    canonical = detail[len(prefix) :]
+    if mutation == "whitespace":
+        changed = "{ " + canonical[1:]
+    else:
+        changed = (
+            '{"account_scope_sha256":"'
+            + proof.account_scope_sha256
+            + '",'
+            + canonical[1:]
+        )
+    raw["transitions"][-1]["detail"] = prefix + changed
+    with pytest.raises(CentralOrderStateError):
+        type(lease.intent).from_dict(raw)
+
+
+def test_d3_invalid_hmac_cannot_mutate_central(
+    tmp_path: Path,
+) -> None:
+    authority_manager, authority = _chain(tmp_path)
+    repository, central, intent = _central_runtime(tmp_path)
+    proof = _central_proof(authority, central, intent)
+    with (
+        authority_manager.store.locked(),
+        repository.locked_snapshot(expected_account_id=RAW_ACCOUNT) as portfolio,
+        central.locked_dispatch_lease(
+            repository,
+            expected_intent_id=intent.intent_id,
+            locked_portfolio_state=portfolio,
+            validator=lambda _state, _intent: proof,
+        ),
+    ):
+        pass
+    with pytest.raises(cl7.CL7RuntimeError) as captured:
+        central.resolve_cl7_pre_submit(
+            expected_intent_id=intent.intent_id,
+            expected_proof_sha256=proof.sha256,
+            authority_record_revision=authority.record_revision,
+            authority_record_sha256=authority.sha256,
+            account_scope_sha256=authority.account_scope_sha256,
+            identity_key_id=authority.identity_key_id,
+            identity_key=b"wrong-key" * 4,
+            ledger_revision=authority.ledger_revision,
+            ledger_head_sha256=authority.ledger_head_sha256,
+        )
+    assert captured.value.reason is cl7.CL7RuntimeReason.DISPATCH_PROOF_INVALID
+    assert central.state().intents[0].status == "IN_FLIGHT"
+
+
 def test_cash_ledger_guard_holds_the_actual_sqlite_writer_lock(
     tmp_path: Path,
 ) -> None:
@@ -741,14 +1096,21 @@ def test_cl3_to_cl2_sync_mapping_and_watermark_commit(
     key = bytes.fromhex(request["identity_key_hex"])
     key_id = request["identity_key_id"]
     store = cl7.RuntimeCashAuthorityStore(tmp_path)
-    store.bootstrap(transition_at=T0)
     manager = cl7.RuntimeCashAuthorityManager(store)
-    manager.prepare(
-        raw_account_id=raw_account,
-        identity_key=key,
+    current = store.bootstrap(transition_at=T0)
+    current = _commit_test_transition(
+        manager,
+        current,
+        at=T1,
+        kind="PREPARE_CUTOVER",
+        state=cl7.RuntimeCashAuthorityState.CUTOVER_PREPARED,
+        cutover_generation=1,
+        account_scope_sha256=cl7.derive_account_scope(
+            raw_account,
+            identity_key=key,
+            identity_key_id=key_id,
+        ),
         identity_key_id=key_id,
-        confirmation=manager.PREPARE_PHRASE,
-        transition_at=T1,
     )
     ledger = persistence.CashLedgerStore.create(
         tmp_path / "cash_ledger_v3_10.sqlite3",
@@ -756,13 +1118,17 @@ def test_cl3_to_cl2_sync_mapping_and_watermark_commit(
     )
     try:
         initial = ledger.snapshot()
-        manager.bind_preparation_evidence(
+        _commit_test_transition(
+            manager,
+            current,
+            at=T2,
+            kind="PREPARATION_EVIDENCE_BOUND",
+            state=cl7.RuntimeCashAuthorityState.CUTOVER_PREPARED,
             ledger_revision=initial.ledger_revision,
             ledger_head_sha256=initial.ledger_head_sha256,
             opening_cutoff=T0,
             opening_record_sha256="7" * 64,
             operations_complete_through=request["from_inclusive"],
-            transition_at=T2,
         )
         clock_values = iter((0, 0, 0, 0, 0, 0, 0, 0))
         updated, batch = manager.synchronize_operations(
@@ -1132,7 +1498,7 @@ def test_process_boundary_recovery_requires_exact_central_resolution(
                 validator=lambda _state, _intent: proof,
             ) as lease,
         ):
-            pending = authority_manager.record_dispatch_attempt_locked(
+            pending = authority_manager._record_dispatch_attempt_locked(
                 current,
                 proof,
                 transition_at=T65,
@@ -1169,6 +1535,55 @@ def test_operator_surface_has_no_caller_asserted_evidence_or_quiescence() -> Non
     assert "post_order_once" not in source
 
 
+def test_operator_recovery_validates_before_lookup_under_authority_lock() -> None:
+    source = (CURRENT / "tools" / "v3_10_runtime_cash_cutover.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    recovery_lock = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.With)
+        and any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "locked"
+            for item in node.items
+            for call in ast.walk(item.context_expr)
+        )
+        and any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "_recover_runtime_locked"
+            for call in ast.walk(node)
+        )
+    )
+    calls = {
+        call.func.attr: call.lineno
+        for call in ast.walk(recovery_lock)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr
+        in {
+            "_recovery_intent_locked",
+            "_inspect_order",
+            "mark_submitted",
+            "mark_reconciled",
+            "_recover_runtime_locked",
+        }
+    }
+    assert calls["_recovery_intent_locked"] < calls["_inspect_order"]
+    assert {
+        "mark_submitted",
+        "mark_reconciled",
+        "_recover_runtime_locked",
+    } <= calls.keys()
+    assert all(
+        recovery_lock.lineno <= line <= recovery_lock.end_lineno
+        for line in calls.values()
+    )
+
+
 def test_production_order_post_owner_converges_to_adapter() -> None:
     sources = {
         path.name: ast.parse(path.read_text(encoding="utf-8"))
@@ -1188,6 +1603,9 @@ def test_production_order_post_owner_converges_to_adapter() -> None:
     # guarded by RuntimeCashAuthority before intent persistence and POST.
     assert "legacy_execution_guard" in (CURRENT / "trading_robot" / "bot.py").read_text(encoding="utf-8")
     assert "legacy_execution_guard" in (CURRENT / "trading_robot" / "diagnostics.py").read_text(encoding="utf-8")
+    assert "legacy_execution_guard" in (
+        CURRENT / "trading_robot" / "sandbox_execution_adapter.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_every_legacy_post_is_lexically_inside_the_authority_guard() -> None:

@@ -75,6 +75,33 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+def _locked_dispatch_proof_from_exact_text(value: str) -> LockedDispatchProof:
+    if type(value) is not str:
+        raise CentralOrderStateError("CL7 locked dispatch proof is invalid.")
+
+    def exact_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = item
+        return result
+
+    try:
+        raw = json.loads(value, object_pairs_hook=exact_object)
+        proof = LockedDispatchProof.from_canonical_dict(raw)
+        encoded = value.encode("ascii")
+    except Exception as exc:
+        raise CentralOrderStateError(
+            "CL7 locked dispatch proof is invalid."
+        ) from exc
+    if encoded != proof.canonical_bytes:
+        raise CentralOrderStateError(
+            "CL7 locked dispatch proof is not canonical."
+        )
+    return proof
+
+
 class CentralOrderError(RuntimeError):
     """Base error for the v3.8 account-wide order queue."""
 
@@ -1193,9 +1220,8 @@ class CentralOrderIntent:
         for transition in reversed(self.transitions):
             if transition.detail.startswith(prefix):
                 try:
-                    raw = json.loads(transition.detail[len(prefix) :])
-                    return LockedDispatchProof.from_canonical_dict(
-                        raw
+                    return _locked_dispatch_proof_from_exact_text(
+                        transition.detail[len(prefix) :]
                     ).to_canonical_dict()
                 except Exception as exc:
                     raise CentralOrderStateError(
@@ -1910,8 +1936,15 @@ class CentralOrderManager:
     def resolve_cl7_pre_submit(
         self,
         *,
+        expected_intent_id: str,
+        expected_proof_sha256: str,
         authority_record_revision: int,
         authority_record_sha256: str,
+        account_scope_sha256: str,
+        identity_key_id: str,
+        identity_key: bytes,
+        ledger_revision: int,
+        ledger_head_sha256: str,
     ) -> CentralOrderIntent:
         """Resolve exactly one D3 lease for which provider POST is impossible."""
 
@@ -1923,6 +1956,20 @@ class CentralOrderManager:
             authority_record_sha256,
             "authority_record_sha256",
         )
+        selected_intent = _required_text(expected_intent_id, "expected_intent_id")
+        proof_sha = _sha256_text(expected_proof_sha256, "expected_proof_sha256")
+        account_sha = _sha256_text(account_scope_sha256, "account_scope_sha256")
+        key_id = _required_text(identity_key_id, "identity_key_id")
+        expected_ledger_revision = _non_negative_int(
+            ledger_revision,
+            "ledger_revision",
+        )
+        expected_ledger_head = _sha256_text(
+            ledger_head_sha256,
+            "ledger_head_sha256",
+        )
+        if type(identity_key) is not bytes:
+            raise CentralOrderStateError("CL7 identity key is invalid.")
 
         def operation(
             state: CentralOrderState,
@@ -1934,10 +1981,21 @@ class CentralOrderManager:
                     continue
                 proof = LockedDispatchProof.from_canonical_dict(proof_raw)
                 if (
-                    item.status == "IN_FLIGHT"
+                    item.intent_id == selected_intent
+                    and item.status == "IN_FLIGHT"
+                    and proof.sha256 == proof_sha
                     and proof.authority_record_revision == revision
                     and proof.authority_record_sha256 == authority_sha
+                    and proof.account_scope_sha256 == account_sha
+                    and proof.identity_key_id == key_id
+                    and proof.ledger_revision == expected_ledger_revision
+                    and proof.ledger_head_sha256 == expected_ledger_head
+                    and state.revision == proof.central_order_revision + 1
                 ):
+                    proof.verify_identity(
+                        raw_intent_id=item.intent_id,
+                        identity_key=identity_key,
+                    )
                     matches.append(item)
             if len(matches) != 1:
                 raise CentralOrderConflictError(
