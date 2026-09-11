@@ -6,22 +6,32 @@ import hashlib
 import hmac
 import inspect
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
+
 from trading_robot import broker_read_adapters as broker
 from trading_robot import cash_availability as cl5
 from trading_robot import cash_ledger_domain as ledger
 from trading_robot import cash_ledger_opening_reconciliation as cl4
 from trading_robot import cash_ledger_persistence as persistence
 from trading_robot import central_order_manager as central
+from trading_robot import portfolio_repository, risk_runtime, sandbox_execution_adapter
 
 ROOT = Path(__file__).resolve().parents[2]
 CURRENT = ROOT / "current"
 MODULE_PATH = CURRENT / "trading_robot" / "cash_availability.py"
 FIXTURE_PATH = CURRENT / "tests" / "fixtures" / "v3_10_cash_availability_vectors.json"
 ACCEPTED_CONTRACT_HEAD = "e1dc8ab570abaa7547714951423749e2986fe31a"
+ORIGINAL_IMPLEMENTATION_HEAD = "547ae06d8befec25b039e46b6dc06702658c6db0"
 STABLE_PREDECESSOR = "c3befe877e5f0d0058fbf485cb42ff54d57da7de"
+IMPLEMENTATION_PATHS = {
+    "current/trading_robot/cash_availability.py",
+    "current/tests/test_v3_10_cash_availability.py",
+    "current/tests/fixtures/v3_10_cash_availability_vectors.json",
+}
 KEY = bytes(range(32))
 KEY_ID = "CL5_TEST_KEY_V1"
 RAW_ACCOUNT = "sandbox-account-0001"
@@ -91,6 +101,20 @@ def _positions_response(
         "options": [],
         "securities": [],
     }
+
+
+def _response_with_canonical_size(target: int) -> dict[str, object]:
+    response = _positions_response()
+    delta = target - len(_canonical(response))
+    item_count = (delta + 4_099) // 4_099
+    total_string_scalars = delta - (3 * item_count) + 1
+    assert item_count > 0
+    assert 4_096 * (item_count - 1) <= total_string_scalars <= 4_096 * item_count
+    lengths = [4_096] * (item_count - 1)
+    lengths.append(total_string_scalars - sum(lengths))
+    response["securities"] = ["x" * length for length in lengths]
+    assert len(_canonical(response)) == target
+    return response
 
 
 def _positions(
@@ -305,6 +329,83 @@ def _snapshot(
     )
 
 
+def _zero_cash_ledger(tmp_path: Path) -> bytes:
+    schema = _canonical(
+        {
+            "domain": "v3.10-operation-inbox-codec-schema",
+            "fields": [
+                {
+                    "allowed_values": None,
+                    "key": "operation_kind",
+                    "kind": "STRING",
+                    "max_scalars": "64",
+                    "maximum": None,
+                    "minimum": None,
+                    "required": True,
+                }
+            ],
+            "version": 1,
+        }
+    ).decode("ascii")
+    descriptor = persistence.CodecDescriptor(
+        "CL5_ZERO_CASH_TEST",
+        schema,
+        hashlib.sha256(schema.encode("ascii")).hexdigest(),
+    )
+    store = persistence.CashLedgerStore.create(
+        tmp_path / "zero-cash-store",
+        (cl4.CL4_OPENING_CODEC, descriptor),
+    )
+    proof = _cl4_proof()
+    plan = cl4.prepare_from_now_opening(
+        store.export_bytes(), proof, evaluated_at=TS, identity_key=KEY
+    )
+    cl4.accept_from_now_opening(
+        store,
+        plan,
+        confirmation=f"ACCEPT V3.10 CL4 FROM_NOW OPENING {plan.sha256}",
+        evaluated_at=TS,
+        identity_key=KEY,
+    )
+    content = {"operation_kind": "WITHDRAW_ALL"}
+    content_bytes = _canonical(content)
+    source = ledger.SourceIdentity(
+        account_scope_sha256=ACCOUNT_SCOPE,
+        source_kind="SYNTHETIC",
+        source_scope_sha256="6" * 64,
+        source_content_sha256=hashlib.sha256(content_bytes).hexdigest(),
+    )
+    observation = persistence.InboxObservation.create(
+        descriptor=descriptor,
+        content=content,
+        source=source,
+        observed_at=TS_PLUS_10,
+        provenance_sha256="7" * 64,
+    )
+    amount = ledger.Money(currency="RUB", minor_units=-100_000_000_000)
+    transaction = ledger.LedgerTransaction(
+        classification=ledger.LedgerClassification.WITHDRAWAL,
+        effective_at=TS_PLUS_10,
+        source=source,
+        postings=(
+            ledger.LedgerPosting(1, ledger.LedgerAccount.ASSET_BROKER_CASH, amount),
+            ledger.LedgerPosting(2, ledger.LedgerAccount.EQUITY_EXTERNAL_FLOW, -amount),
+        ),
+    )
+    before = store.snapshot()
+    store.append_observation(observation, expected_store_revision=before.store_revision)
+    before_transaction = store.snapshot()
+    store.append_transaction(
+        transaction,
+        observation.sha256,
+        expected_store_revision=before_transaction.store_revision,
+        expected_ledger_revision=before_transaction.ledger_revision,
+    )
+    exported = store.export_bytes()
+    store.close()
+    return exported
+
+
 def _reason(
     reason: cl5.CL5Reason,
     callable_: object,
@@ -421,6 +522,14 @@ def test_contract_owned_known_answers(vectors: dict[str, object]) -> None:
         foreign.proof_identity_sha256
         == vectors["foreign_cash_mutation"]["foreign_cash_present_true_hmac"]
     )
+    mutation = vectors["foreign_cash_mutation"]
+    false_hmac = hmac.new(
+        KEY,
+        mutation["foreign_cash_present_false_hmac_preimage_ascii"].encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+    assert false_hmac == mutation["same_preimage_with_foreign_cash_present_false_hmac"]
+    assert false_hmac != foreign.proof_identity_sha256
 
 
 def test_projection_and_snapshot_known_answers(vectors: dict[str, object]) -> None:
@@ -442,6 +551,14 @@ def test_projection_and_snapshot_known_answers(vectors: dict[str, object]) -> No
         evaluated_at=TS,
         identity_key_id=KEY_ID,
         projection_identity_sha256=projection_vector["identity_sha256"],
+    )
+    assert (
+        hmac.new(
+            KEY,
+            projection_vector["hmac_preimage_ascii"].encode("ascii"),
+            hashlib.sha256,
+        ).hexdigest()
+        == projection.projection_identity_sha256
     )
     assert (
         projection.canonical_bytes.decode("ascii")
@@ -551,7 +668,7 @@ def test_positions_first_failure_and_graph_bounds() -> None:
     _reason(cl5.CL5Reason.RESPONSE_BOUNDS_EXCEEDED, _positions, response=too_deep)
     huge = _positions_response()
     huge["securities"] = ["x" * 4_096 for _ in range(260)]
-    _reason(cl5.CL5Reason.RESPONSE_BOUNDS_EXCEEDED, _positions, response=huge)
+    _reason(cl5.CL5Reason.CANONICAL_FORMAT_INVALID, _positions, response=huge)
     int_overflow = _positions_response()
     int_overflow["securities"] = [2**63]
     _reason(cl5.CL5Reason.RESPONSE_BOUNDS_EXCEEDED, _positions, response=int_overflow)
@@ -585,7 +702,59 @@ def test_positions_first_failure_and_graph_bounds() -> None:
     )
 
 
-def test_positions_account_money_time_and_foreign_rules() -> None:
+def test_positions_exact_inclusive_response_bounds_and_canonical_phase() -> None:
+    at_depth: object = None
+    for _ in range(13):
+        at_depth = [at_depth]
+    response = _positions_response()
+    response["securities"] = [at_depth]
+    assert _positions(response=response).response_canonical_sha256
+    too_deep: object = None
+    for _ in range(14):
+        too_deep = [too_deep]
+    response = _positions_response()
+    response["securities"] = [too_deep]
+    _reason(cl5.CL5Reason.RESPONSE_BOUNDS_EXCEEDED, _positions, response=response)
+
+    response = _positions_response()
+    response["securities"] = [None] * 99_984
+    assert _positions(response=response).response_canonical_sha256
+    response["securities"].append(None)
+    _reason(cl5.CL5Reason.RESPONSE_BOUNDS_EXCEEDED, _positions, response=response)
+
+    response = _positions_response()
+    response["securities"] = [-(2**63), (2**63) - 1]
+    assert _positions(response=response).response_canonical_sha256
+    for integer in (-(2**63) - 1, 2**63):
+        response = _positions_response()
+        response["securities"] = [integer]
+        _reason(cl5.CL5Reason.RESPONSE_BOUNDS_EXCEEDED, _positions, response=response)
+
+    response = _positions_response()
+    response["securities"] = ["x" * 4_096, {"k" * 128: None}]
+    assert _positions(response=response).response_canonical_sha256
+    response = _positions_response()
+    response["securities"] = [{f"k{index}": None for index in range(4_096)}]
+    assert _positions(response=response).response_canonical_sha256
+
+    at_canonical_limit = _response_with_canonical_size(1_048_576)
+    assert _positions(response=at_canonical_limit).response_canonical_sha256
+    _reason(
+        cl5.CL5Reason.CANONICAL_FORMAT_INVALID,
+        _positions,
+        response=_response_with_canonical_size(1_048_577),
+    )
+    response = _positions_response()
+    response["securities"] = ["\ud800"]
+    _reason(cl5.CL5Reason.CANONICAL_FORMAT_INVALID, _positions, response=response)
+    response = _positions_response()
+    response["securities"] = [{"\ud800": None}]
+    _reason(cl5.CL5Reason.RESPONSE_BOUNDS_EXCEEDED, _positions, response=response)
+
+
+def test_positions_account_money_time_and_foreign_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _reason(
         cl5.CL5Reason.ACCOUNT_SCOPE_INVALID,
         _positions,
@@ -626,6 +795,8 @@ def test_positions_account_money_time_and_foreign_rules() -> None:
     long_response["accountId"] = long_account
     boundary = _positions(response=long_response, account_scope=_scope(long_account))
     assert boundary.account_scope_sha256 == _scope(long_account)
+    monkeypatch.setattr(broker, "money_value_to_money", lambda _value: object())
+    _reason(cl5.CL5Reason.MONEY_INVALID, _positions)
 
 
 @pytest.mark.parametrize(
@@ -677,6 +848,32 @@ def test_central_exact_recursive_boundary_precedes_virtual_dispatch() -> None:
         identity_key_id=KEY_ID,
     )
     assert EvilIntent.called is False
+
+
+def test_central_cardinality_precedes_element_scan_and_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state("QUEUED")
+    object.__setattr__(state, "intents", (state.intents[0],) * 100_001)
+    normalized = False
+
+    def forbidden_normalization(_state: object) -> dict[str, object]:
+        nonlocal normalized
+        normalized = True
+        raise AssertionError("normalization before cardinality rejection")
+
+    monkeypatch.setattr(central.CentralOrderState, "to_dict", forbidden_normalization)
+    _reason(
+        cl5.CL5Reason.CENTRAL_STATE_INVALID,
+        cl5.project_central_reservations,
+        state,
+        account_scope_sha256=ACCOUNT_SCOPE,
+        environment=broker.BrokerEnvironment.SANDBOX,
+        evaluated_at=TS,
+        identity_key=KEY,
+        identity_key_id=KEY_ID,
+    )
+    assert normalized is False
 
 
 def test_central_bounds_roundtrip_time_and_account() -> None:
@@ -738,7 +935,9 @@ def test_central_bounds_roundtrip_time_and_account() -> None:
     )
 
 
-def test_central_transition_bound_and_projection_hash_binding() -> None:
+def test_central_transition_bound_and_projection_hash_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     state = _state("QUEUED")
     transition = state.intents[0].transitions[0]
     at_limit = dataclasses.replace(
@@ -775,6 +974,12 @@ def test_central_transition_bound_and_projection_hash_binding() -> None:
         identity_key=KEY,
         identity_key_id=KEY_ID,
     )
+    monkeypatch.setattr(
+        central,
+        "central_reservation_projection_hash",
+        lambda *_args, **_kwargs: object(),
+    )
+    _reason(cl5.CL5Reason.CENTRAL_PROJECTION_INVALID, _reservations)
 
 
 def test_central_sell_never_contributes_reserved_cash() -> None:
@@ -847,10 +1052,45 @@ def test_ready_formulas_and_exact_sub_kopeck_cash(opened_ledger: bytes) -> None:
         opened_ledger, positions=sub_kopeck, reservations=_reservations("QUEUED")
     )
     assert exact.free_investable_cash.minor_units == 49_995_000_000
+    queued_without_provider_block = _snapshot(
+        opened_ledger,
+        positions=_positions(
+            response=_positions_response(money_units="100", blocked_units="0")
+        ),
+        reservations=_reservations("QUEUED"),
+    )
+    assert queued_without_provider_block.status is cl5.AvailabilityStatus.READY
+    assert (
+        queued_without_provider_block.free_investable_cash.minor_units == 70_000_000_000
+    )
+
+
+def test_zero_cash_zero_blocked_zero_reservations(tmp_path: Path) -> None:
+    ledger_export = _zero_cash_ledger(tmp_path)
+    reconciliation = _reconciliation(
+        ledger_export,
+        total_units="0",
+        as_of=TS_PLUS_10,
+        evaluated_at=TS_PLUS_10,
+    )
+    snapshot = _snapshot(
+        ledger_export,
+        reconciliation=reconciliation,
+        positions=_positions(
+            response=_positions_response(money_units="0", blocked_units="0"),
+            as_of=TS_PLUS_10,
+            evaluated_at=TS_PLUS_10,
+        ),
+        reservations=_reservations(evaluated_at=TS_PLUS_10),
+        evaluated_at=TS_PLUS_10,
+    )
+    assert snapshot.status is cl5.AvailabilityStatus.READY
+    assert snapshot.broker_total_cash.minor_units == 0
+    assert snapshot.free_investable_cash.minor_units == 0
 
 
 @pytest.mark.parametrize("status", ["IN_FLIGHT", "SUBMITTED", "UNCERTAIN"])
-@pytest.mark.parametrize("blocked_units", ["0", "20", "40"])
+@pytest.mark.parametrize("blocked_units", ["0", "20", "30", "40"])
 def test_ambiguous_overlap_never_emits_free_cash(
     opened_ledger: bytes, status: str, blocked_units: str
 ) -> None:
@@ -1001,11 +1241,16 @@ def test_immutable_deterministic_and_privacy_safe(opened_ledger: bytes) -> None:
 def test_module_has_no_io_runtime_or_central_mutation_authority() -> None:
     tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
     imports = {
-        alias.name
+        alias.name.split(".")[0]
         for node in ast.walk(tree)
-        if isinstance(node, (ast.Import, ast.ImportFrom))
+        if isinstance(node, ast.Import)
         for alias in node.names
     }
+    imports.update(
+        node.module.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    )
     assert not imports & {
         "asyncio",
         "httpx",
@@ -1019,18 +1264,261 @@ def test_module_has_no_io_runtime_or_central_mutation_authority() -> None:
     }
     forbidden_calls = {
         "accept_from_now_opening",
+        "append_correction_bundle",
+        "append_observation",
+        "append_status_event",
         "append_transaction",
+        "cancel_queued",
+        "dispatch_next",
         "enqueue",
+        "evaluate",
+        "mark_reconciled",
+        "mark_submitted",
+        "mark_uncertain",
+        "open",
+        "post_order",
         "replace_intent",
         "save",
         "transition",
     }
-    assert (
-        not {
-            node.func.attr
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        }
-        & forbidden_calls
+    calls = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    calls.update(
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     )
-    assert ACCEPTED_CONTRACT_HEAD != STABLE_PREDECESSOR
+    assert not calls & forbidden_calls
+
+
+def test_ready_build_has_zero_runtime_authority_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    opened_ledger: bytes,
+) -> None:
+    reconciliation = _reconciliation(opened_ledger)
+    positions = _positions()
+    reservations = _reservations("QUEUED")
+    before = (
+        opened_ledger,
+        reconciliation.canonical_bytes,
+        positions.canonical_bytes,
+        reservations.canonical_bytes,
+    )
+    calls: list[str] = []
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        calls.append("forbidden")
+        raise AssertionError("CL5 crossed a mutation/runtime authority boundary")
+
+    for owner, names in (
+        (
+            central.CentralOrderManager,
+            (
+                "enqueue",
+                "admit_portfolio",
+                "reauthorize_queued",
+                "prepare_next",
+                "mark_submitted",
+                "mark_uncertain",
+                "mark_pre_submit_failed",
+                "mark_submission_rejected",
+                "cancel_queued",
+                "mark_reconciled",
+                "recover_after_restart",
+            ),
+        ),
+        (
+            persistence.CashLedgerStore,
+            (
+                "append_observation",
+                "append_status_event",
+                "append_transaction",
+                "append_correction_bundle",
+            ),
+        ),
+        (
+            portfolio_repository.PortfolioRepository,
+            ("load", "load_optional", "locked_snapshot", "save"),
+        ),
+        (
+            risk_runtime.RiskRuntimeAdapter,
+            ("evaluate", "dispatch_authorization_guard"),
+        ),
+        (sandbox_execution_adapter.SandboxExecutionAdapter, ("dispatch_next",)),
+    ):
+        for name in names:
+            monkeypatch.setattr(owner, name, forbidden)
+    monkeypatch.setattr(broker, "collect_tbank_operations", forbidden)
+
+    snapshot = cl5.build_cash_availability(
+        opened_ledger,
+        reconciliation,
+        positions,
+        reservations,
+        evaluated_at=TS,
+        identity_key=KEY,
+    )
+    assert snapshot.status is cl5.AvailabilityStatus.READY
+    assert calls == []
+    assert before == (
+        opened_ledger,
+        reconciliation.canonical_bytes,
+        positions.canonical_bytes,
+        reservations.canonical_bytes,
+    )
+
+
+def test_exact_successor_custody_and_three_path_delta() -> None:
+    if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+        event_path = os.environ.get("GITHUB_EVENT_PATH")
+        assert event_path is not None
+        pull_request = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))[
+            "pull_request"
+        ]
+        expected = {
+            "agent/v3-10-clean-cl5-contract-freeze": (
+                ACCEPTED_CONTRACT_HEAD,
+                2,
+                3,
+            ),
+            "program/v3-10-v4-stable-line": (STABLE_PREDECESSOR, 4, 4),
+        }.get(pull_request["base"]["ref"])
+        assert expected is not None
+        expected_base, expected_commits, expected_files = expected
+        assert pull_request["base"]["sha"] == expected_base
+        assert pull_request["base"]["repo"]["full_name"] == (
+            "baimleriv/unified-portfolio-system"
+        )
+        assert pull_request["head"]["ref"] == ("agent/v3-10-clean-cl5-implementation")
+        assert pull_request["head"]["repo"]["full_name"] == (
+            "baimleriv/unified-portfolio-system"
+        )
+        assert pull_request["commits"] == expected_commits
+        assert pull_request["changed_files"] == expected_files
+        expected_paths = set(IMPLEMENTATION_PATHS)
+        if expected_base == STABLE_PREDECESSOR:
+            expected_paths.add(
+                "docs/project/V3_10_CL5_CASH_AVAILABILITY_CONTRACT_RU.md"
+            )
+        changed = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--name-only",
+                expected_base,
+                pull_request["head"]["sha"],
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.splitlines()
+        assert set(changed) == expected_paths
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.strip()
+        commit_text = subprocess.run(
+            ["git", "cat-file", "-p", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout
+        parents = [
+            line.removeprefix("parent ")
+            for line in commit_text.splitlines()
+            if line.startswith("parent ")
+        ]
+        head_commit_text = subprocess.run(
+            ["git", "cat-file", "-p", pull_request["head"]["sha"]],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout
+        head_parents = [
+            line.removeprefix("parent ")
+            for line in head_commit_text.splitlines()
+            if line.startswith("parent ")
+        ]
+        assert head == os.environ.get("GITHUB_SHA")
+        assert parents == [expected_base, pull_request["head"]["sha"]]
+        assert head_parents == [ORIGINAL_IMPLEMENTATION_HEAD]
+        return
+
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    merge_base = subprocess.run(
+        ["git", "merge-base", ACCEPTED_CONTRACT_HEAD, "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    assert merge_base == ACCEPTED_CONTRACT_HEAD
+    if head != ORIGINAL_IMPLEMENTATION_HEAD:
+        parent = subprocess.run(
+            ["git", "rev-parse", "HEAD^"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.strip()
+        assert parent == ORIGINAL_IMPLEMENTATION_HEAD
+        counts = subprocess.run(
+            [
+                "git",
+                "rev-list",
+                "--left-right",
+                "--count",
+                f"{ACCEPTED_CONTRACT_HEAD}...HEAD",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.split()
+        assert counts == ["0", "2"]
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", ACCEPTED_CONTRACT_HEAD],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.splitlines()
+    assert set(changed) == IMPLEMENTATION_PATHS
+    contract = "docs/project/V3_10_CL5_CASH_AVAILABILITY_CONTRACT_RU.md"
+    immutable = subprocess.run(
+        ["git", "diff", "--quiet", ACCEPTED_CONTRACT_HEAD, "--", contract],
+        cwd=ROOT,
+        check=False,
+    )
+    assert immutable.returncode == 0
+    stable_merge_base = subprocess.run(
+        ["git", "merge-base", STABLE_PREDECESSOR, "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    assert stable_merge_base == STABLE_PREDECESSOR
+    cumulative = subprocess.run(
+        ["git", "diff", "--name-only", f"{STABLE_PREDECESSOR}..HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.splitlines()
+    assert set(cumulative) == IMPLEMENTATION_PATHS | {contract}

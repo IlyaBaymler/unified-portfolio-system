@@ -807,9 +807,10 @@ def _parse_canonical_bytes(value: bytes, reason: CL5Reason) -> object:
 def _bounded_response(value: dict[str, object]) -> tuple[dict[str, object], bytes]:
     seen: set[int] = set()
     nodes = 0
+    noncanonical_string_value = False
 
     def visit(item: object, depth: int) -> object:
-        nonlocal nodes
+        nonlocal nodes, noncanonical_string_value
         nodes += 1
         if depth > _MAX_RESPONSE_DEPTH or nodes > _MAX_RESPONSE_NODES:
             _fail(CL5Reason.RESPONSE_BOUNDS_EXCEEDED)
@@ -837,8 +838,10 @@ def _bounded_response(value: dict[str, object]) -> tuple[dict[str, object], byte
             seen.add(identity)
             return [visit(child, depth + 1) for child in item]
         if type(item) is str:
-            if len(item) > _MAX_STRING_SCALARS or _contains_surrogate(item):
+            if len(item) > _MAX_STRING_SCALARS:
                 _fail(CL5Reason.RESPONSE_BOUNDS_EXCEEDED)
+            if _contains_surrogate(item):
+                noncanonical_string_value = True
             return item
         if type(item) is bool or item is None:
             return item
@@ -851,13 +854,15 @@ def _bounded_response(value: dict[str, object]) -> tuple[dict[str, object], byte
     detached = visit(value, 1)
     if type(detached) is not dict:
         _fail(CL5Reason.RESPONSE_BOUNDS_EXCEEDED)
+    if noncanonical_string_value:
+        _fail(CL5Reason.CANONICAL_FORMAT_INVALID)
     try:
         canonical = _canonical_bytes(detached)
     except Exception:  # noqa: BLE001 - canonical boundary
         failure = CL5Error(CL5Reason.CANONICAL_FORMAT_INVALID)
     else:
         if len(canonical) > _MAX_RESPONSE_CANONICAL_BYTES:
-            _fail(CL5Reason.RESPONSE_BOUNDS_EXCEEDED)
+            _fail(CL5Reason.CANONICAL_FORMAT_INVALID)
         parsed = _parse_canonical_bytes(canonical, CL5Reason.CANONICAL_FORMAT_INVALID)
         if type(parsed) is not dict:
             _fail(CL5Reason.CANONICAL_FORMAT_INVALID)
@@ -908,11 +913,13 @@ def _rub_money(items: list[dict[str, object]]) -> tuple[_ledger.Money, bool]:
     if not rub:
         return _ledger.Money(currency="RUB", minor_units=0), foreign
     try:
-        return _broker.money_value_to_money(rub[0]), foreign
+        money = _broker.money_value_to_money(rub[0])
     except _broker.BrokerReadError as error:
         failure = CL5Error(CL5Reason.MONEY_INVALID, error.reason)
     except Exception:  # noqa: BLE001 - accepted codec boundary
         failure = CL5Error(CL5Reason.MONEY_INVALID)
+    else:
+        return _checked_money(money), foreign
     raise failure from None
 
 
@@ -1095,12 +1102,19 @@ _CENTRAL_SPECS: dict[
 def _central_preflight(state: _central.CentralOrderState) -> None:
     nodes = 0
 
-    def visit(value: object, depth: int) -> None:
+    def visit(
+        value: object,
+        depth: int,
+        *,
+        expected_types: tuple[type[object], ...] | None = None,
+    ) -> None:
         nonlocal nodes
         nodes += 1
         if depth > _MAX_CENTRAL_STATE_DEPTH or nodes > _MAX_CENTRAL_STATE_NODES:
             _fail(CL5Reason.CENTRAL_STATE_INVALID)
         value_type = type(value)
+        if expected_types is not None and value_type not in expected_types:
+            _fail(CL5Reason.CENTRAL_STATE_INVALID)
         if value_type in _CENTRAL_SPECS:
             spec = _CENTRAL_SPECS[value_type]
             if tuple(field.name for field in _fields(value_type)) != tuple(
@@ -1111,10 +1125,6 @@ def _central_preflight(state: _central.CentralOrderState) -> None:
                 child = object.__getattribute__(value, name)
                 if type(child) not in allowed:
                     _fail(CL5Reason.CENTRAL_STATE_INVALID)
-                if item_types is not None and any(
-                    type(item) not in item_types for item in child
-                ):
-                    _fail(CL5Reason.CENTRAL_STATE_INVALID)
                 if name == "intents" and len(child) > _MAX_CENTRAL_INTENTS:
                     _fail(CL5Reason.CENTRAL_STATE_INVALID)
                 if (
@@ -1122,11 +1132,12 @@ def _central_preflight(state: _central.CentralOrderState) -> None:
                     and len(child) > _MAX_CENTRAL_TRANSITIONS_PER_INTENT
                 ):
                     _fail(CL5Reason.CENTRAL_STATE_INVALID)
-                visit(child, depth + 1)
+                visit(child, depth + 1, expected_types=allowed)
+                if item_types is not None:
+                    for item in child:
+                        visit(item, depth + 2, expected_types=item_types)
             return
         if value_type is tuple:
-            for child in value:
-                visit(child, depth + 1)
             return
         if value_type is str:
             if len(value) > _MAX_CENTRAL_STRING_SCALARS or _contains_surrogate(value):
@@ -1169,11 +1180,15 @@ def _validated_central_state(
 
 def _central_projection_hash(state: _central.CentralOrderState) -> str:
     try:
-        return _central.central_reservation_projection_hash(
+        projection_hash = _central.central_reservation_projection_hash(
             state,
             excluded_reservation_ids=(),
         )
     except Exception:  # noqa: BLE001 - closed Central boundary
+        failure = CL5Error(CL5Reason.CENTRAL_PROJECTION_INVALID)
+    else:
+        if _is_hash(projection_hash):
+            return projection_hash
         failure = CL5Error(CL5Reason.CENTRAL_PROJECTION_INVALID)
     raise failure from None
 
