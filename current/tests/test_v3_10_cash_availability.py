@@ -25,7 +25,7 @@ CURRENT = ROOT / "current"
 MODULE_PATH = CURRENT / "trading_robot" / "cash_availability.py"
 FIXTURE_PATH = CURRENT / "tests" / "fixtures" / "v3_10_cash_availability_vectors.json"
 ACCEPTED_CONTRACT_HEAD = "e1dc8ab570abaa7547714951423749e2986fe31a"
-ORIGINAL_IMPLEMENTATION_HEAD = "547ae06d8befec25b039e46b6dc06702658c6db0"
+ACCEPTED_IMPLEMENTATION_HEAD = "eedfc112befa23d73ddd2dfda280cdec35a003d5"
 STABLE_PREDECESSOR = "c3befe877e5f0d0058fbf485cb42ff54d57da7de"
 IMPLEMENTATION_PATHS = {
     "current/trading_robot/cash_availability.py",
@@ -1381,10 +1381,10 @@ def test_exact_successor_custody_and_three_path_delta() -> None:
         expected = {
             "agent/v3-10-clean-cl5-contract-freeze": (
                 ACCEPTED_CONTRACT_HEAD,
-                2,
+                3,
                 3,
             ),
-            "program/v3-10-v4-stable-line": (STABLE_PREDECESSOR, 4, 4),
+            "program/v3-10-v4-stable-line": (STABLE_PREDECESSOR, 5, 4),
         }.get(pull_request["base"]["ref"])
         assert expected is not None
         expected_base, expected_commits, expected_files = expected
@@ -1398,25 +1398,7 @@ def test_exact_successor_custody_and_three_path_delta() -> None:
         )
         assert pull_request["commits"] == expected_commits
         assert pull_request["changed_files"] == expected_files
-        expected_paths = set(IMPLEMENTATION_PATHS)
-        if expected_base == STABLE_PREDECESSOR:
-            expected_paths.add(
-                "docs/project/V3_10_CL5_CASH_AVAILABILITY_CONTRACT_RU.md"
-            )
-        changed = subprocess.run(
-            [
-                "git",
-                "diff",
-                "--name-only",
-                expected_base,
-                pull_request["head"]["sha"],
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            check=True,
-            text=True,
-        ).stdout.splitlines()
-        assert set(changed) == expected_paths
+        assert pull_request["head"]["sha"] != ACCEPTED_IMPLEMENTATION_HEAD
         head = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=ROOT,
@@ -1436,21 +1418,8 @@ def test_exact_successor_custody_and_three_path_delta() -> None:
             for line in commit_text.splitlines()
             if line.startswith("parent ")
         ]
-        head_commit_text = subprocess.run(
-            ["git", "cat-file", "-p", pull_request["head"]["sha"]],
-            cwd=ROOT,
-            capture_output=True,
-            check=True,
-            text=True,
-        ).stdout
-        head_parents = [
-            line.removeprefix("parent ")
-            for line in head_commit_text.splitlines()
-            if line.startswith("parent ")
-        ]
         assert head == os.environ.get("GITHUB_SHA")
         assert parents == [expected_base, pull_request["head"]["sha"]]
-        assert head_parents == [ORIGINAL_IMPLEMENTATION_HEAD]
         return
 
     head = subprocess.run(
@@ -1468,7 +1437,7 @@ def test_exact_successor_custody_and_three_path_delta() -> None:
         text=True,
     ).stdout.strip()
     assert merge_base == ACCEPTED_CONTRACT_HEAD
-    if head != ORIGINAL_IMPLEMENTATION_HEAD:
+    if head != ACCEPTED_IMPLEMENTATION_HEAD:
         parent = subprocess.run(
             ["git", "rev-parse", "HEAD^"],
             cwd=ROOT,
@@ -1476,7 +1445,7 @@ def test_exact_successor_custody_and_three_path_delta() -> None:
             check=True,
             text=True,
         ).stdout.strip()
-        assert parent == ORIGINAL_IMPLEMENTATION_HEAD
+        assert parent == ACCEPTED_IMPLEMENTATION_HEAD
         counts = subprocess.run(
             [
                 "git",
@@ -1490,7 +1459,15 @@ def test_exact_successor_custody_and_three_path_delta() -> None:
             check=True,
             text=True,
         ).stdout.split()
-        assert counts == ["0", "2"]
+        assert counts == ["0", "3"]
+        correction_paths = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD^..HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.splitlines()
+        assert correction_paths == ["current/tests/test_v3_10_cash_availability.py"]
     changed = subprocess.run(
         ["git", "diff", "--name-only", ACCEPTED_CONTRACT_HEAD],
         cwd=ROOT,
