@@ -422,6 +422,8 @@ MAX_RISK_CANONICAL_BYTES = 1_048_576
 
 MAX_STRING_SCALARS = 4_096
 
+MAX_REVISION = 9_223_372_036_854_775_807
+
 MAX_CONTEXT_AGE_NS = 120_000_000_000
 
 MAX_CONTEXT_SKEW_NS = 10_000_000_000
@@ -503,6 +505,46 @@ YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ
 ```
 
 с real Gregorian UTC date.
+
+### 13.1. Canonical scalar encoding table
+
+Все revision fields имеют exact in-memory type `int`, `bool` запрещён, range:
+
+```text
+0 <= revision <= MAX_REVISION
+```
+
+В canonical JSON следующие fields кодируются decimal strings без leading zero:
+
+```text
+PortfolioValuationPoint.portfolio_revision
+
+PerformanceReport.ledger_revision
+
+PortfolioIdentityEvidence.portfolio_revision
+
+PortfolioRiskCashContext.ledger_revision
+PortfolioRiskCashContext.central_order_revision
+PortfolioRiskCashContext.portfolio_revision
+```
+
+Следующие non-negative count/version fields кодируются JSON integer numbers:
+
+```text
+CashFlowSummary.*_count
+
+TWRResult.subperiod_count
+
+XIRRResult.sign_change_count
+XIRRResult.cash_flow_count
+
+PortfolioIdentityEvidence.portfolio_schema_version
+RiskGuardEvidence.risk_state_version
+
+all CL6 DTO version fields
+```
+
+KAT sections 85–95 используют именно эти representations. Opaque digest не является заменой этой table.
 
 ---
 
@@ -759,6 +801,54 @@ Valuation point не утверждает, что valuation является bro
 9. recompute every transaction full/source/economic identity;
 10. require transaction count `<= MAX_LEDGER_TRANSACTIONS`.
 
+Exact CL4 revalidation call:
+
+```python
+project_shadow_cash(
+    ledger_export_bytes,
+    account_scope_sha256=account_scope_sha256,
+    environment=environment,
+    as_of=generated_at,
+    identity_key=identity_key,
+)
+```
+
+Required correlation:
+
+```text
+projection.account_scope_sha256 == account_scope_sha256
+projection.environment == environment
+projection.as_of == generated_at
+```
+
+`generated_at`, а не `period_end`, является ledger-evidence observation time. Transactions и observations later than `period_end` but not later than `generated_at` остаются частью full export validation/projection identity, но не входят в reporting interval и сами по себе не создают `PROOF_BEFORE_LEDGER_EFFECT`/`PROOF_BEFORE_LEDGER_EVIDENCE`.
+
+CL2 export может содержать несколько account scopes. После полной validation всего export exact reporting transaction set определяется только как:
+
+```text
+transaction.source.account_scope_sha256 == account_scope_sha256
+```
+
+Foreign-account transactions/observations:
+
+- полностью identity/graph-validated как часть export;
+- не входят в `transaction_count` или category counts/effects;
+- не создают external-flow timestamps;
+- не участвуют в TWR/XIRR;
+- не делают target-account report invalid только своим присутствием.
+
+Для target-account transaction с `reversal_of_sha256` или `corrects_sha256` exact target обязан существовать и иметь тот же `account_scope_sha256`. Cross-account lineage:
+
+```text
+ACCOUNT_SCOPE_INVALID
+```
+
+Missing/ambiguous same-account target:
+
+```text
+LEDGER_GRAPH_INVALID
+```
+
 CL6 не чинит ledger export и не пропускает повреждённые entries.
 
 ---
@@ -957,6 +1047,26 @@ Duplicate valuation point for same `(phase, as_of)`:
 VALUATION_SET_INVALID
 ```
 
+Любой point с phase/timestamp, не требуемым exact period/external-flow set, включая `PRE_EXTERNAL_FLOW` без target-account external flow:
+
+```text
+VALUATION_SET_INVALID
+```
+
+Отсутствие одного или нескольких required points не является structural exception после того, как все supplied points прошли exact DTO/HMAC/correlation validation. Оно создаёт valid degraded report:
+
+```text
+TWR.status = UNAVAILABLE
+TWR.reason = VALUATION_MISSING
+
+XIRR.status = UNAVAILABLE
+XIRR.reason = VALUATION_MISSING
+
+report_status = DEGRADED
+```
+
+с canonical `valuation_set_sha256` над фактически supplied valid points.
+
 Количество points:
 
 ```text
@@ -1072,6 +1182,39 @@ reason = OPENING_INSIDE_PERIOD
 ```
 
 Период, начинающийся exact на opening cutoff, допустим, поскольку interval left-open.
+
+### 30.1. Exact metric-reason precedence
+
+После structural validation exact primary outcome определяется независимо для каждого metric.
+
+TWR precedence, first applicable wins:
+
+```text
+1. LEDGER_INCOMPLETE
+2. MANUAL_ADJUSTMENT_PRESENT
+3. OPENING_INSIDE_PERIOD
+4. VALUATION_MISSING
+5. END_FLOW_VALUATION_AMBIGUOUS
+6. NON_POSITIVE_SUBPERIOD_BASE
+7. RATIONAL_LIMIT_EXCEEDED
+8. AVAILABLE
+```
+
+XIRR precedence, first applicable wins:
+
+```text
+1. LEDGER_INCOMPLETE
+2. MANUAL_ADJUSTMENT_PRESENT
+3. OPENING_INSIDE_PERIOD
+4. VALUATION_MISSING
+5. XIRR_NO_SIGN_CHANGE
+6. XIRR_MULTIPLE_SIGN_CHANGES
+7. XIRR_ROOT_OUT_OF_RANGE
+8. XIRR_NUMERIC_FAILURE
+9. AVAILABLE
+```
+
+`AMBIGUOUS` применяется только для `XIRR_MULTIPLE_SIGN_CHANGES`; остальные non-AVAILABLE outcomes выше имеют status `UNAVAILABLE`.
 
 ---
 
@@ -1865,6 +2008,16 @@ portfolio_captured_at
 
 participate in CL6 identity.
 
+Exact source mapping:
+
+```text
+portfolio_snapshot_at = normalize(lease.state.snapshot_at)
+
+portfolio_captured_at = normalize(lease.leased_at)
+```
+
+`lease.state.generated_at` остаётся bound через exact document checksum, но не подменяет `portfolio_captured_at`.
+
 ---
 
 ## 54. Portfolio readiness semantics
@@ -1887,7 +2040,19 @@ freshness == FRESH
 blocking == false
 ```
 
-`state_status` сохраняется как evidence, но CL6 не создаёт новый interpretation table для arbitrary predecessor status tokens.
+Кроме того, exact accepted predecessor blocking statuses:
+
+```text
+state_status in {BLOCKED, MANUAL_REVIEW_REQUIRED}
+```
+
+всегда дают:
+
+```text
+BLOCKED / PORTFOLIO_NOT_READY
+```
+
+даже при `blocking == false`. Иные `state_status` сохраняются как evidence; CL6 не создаёт для них новый interpretation table.
 
 ---
 
@@ -2320,6 +2485,7 @@ max(
     broker_cash_as_of,
     broker_positions_as_of,
     central_projection_evaluated_at,
+    portfolio.portfolio_snapshot_at,
     portfolio.captured_at,
     risk_guard.captured_at
 )
@@ -2353,7 +2519,7 @@ After all structural validation/correlation:
    BLOCKED / CASH_AVAILABILITY_STALE
    ```
 
-3. Portfolio schema/source/migration/freshness/blocking not ready:
+3. Portfolio schema/source/migration/freshness/blocking or predecessor blocking `state_status` not ready:
    ```text
    BLOCKED / PORTFOLIO_NOT_READY
    ```
@@ -2648,6 +2814,81 @@ INTERNAL_BOUNDARY_FAILED
 
 without raw cause text.
 
+### 78.1. Exact predecessor error translation
+
+Expected predecessor exceptions никогда не проходят наружу напрямую. `cause_reason`, если exact predecessor reason существует и входит в finite accepted enum, сохраняется отдельно; primary CL6 reason определяется только этой table.
+
+#### Reporting ledger boundary
+
+```text
+CL2 canonical parse failure
+-> LEDGER_EXPORT_INVALID
+
+CL4 project_shadow_cash / LEDGER_EXPORT_INVALID
+-> LEDGER_EXPORT_INVALID
+
+CL4 project_shadow_cash /
+    LEDGER_GRAPH_INVALID |
+    LEDGER_REVISION_INVALID |
+    OPENING_MISSING |
+    OPENING_CONFLICT |
+    BASELINE_STALE
+-> LEDGER_GRAPH_INVALID
+
+CL4 project_shadow_cash / ACCOUNT_SCOPE_INVALID
+-> ACCOUNT_SCOPE_INVALID
+
+CL4 project_shadow_cash / ENVIRONMENT_UNSUPPORTED
+-> ENVIRONMENT_UNSUPPORTED
+
+CL4 project_shadow_cash / IDENTITY_KEY_INVALID
+-> IDENTITY_KEY_INVALID
+
+CL4 project_shadow_cash / VERSION_UNSUPPORTED
+-> VERSION_UNSUPPORTED
+
+CL4 project_shadow_cash / ARITHMETIC_OVERFLOW
+-> ARITHMETIC_OVERFLOW
+```
+
+После successful CL4 projection CL1 transaction reconstruction maps:
+
+```text
+canonical/full/source/economic hash mismatch
+-> LEDGER_IDENTITY_MISMATCH
+
+invalid posting/classification/lineage/reference graph
+-> LEDGER_GRAPH_INVALID
+
+Money arithmetic overflow during reporting aggregation
+-> ARITHMETIC_OVERFLOW
+```
+
+#### Portfolio/Risk/CL5 boundaries
+
+```text
+expected Portfolio predecessor serialization/model failure
+-> PORTFOLIO_EVIDENCE_INVALID
+
+expected RiskPolicy/RiskState/hash-helper failure
+-> RISK_EVIDENCE_INVALID
+
+CL5Error with reason other than INTERNAL_BOUNDARY_FAILED
+during build_cash_availability rebuild
+-> CASH_AVAILABILITY_INVALID
+
+CL5Error / INTERNAL_BOUNDARY_FAILED
+-> INTERNAL_BOUNDARY_FAILED
+```
+
+Public argument failures уже обязаны быть пойманы более ранним CL6 preflight. Поэтому `TYPE_INVALID`, `TIMESTAMP_INVALID` или другой non-listed CL4 reason из validated `project_shadow_cash` invocation означает:
+
+```text
+INTERNAL_BOUNDARY_FAILED
+```
+
+Любой unexpected predecessor exception также остаётся `INTERNAL_BOUNDARY_FAILED`. Public chaining запрещён во всех случаях.
+
 ---
 
 # FIRST-FAILURE ORDER
@@ -2688,7 +2929,7 @@ Exact order:
 15. valuation set structural validation;
 16. reporting classification/reversal graph;
 17. CashFlowSummary arithmetic;
-18. ledger completeness/manual/opening metric gates;
+18. exact metric gates and primary-reason precedence from section 30.1;
 19. TWR deterministic calculation;
 20. XIRR deterministic calculation;
 21. report status;
@@ -3433,6 +3674,30 @@ full unchanged CL1–CL5 regression
 
 V310-CL6-55
 exact three-path implementation allowlist
+
+V310-CL6-56
+Portfolio BLOCKED/MANUAL_REVIEW_REQUIRED status blocks even when blocking=false
+
+V310-CL6-57
+cross-evidence skew includes portfolio_snapshot_at boundary
+
+V310-CL6-58
+portfolio_captured_at comes only from lease.leased_at
+
+V310-CL6-59
+report CL4 projection uses generated_at and ignores post-period flows in metrics
+
+V310-CL6-60
+multi-account export validation with target-only reporting and cross-account lineage rejection
+
+V310-CL6-61
+canonical revision/count/version scalar encoding table
+
+V310-CL6-62
+exact predecessor-error translation table
+
+V310-CL6-63
+missing/extra valuation and metric-reason precedence matrix
 ```
 
 ---
@@ -3487,6 +3752,7 @@ document checksum
 snapshot time
 capture time
 freshness
+state status
 migration status
 legacy-read flag
 blocking
@@ -3543,11 +3809,17 @@ invalid ledger + invalid valuation
 
 invalid valuation HMAC + missing required point
 
+ledger incomplete + missing valuation + manual adjustment + opening inside period
+
 CL5 forged + Portfolio stale
+
+Portfolio BLOCKED with blocking=false + otherwise fresh/coherent evidence
 
 CL5 non-READY + Risk stale
 
 dependency from future + cross-evidence skew
+
+portfolio snapshot outside skew + fresh portfolio capture
 
 Portfolio checksum mismatch + Risk hash mismatch
 ```
