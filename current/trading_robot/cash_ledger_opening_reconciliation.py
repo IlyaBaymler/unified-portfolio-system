@@ -8,6 +8,7 @@ import json as _json
 import re as _re
 from collections.abc import Mapping as _Mapping
 from dataclasses import dataclass as _dataclass
+from dataclasses import field as _field
 from datetime import date as _date
 from enum import StrEnum as _StrEnum
 from types import MappingProxyType as _MappingProxyType
@@ -47,13 +48,13 @@ __all__ = (  # noqa: RUF022 - frozen contract order
 )
 
 
-_CL4_CONTRACT_VERSION = 1
-_BROKER_CASH_PROOF_VERSION = 1
-_OPENING_PLAN_VERSION = 1
-_OPENING_RECORD_VERSION = 1
-_LEDGER_CASH_PROJECTION_VERSION = 1
-_CASH_RECONCILIATION_VERSION = 1
-_ADOPTION_CANDIDATE_VERSION = 1
+_CL4_CONTRACT_VERSION = 2
+_BROKER_CASH_PROOF_VERSION = 2
+_OPENING_PLAN_VERSION = 2
+_OPENING_RECORD_VERSION = 2
+_LEDGER_CASH_PROJECTION_VERSION = 2
+_CASH_RECONCILIATION_VERSION = 2
+_ADOPTION_CANDIDATE_VERSION = 2
 _MAX_PROOF_AGE_NS = 120_000_000_000
 _MAX_RESPONSE_DEPTH = 16
 _MAX_RESPONSE_NODES = 100_000
@@ -62,8 +63,11 @@ _MAX_MAPPING_KEYS = 4_096
 _MAX_STRING_SCALARS = 4_096
 _MAX_KEY_SCALARS = 128
 _MAX_LEDGER_EXPORT_BYTES = 16_777_216
+_MAX_BASELINE_WITNESS_BYTES = 16_777_216
 _MAX_LEDGER_OBJECTS = 100_000
 _MAX_REVISION = 9_223_372_036_854_775_807
+_OPENING_STORE_REVISION_RESERVE = 2
+_OPENING_LEDGER_REVISION_RESERVE = 1
 _RECONCILIATION_DELTA_MAX_ABS_MINOR_UNITS = 18_446_744_073_709_551_616_999_999_998
 _RPC = "tinkoff.public.invest.api.contract.v1.OperationsService/GetPortfolio"
 _HASH_RE = _re.compile(r"[0-9a-f]{64}", _re.ASCII)
@@ -83,6 +87,7 @@ _SAFE_EVIDENCE_KEYS = frozenset(
         "account_scope_sha256",
         "broker_cash_proof_sha256",
         "opening_plan_sha256",
+        "baseline_export_sha256",
         "ledger_export_sha256",
         "ledger_head_sha256",
         "reconciliation_sha256",
@@ -123,6 +128,15 @@ _TRANSACTION_WRAPPER_KEYS = frozenset(
 _LINK_KEYS = frozenset({"observation_sha256", "transaction_sha256"})
 _BUNDLE_WRAPPER_KEYS = frozenset({"canonical_json_ascii", "sha256"})
 _TRANSITION_WRAPPER_KEYS = frozenset({"head_json_ascii", "head_sha256"})
+_EXPORT_ARRAY_NAMES = (
+    "codec_registry",
+    "observations",
+    "inbox_status_events",
+    "transactions",
+    "provenance_links",
+    "correction_bundles",
+    "ledger_transitions",
+)
 _CONTENT_KEYS = frozenset(
     {
         "account_scope_sha256",
@@ -131,14 +145,15 @@ _CONTENT_KEYS = frozenset(
         "environment",
         "generation",
         "identity_key_id",
-        "ledger_export_sha256",
+        "baseline_export_sha256",
         "ledger_head_sha256",
         "ledger_revision",
         "mode",
         "opening_currency",
         "opening_minor_units",
-        "response_identity_sha256",
+        "proof_identity_sha256",
         "store_revision",
+        "contract_version",
     }
 )
 _INCOMPLETE_PRECEDENCE = (
@@ -188,7 +203,7 @@ class CL4Reason(_StrEnum):
     RESPONSE_BOUNDS_EXCEEDED = "RESPONSE_BOUNDS_EXCEEDED"
     RESPONSE_SCHEMA_INVALID = "RESPONSE_SCHEMA_INVALID"
     MONEY_INVALID = "MONEY_INVALID"
-    RESPONSE_IDENTITY_INVALID = "RESPONSE_IDENTITY_INVALID"
+    PROOF_IDENTITY_INVALID = "PROOF_IDENTITY_INVALID"
     LEDGER_EXPORT_INVALID = "LEDGER_EXPORT_INVALID"
     LEDGER_GRAPH_INVALID = "LEDGER_GRAPH_INVALID"
     LEDGER_REVISION_INVALID = "LEDGER_REVISION_INVALID"
@@ -197,6 +212,8 @@ class CL4Reason(_StrEnum):
     OPENING_AMOUNT_UNSUPPORTED = "OPENING_AMOUNT_UNSUPPORTED"
     OPENING_MISSING = "OPENING_MISSING"
     OPENING_CONFLICT = "OPENING_CONFLICT"
+    BASELINE_STALE = "BASELINE_STALE"
+    OPENING_CAPACITY_EXHAUSTED = "OPENING_CAPACITY_EXHAUSTED"
     OPENING_PLAN_STALE = "OPENING_PLAN_STALE"
     CONFIRMATION_INVALID = "CONFIRMATION_INVALID"
     PERSISTENCE_FAILURE = "PERSISTENCE_FAILURE"
@@ -348,7 +365,7 @@ def _money_dict(value: _ledger.Money) -> dict[str, object]:
 
 
 def _checked_money(value: object) -> _ledger.Money:
-    if not isinstance(value, _ledger.Money):
+    if type(value) is not _ledger.Money:
         _fail(CL4Reason.TYPE_INVALID)
     try:
         checked = _ledger.Money.from_canonical_dict(value.to_canonical_dict())
@@ -363,25 +380,29 @@ def _checked_money(value: object) -> _ledger.Money:
     raise failure from None
 
 
-def _response_identity(
+def _proof_identity(
     *,
     account_scope_sha256: str,
     environment: _BrokerEnvironment,
     identity_key_id: str,
     response_canonical_sha256: str,
+    cash: _ledger.Money,
+    as_of: str,
     identity_key: bytes,
 ) -> str:
     return _hmac_sha256(
         identity_key,
         {
             "account_scope_sha256": account_scope_sha256,
-            "domain": "v3.10-cl4-getportfolio-response-identity",
+            "as_of": as_of,
+            "cash": _money_dict(cash),
+            "domain": "v3.10-cl4-broker-cash-proof-identity",
             "environment": environment.value,
             "identity_key_id": identity_key_id,
             "provider": "TBANK",
             "response_canonical_sha256": response_canonical_sha256,
             "rpc": _RPC,
-            "version": 1,
+            "version": 2,
         },
     )
 
@@ -393,26 +414,26 @@ class BrokerCashProof:
     as_of: str
     cash: _ledger.Money
     response_canonical_sha256: str
-    response_identity_sha256: str
+    proof_identity_sha256: str
     identity_key_id: str
     response_complete: bool = True
     version: int = _BROKER_CASH_PROOF_VERSION
 
     def __post_init__(self) -> None:
+        if type(self.version) is not int or self.version != _BROKER_CASH_PROOF_VERSION:
+            _fail(CL4Reason.VERSION_UNSUPPORTED)
         _require_hash(self.account_scope_sha256, CL4Reason.ACCOUNT_SCOPE_INVALID)
-        if not isinstance(self.environment, _BrokerEnvironment):
+        if type(self.environment) is not _BrokerEnvironment:
             _fail(CL4Reason.ENVIRONMENT_UNSUPPORTED)
         if self.environment is not _BrokerEnvironment.SANDBOX:
             _fail(CL4Reason.ENVIRONMENT_UNSUPPORTED)
         _timestamp_ns(self.as_of)
         _checked_money(self.cash)
-        _require_hash(self.response_canonical_sha256, CL4Reason.RESPONSE_IDENTITY_INVALID)
-        _require_hash(self.response_identity_sha256, CL4Reason.RESPONSE_IDENTITY_INVALID)
+        _require_hash(self.response_canonical_sha256, CL4Reason.PROOF_IDENTITY_INVALID)
+        _require_hash(self.proof_identity_sha256, CL4Reason.PROOF_IDENTITY_INVALID)
         _require_key_id(self.identity_key_id)
         if self.response_complete is not True:
             _fail(CL4Reason.PROOF_INCOMPLETE)
-        if type(self.version) is not int or self.version != _BROKER_CASH_PROOF_VERSION:
-            _fail(CL4Reason.VERSION_UNSUPPORTED)
 
     def to_canonical_dict(self) -> dict[str, object]:
         return {
@@ -426,7 +447,7 @@ class BrokerCashProof:
             "provider": "TBANK",
             "response_complete": self.response_complete,
             "response_canonical_sha256": self.response_canonical_sha256,
-            "response_identity_sha256": self.response_identity_sha256,
+            "proof_identity_sha256": self.proof_identity_sha256,
             "rpc": _RPC,
             "version": self.version,
         }
@@ -450,15 +471,20 @@ class OpeningPlan:
     pre_store_revision: int
     pre_ledger_revision: int
     pre_ledger_head_sha256: str
-    pre_ledger_export_sha256: str
+    baseline_export_sha256: str
+    baseline_export_bytes: bytes = _field(repr=False)
     version: int = _OPENING_PLAN_VERSION
 
     def __post_init__(self) -> None:
-        if not isinstance(self.proof, BrokerCashProof):
+        if type(self.version) is not int or self.version != _OPENING_PLAN_VERSION:
+            _fail(CL4Reason.VERSION_UNSUPPORTED)
+        if type(self.proof) is not BrokerCashProof:
             _fail(CL4Reason.TYPE_INVALID)
-        if not isinstance(self.observation, _persistence.InboxObservation):
+        if type(self.proof.version) is not int or self.proof.version != _BROKER_CASH_PROOF_VERSION:
+            _fail(CL4Reason.VERSION_UNSUPPORTED)
+        if type(self.observation) is not _persistence.InboxObservation:
             _fail(CL4Reason.TYPE_INVALID)
-        if not isinstance(self.transaction, _ledger.LedgerTransaction):
+        if type(self.transaction) is not _ledger.LedgerTransaction:
             _fail(CL4Reason.TYPE_INVALID)
         if self.mode is not OpeningMode.FROM_NOW:
             _fail(CL4Reason.MODE_UNSUPPORTED)
@@ -470,9 +496,13 @@ class OpeningPlan:
         if self.pre_store_revision < self.pre_ledger_revision:
             _fail(CL4Reason.LEDGER_REVISION_INVALID)
         _require_hash(self.pre_ledger_head_sha256, CL4Reason.LEDGER_GRAPH_INVALID)
-        _require_hash(self.pre_ledger_export_sha256, CL4Reason.LEDGER_EXPORT_INVALID)
-        if type(self.version) is not int or self.version != _OPENING_PLAN_VERSION:
-            _fail(CL4Reason.VERSION_UNSUPPORTED)
+        _require_hash(self.baseline_export_sha256, CL4Reason.LEDGER_EXPORT_INVALID)
+        if (
+            type(self.baseline_export_bytes) is not bytes
+            or not 1 <= len(self.baseline_export_bytes) <= _MAX_BASELINE_WITNESS_BYTES
+            or _sha256(self.baseline_export_bytes) != self.baseline_export_sha256
+        ):
+            _fail(CL4Reason.LEDGER_EXPORT_INVALID)
 
     def to_canonical_dict(self) -> dict[str, object]:
         return {
@@ -484,7 +514,7 @@ class OpeningPlan:
             "mode": self.mode.value,
             "observation_sha256": self.observation.sha256,
             "opening_money": _money_dict(self.proof.cash),
-            "pre_ledger_export_sha256": self.pre_ledger_export_sha256,
+            "baseline_export_sha256": self.baseline_export_sha256,
             "pre_ledger_head_sha256": self.pre_ledger_head_sha256,
             "pre_ledger_revision": str(self.pre_ledger_revision),
             "pre_store_revision": str(self.pre_store_revision),
@@ -520,6 +550,8 @@ class OpeningRecord:
     version: int = _OPENING_RECORD_VERSION
 
     def __post_init__(self) -> None:
+        if type(self.version) is not int or self.version != _OPENING_RECORD_VERSION:
+            _fail(CL4Reason.VERSION_UNSUPPORTED)
         for value in (
             self.accepted_ledger_revision,
             self.baseline_ledger_revision,
@@ -551,8 +583,6 @@ class OpeningRecord:
         if self.mode is not OpeningMode.FROM_NOW:
             _fail(CL4Reason.MODE_UNSUPPORTED)
         _checked_money(self.opening_money)
-        if type(self.version) is not int or self.version != _OPENING_RECORD_VERSION:
-            _fail(CL4Reason.VERSION_UNSUPPORTED)
 
     def to_canonical_dict(self) -> dict[str, object]:
         return {
@@ -600,6 +630,8 @@ class LedgerCashProjection:
     version: int = _LEDGER_CASH_PROJECTION_VERSION
 
     def __post_init__(self) -> None:
+        if type(self.version) is not int or self.version != _LEDGER_CASH_PROJECTION_VERSION:
+            _fail(CL4Reason.VERSION_UNSUPPORTED)
         _require_hash(self.account_scope_sha256, CL4Reason.ACCOUNT_SCOPE_INVALID)
         if self.environment is not _BrokerEnvironment.SANDBOX:
             _fail(CL4Reason.ENVIRONMENT_UNSUPPORTED)
@@ -644,8 +676,6 @@ class LedgerCashProjection:
             or self.complete != (not self.incompleteness_kinds and not has_unresolved)
         ):
             _fail(CL4Reason.RECONCILIATION_INVALID)
-        if type(self.version) is not int or self.version != _LEDGER_CASH_PROJECTION_VERSION:
-            _fail(CL4Reason.VERSION_UNSUPPORTED)
 
     def to_canonical_dict(self) -> dict[str, object]:
         return {
@@ -687,10 +717,20 @@ class CashReconciliation:
     version: int = _CASH_RECONCILIATION_VERSION
 
     def __post_init__(self) -> None:
-        if not isinstance(self.proof, BrokerCashProof) or not isinstance(
-            self.projection, LedgerCashProjection
+        if type(self.version) is not int or self.version != _CASH_RECONCILIATION_VERSION:
+            _fail(CL4Reason.VERSION_UNSUPPORTED)
+        if (
+            type(self.proof) is not BrokerCashProof
+            or type(self.projection) is not LedgerCashProjection
         ):
             _fail(CL4Reason.TYPE_INVALID)
+        if (
+            type(self.proof.version) is not int
+            or self.proof.version != _BROKER_CASH_PROOF_VERSION
+            or type(self.projection.version) is not int
+            or self.projection.version != _LEDGER_CASH_PROJECTION_VERSION
+        ):
+            _fail(CL4Reason.VERSION_UNSUPPORTED)
         _timestamp_ns(self.evaluated_at)
         _checked_money(self.broker_cash)
         _checked_money(self.expected_cash)
@@ -700,8 +740,9 @@ class CashReconciliation:
             <= _RECONCILIATION_DELTA_MAX_ABS_MINOR_UNITS
         ):
             _fail(CL4Reason.ARITHMETIC_OVERFLOW)
-        if not isinstance(self.status, ReconciliationStatus) or not isinstance(
-            self.discrepancy_kind, DiscrepancyKind
+        if (
+            type(self.status) is not ReconciliationStatus
+            or type(self.discrepancy_kind) is not DiscrepancyKind
         ):
             _fail(CL4Reason.RECONCILIATION_INVALID)
         if (
@@ -729,8 +770,6 @@ class CashReconciliation:
             expected_kind = DiscrepancyKind.NONE
         if (self.status, self.discrepancy_kind) != (expected_status, expected_kind):
             _fail(CL4Reason.RECONCILIATION_INVALID)
-        if type(self.version) is not int or self.version != _CASH_RECONCILIATION_VERSION:
-            _fail(CL4Reason.VERSION_UNSUPPORTED)
 
     def to_canonical_dict(self) -> dict[str, object]:
         return {
@@ -770,7 +809,9 @@ class AdoptionCandidate:
     version: int = _ADOPTION_CANDIDATE_VERSION
 
     def __post_init__(self) -> None:
-        if not isinstance(self.disposition, AdoptionDisposition):
+        if type(self.version) is not int or self.version != _ADOPTION_CANDIDATE_VERSION:
+            _fail(CL4Reason.VERSION_UNSUPPORTED)
+        if type(self.disposition) is not AdoptionDisposition:
             _fail(CL4Reason.RECONCILIATION_INVALID)
         _require_hash(self.ledger_head_sha256, CL4Reason.LEDGER_GRAPH_INVALID)
         _require_hash(self.reconciliation_sha256, CL4Reason.RECONCILIATION_INVALID)
@@ -780,8 +821,6 @@ class AdoptionCandidate:
             or self.runtime_cash_owner_changed is not False
         ):
             _fail(CL4Reason.RECONCILIATION_INVALID)
-        if type(self.version) is not int or self.version != _ADOPTION_CANDIDATE_VERSION:
-            _fail(CL4Reason.VERSION_UNSUPPORTED)
 
     def to_canonical_dict(self) -> dict[str, object]:
         return {
@@ -818,20 +857,22 @@ class OpeningAcceptance:
             "OPENING_ALREADY_PRESENT",
         }:
             _fail(CL4Reason.POSTCONDITION_FAILED)
-        if not isinstance(self.record, OpeningRecord):
+        if type(self.record) is not OpeningRecord:
             _fail(CL4Reason.TYPE_INVALID)
+        if type(self.record.version) is not int or self.record.version != _OPENING_RECORD_VERSION:
+            _fail(CL4Reason.VERSION_UNSUPPORTED)
         for value in (self.store_revision, self.ledger_revision):
             if type(value) is not int or not 0 <= value <= _MAX_REVISION:
                 _fail(CL4Reason.LEDGER_REVISION_INVALID)
         _require_hash(self.ledger_head_sha256, CL4Reason.LEDGER_GRAPH_INVALID)
 
 
-_SCHEMA_JSON_ASCII = '{"domain":"v3.10-operation-inbox-codec-schema","fields":[{"allowed_values":null,"key":"account_scope_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"broker_cash_proof_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"cutoff","kind":"STRING","max_scalars":"30","maximum":null,"minimum":null,"required":true},{"allowed_values":["SANDBOX"],"key":"environment","kind":"STRING","max_scalars":"16","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"generation","kind":"INTEGER","max_scalars":null,"maximum":"1","minimum":"1","required":true},{"allowed_values":null,"key":"identity_key_id","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"ledger_export_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"ledger_head_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"ledger_revision","kind":"STRING","max_scalars":"19","maximum":null,"minimum":null,"required":true},{"allowed_values":["FROM_NOW"],"key":"mode","kind":"STRING","max_scalars":"16","maximum":null,"minimum":null,"required":true},{"allowed_values":["RUB"],"key":"opening_currency","kind":"STRING","max_scalars":"3","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"opening_minor_units","kind":"STRING","max_scalars":"29","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"response_identity_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"store_revision","kind":"STRING","max_scalars":"19","maximum":null,"minimum":null,"required":true}],"version":1}'
+_SCHEMA_JSON_ASCII = '{"domain":"v3.10-operation-inbox-codec-schema","fields":[{"allowed_values":null,"key":"account_scope_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"baseline_export_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"broker_cash_proof_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"contract_version","kind":"INTEGER","max_scalars":null,"maximum":"2","minimum":"2","required":true},{"allowed_values":null,"key":"cutoff","kind":"STRING","max_scalars":"30","maximum":null,"minimum":null,"required":true},{"allowed_values":["SANDBOX"],"key":"environment","kind":"STRING","max_scalars":"16","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"generation","kind":"INTEGER","max_scalars":null,"maximum":"1","minimum":"1","required":true},{"allowed_values":null,"key":"identity_key_id","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"ledger_head_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"ledger_revision","kind":"STRING","max_scalars":"19","maximum":null,"minimum":null,"required":true},{"allowed_values":["FROM_NOW"],"key":"mode","kind":"STRING","max_scalars":"16","maximum":null,"minimum":null,"required":true},{"allowed_values":["RUB"],"key":"opening_currency","kind":"STRING","max_scalars":"3","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"opening_minor_units","kind":"STRING","max_scalars":"29","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"proof_identity_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"store_revision","kind":"STRING","max_scalars":"19","maximum":null,"minimum":null,"required":true}],"version":1}'
 
 CL4_OPENING_CODEC = _persistence.CodecDescriptor(
-    codec_id="CL4_FROM_NOW_OPENING_V1",
+    codec_id="CL4_FROM_NOW_OPENING_V2",
     schema_json_ascii=_SCHEMA_JSON_ASCII,
-    schema_sha256="917b0b3a98748c2279ed9efb1007fddec6375afd3da7003143690544b7336d78",
+    schema_sha256="1f15c6486dd348bdcf8f2b725111b01e583404efe5717ab5df0b7968d87bbfe3",
 )
 
 
@@ -909,9 +950,10 @@ def _validate_proof(
     *,
     evaluated_at: str | None,
 ) -> BrokerCashProof:
-    if not isinstance(proof, BrokerCashProof):
+    if type(proof) is not BrokerCashProof:
         _fail(CL4Reason.TYPE_INVALID)
-    key = _require_key(identity_key)
+    if type(proof.version) is not int or proof.version != _BROKER_CASH_PROOF_VERSION:
+        _fail(CL4Reason.VERSION_UNSUPPORTED)
     try:
         checked = BrokerCashProof(
             account_scope_sha256=proof.account_scope_sha256,
@@ -919,7 +961,7 @@ def _validate_proof(
             as_of=proof.as_of,
             cash=proof.cash,
             response_canonical_sha256=proof.response_canonical_sha256,
-            response_identity_sha256=proof.response_identity_sha256,
+            proof_identity_sha256=proof.proof_identity_sha256,
             identity_key_id=proof.identity_key_id,
             response_complete=proof.response_complete,
             version=proof.version,
@@ -928,25 +970,29 @@ def _validate_proof(
     except CL4Error:
         raise
     except Exception:  # noqa: BLE001 - forged DTO must not leak internals
-        failure = CL4Error(CL4Reason.RESPONSE_IDENTITY_INVALID)
+        failure = CL4Error(CL4Reason.PROOF_IDENTITY_INVALID)
     else:
-        if same:
-            expected = _response_identity(
+        if not same:
+            failure = CL4Error(CL4Reason.PROOF_IDENTITY_INVALID)
+        else:
+            if evaluated_at is not None:
+                _require_fresh(checked.as_of, evaluated_at)
+            key = _require_key(identity_key)
+            expected = _proof_identity(
                 account_scope_sha256=checked.account_scope_sha256,
                 environment=checked.environment,
                 identity_key_id=checked.identity_key_id,
                 response_canonical_sha256=checked.response_canonical_sha256,
+                cash=checked.cash,
+                as_of=checked.as_of,
                 identity_key=key,
             )
-            if not _hmac.compare_digest(expected, checked.response_identity_sha256):
+            if not _hmac.compare_digest(expected, checked.proof_identity_sha256):
                 _fail(
-                    CL4Reason.RESPONSE_IDENTITY_INVALID,
+                    CL4Reason.PROOF_IDENTITY_INVALID,
                     broker_cash_proof_sha256=checked.sha256,
                 )
-            if evaluated_at is not None:
-                _require_fresh(checked.as_of, evaluated_at)
             return checked
-        failure = CL4Error(CL4Reason.RESPONSE_IDENTITY_INVALID)
     raise failure from None
 
 
@@ -963,16 +1009,16 @@ def build_broker_cash_proof(
 ) -> BrokerCashProof:
     if type(response) is not dict:
         _fail(CL4Reason.TYPE_INVALID)
-    if not isinstance(environment, _BrokerEnvironment) or environment is not _BrokerEnvironment.SANDBOX:
+    if type(environment) is not _BrokerEnvironment or environment is not _BrokerEnvironment.SANDBOX:
         _fail(CL4Reason.ENVIRONMENT_UNSUPPORTED)
     account = _require_hash(account_scope_sha256, CL4Reason.ACCOUNT_SCOPE_INVALID)
-    key = _require_key(identity_key)
     key_id = _require_key_id(identity_key_id)
     _timestamp_ns(as_of)
     _timestamp_ns(evaluated_at)
     if response_complete is not True:
         _fail(CL4Reason.PROOF_INCOMPLETE)
     _require_fresh(as_of, evaluated_at)
+    key = _require_key(identity_key)
     snapshot, encoded = _bounded_response(response)
     if "totalAmountCurrencies" not in snapshot:
         _fail(CL4Reason.RESPONSE_SCHEMA_INVALID)
@@ -987,13 +1033,17 @@ def build_broker_cash_proof(
         cash = _broker.money_value_to_money(cash_value)
     except _broker.BrokerReadError as error:
         failure = CL4Error(CL4Reason.MONEY_INVALID, error.cause_reason)
+    except Exception:  # noqa: BLE001 - closed dependency boundary
+        failure = CL4Error(CL4Reason.INTERNAL_BOUNDARY_FAILED)
     else:
         response_hash = _sha256(encoded)
-        identity = _response_identity(
+        identity = _proof_identity(
             account_scope_sha256=account,
             environment=environment,
             identity_key_id=key_id,
             response_canonical_sha256=response_hash,
+            cash=cash,
+            as_of=as_of,
             identity_key=key,
         )
         return BrokerCashProof(
@@ -1002,7 +1052,7 @@ def build_broker_cash_proof(
             as_of=as_of,
             cash=cash,
             response_canonical_sha256=response_hash,
-            response_identity_sha256=identity,
+            proof_identity_sha256=identity,
             identity_key_id=key_id,
         )
     raise failure from None
@@ -1011,15 +1061,16 @@ def build_broker_cash_proof(
 @_dataclass(frozen=True, slots=True)
 class _OpeningContent:
     account_scope_sha256: str
+    baseline_export_sha256: str
     broker_cash_proof_sha256: str
+    contract_version: int
     cutoff: str
     environment: BrokerEnvironment
     identity_key_id: str
-    ledger_export_sha256: str
     ledger_head_sha256: str
     ledger_revision: int
     opening_minor_units: int
-    response_identity_sha256: str
+    proof_identity_sha256: str
     store_revision: int
 
 
@@ -1038,6 +1089,14 @@ class _LedgerView:
     bundles: dict[str, _ledger.LedgerCorrectionBundle]
     transitions: tuple[_persistence.LedgerHead, ...]
     cl4_content: dict[str, _OpeningContent]
+
+
+@_dataclass(frozen=True, slots=True)
+class _ProspectiveStates:
+    staged_bytes: bytes
+    committed_bytes: bytes
+    staged_view: _LedgerView
+    committed_view: _LedgerView
 
 
 def _ascii_bytes(value: object, reason: CL4Reason) -> bytes:
@@ -1064,6 +1123,8 @@ def _parse_content(value: object) -> _OpeningContent:
             if (
                 parsed["environment"] != "SANDBOX"
                 or parsed["mode"] != "FROM_NOW"
+                or type(parsed["contract_version"]) is not int
+                or parsed["contract_version"] != _CL4_CONTRACT_VERSION
                 or type(parsed["generation"]) is not int
                 or parsed["generation"] != 1
                 or parsed["opening_currency"] != "RUB"
@@ -1071,8 +1132,8 @@ def _parse_content(value: object) -> _OpeningContent:
                 _fail(CL4Reason.LEDGER_GRAPH_INVALID)
             account = _require_hash(parsed["account_scope_sha256"], CL4Reason.LEDGER_GRAPH_INVALID)
             proof_hash = _require_hash(parsed["broker_cash_proof_sha256"], CL4Reason.LEDGER_GRAPH_INVALID)
-            response_hash = _require_hash(parsed["response_identity_sha256"], CL4Reason.LEDGER_GRAPH_INVALID)
-            export_hash = _require_hash(parsed["ledger_export_sha256"], CL4Reason.LEDGER_GRAPH_INVALID)
+            proof_identity_hash = _require_hash(parsed["proof_identity_sha256"], CL4Reason.LEDGER_GRAPH_INVALID)
+            baseline_hash = _require_hash(parsed["baseline_export_sha256"], CL4Reason.LEDGER_GRAPH_INVALID)
             head_hash = _require_hash(parsed["ledger_head_sha256"], CL4Reason.LEDGER_GRAPH_INVALID)
             key_id = _require_key_id(parsed["identity_key_id"])
             _timestamp_ns(parsed["cutoff"])
@@ -1089,15 +1150,16 @@ def _parse_content(value: object) -> _OpeningContent:
                 _fail(CL4Reason.OPENING_AMOUNT_UNSUPPORTED)
             return _OpeningContent(
                 account_scope_sha256=account,
+                baseline_export_sha256=baseline_hash,
                 broker_cash_proof_sha256=proof_hash,
+                contract_version=_CL4_CONTRACT_VERSION,
                 cutoff=parsed["cutoff"],
                 environment=_BrokerEnvironment.SANDBOX,
                 identity_key_id=key_id,
-                ledger_export_sha256=export_hash,
                 ledger_head_sha256=head_hash,
                 ledger_revision=ledger_revision,
                 opening_minor_units=amount,
-                response_identity_sha256=response_hash,
+                proof_identity_sha256=proof_identity_hash,
                 store_revision=store_revision,
             )
         except CL4Error:
@@ -1118,7 +1180,7 @@ def _source_scope(content: _OpeningContent, key: bytes) -> str:
             "generation": 1,
             "identity_key_id": content.identity_key_id,
             "mode": "FROM_NOW",
-            "version": 1,
+            "version": 2,
         },
     )
 
@@ -1128,13 +1190,13 @@ def _provenance(content: _OpeningContent, source_content_sha256: str, key: bytes
         key,
         {
             "account_scope_sha256": content.account_scope_sha256,
+            "baseline_export_sha256": content.baseline_export_sha256,
             "broker_cash_proof_sha256": content.broker_cash_proof_sha256,
             "domain": "v3.10-cl4-opening-provenance",
             "identity_key_id": content.identity_key_id,
-            "ledger_export_sha256": content.ledger_export_sha256,
-            "response_identity_sha256": content.response_identity_sha256,
+            "proof_identity_sha256": content.proof_identity_sha256,
             "source_content_sha256": source_content_sha256,
-            "version": 1,
+            "version": 2,
         },
     )
 
@@ -1142,18 +1204,19 @@ def _provenance(content: _OpeningContent, source_content_sha256: str, key: bytes
 def _content_dict(content: _OpeningContent) -> dict[str, object]:
     return {
         "account_scope_sha256": content.account_scope_sha256,
+        "baseline_export_sha256": content.baseline_export_sha256,
         "broker_cash_proof_sha256": content.broker_cash_proof_sha256,
+        "contract_version": content.contract_version,
         "cutoff": content.cutoff,
         "environment": content.environment.value,
         "generation": 1,
         "identity_key_id": content.identity_key_id,
-        "ledger_export_sha256": content.ledger_export_sha256,
         "ledger_head_sha256": content.ledger_head_sha256,
         "ledger_revision": str(content.ledger_revision),
         "mode": "FROM_NOW",
         "opening_currency": "RUB",
         "opening_minor_units": str(content.opening_minor_units),
-        "response_identity_sha256": content.response_identity_sha256,
+        "proof_identity_sha256": content.proof_identity_sha256,
         "store_revision": str(content.store_revision),
     }
 
@@ -1198,6 +1261,170 @@ def _opening_graph(
     return observation, transaction
 
 
+def _export_value(value: bytes) -> dict[str, object]:
+    try:
+        parsed = _persistence.parse_canonical_json(value)
+    except _persistence.PersistenceError:
+        _fail(CL4Reason.OPENING_CAPACITY_EXHAUSTED)
+    if type(parsed) is not dict:
+        _fail(CL4Reason.OPENING_CAPACITY_EXHAUSTED)
+    return parsed
+
+
+def _event_order(row: object) -> tuple[str, int]:
+    if type(row) is not dict or frozenset(row) != _EVENT_WRAPPER_KEYS:
+        _fail(CL4Reason.OPENING_CAPACITY_EXHAUSTED)
+    try:
+        event = _persistence.InboxStatusEvent.from_canonical_bytes(
+            _ascii_bytes(row["canonical_json_ascii"], CL4Reason.OPENING_CAPACITY_EXHAUSTED)
+        )
+    except (_persistence.PersistenceError, CL4Error):
+        _fail(CL4Reason.OPENING_CAPACITY_EXHAUSTED)
+    return event.observation_sha256, event.event_no
+
+
+def _assemble_prospective_exports(plan: OpeningPlan) -> tuple[bytes, bytes]:
+    staged = _export_value(plan.baseline_export_bytes)
+    descriptor_row = {
+        "canonical_json_ascii": CL4_OPENING_CODEC.canonical_bytes.decode("ascii"),
+        "sha256": CL4_OPENING_CODEC.sha256,
+    }
+    if not any(
+        type(row) is dict and row.get("sha256") == CL4_OPENING_CODEC.sha256
+        for row in staged["codec_registry"]
+    ):
+        staged["codec_registry"].append(descriptor_row)
+        staged["codec_registry"].sort(key=lambda row: row["sha256"])
+    observation_row = {
+        "canonical_json_ascii": plan.observation.canonical_bytes.decode("ascii"),
+        "current_status": "OBSERVED",
+        "logical_source_sha256": plan.observation.logical_source_sha256,
+        "sha256": plan.observation.sha256,
+        "source_sha256": plan.observation.source.sha256,
+    }
+    staged["observations"].append(observation_row)
+    staged["observations"].sort(
+        key=lambda row: (row["logical_source_sha256"], row["sha256"])
+    )
+    staged["store_revision"] = str(plan.pre_store_revision + 1)
+    staged_bytes = _canonical_bytes(staged)
+
+    committed = _export_value(staged_bytes)
+    for row in committed["observations"]:
+        if row["sha256"] == plan.observation.sha256:
+            row["current_status"] = "LEDGER_LINKED"
+            break
+    event = _persistence.InboxStatusEvent(
+        observation_sha256=plan.observation.sha256,
+        event_no=1,
+        from_status="OBSERVED",
+        to_status="LEDGER_LINKED",
+        reason="LEDGER_TRANSACTION_ACCEPTED",
+        related_transaction_sha256=plan.transaction.sha256,
+    )
+    committed["inbox_status_events"].append(
+        {
+            "canonical_json_ascii": event.canonical_bytes.decode("ascii"),
+            "sha256": event.sha256,
+        }
+    )
+    committed["inbox_status_events"].sort(key=_event_order)
+    committed["transactions"].append(
+        {
+            "canonical_json_ascii": plan.transaction.canonical_bytes.decode("ascii"),
+            "economic_sha256": plan.transaction.economic_sha256,
+            "sha256": plan.transaction.sha256,
+            "source_sha256": plan.transaction.source_sha256,
+        }
+    )
+    committed["transactions"].sort(key=lambda row: row["sha256"])
+    committed["provenance_links"].append(
+        {
+            "observation_sha256": plan.observation.sha256,
+            "transaction_sha256": plan.transaction.sha256,
+        }
+    )
+    committed["provenance_links"].sort(
+        key=lambda row: (row["transaction_sha256"], row["observation_sha256"])
+    )
+    head_bytes = _canonical_bytes(
+        {
+            "domain": "v3.10-cash-ledger-head",
+            "ledger_revision": str(plan.pre_ledger_revision + 1),
+            "previous_head_sha256": plan.pre_ledger_head_sha256,
+            "transition_kind": "TRANSACTION",
+            "transition_sha256": plan.transaction.sha256,
+            "version": 1,
+        }
+    )
+    head_sha256 = _sha256(head_bytes)
+    committed["ledger_transitions"].append(
+        {
+            "head_json_ascii": head_bytes.decode("ascii"),
+            "head_sha256": head_sha256,
+        }
+    )
+    committed["ledger_head_json_ascii"] = head_bytes.decode("ascii")
+    committed["ledger_head_sha256"] = head_sha256
+    committed["ledger_revision"] = str(plan.pre_ledger_revision + 1)
+    committed["store_revision"] = str(plan.pre_store_revision + 2)
+    return staged_bytes, _canonical_bytes(committed)
+
+
+def _prospective_states(plan: OpeningPlan, key: bytes) -> _ProspectiveStates:
+    if (
+        plan.pre_store_revision
+        > _MAX_REVISION - _OPENING_STORE_REVISION_RESERVE
+        or plan.pre_ledger_revision
+        > _MAX_REVISION - _OPENING_LEDGER_REVISION_RESERVE
+    ):
+        _fail(CL4Reason.OPENING_CAPACITY_EXHAUSTED)
+    try:
+        staged_bytes, committed_bytes = _assemble_prospective_exports(plan)
+        for encoded in (staged_bytes, committed_bytes):
+            parsed = _export_value(encoded)
+            arrays = [parsed[name] for name in _EXPORT_ARRAY_NAMES]
+            if (
+                any(type(array) is not list or len(array) > _MAX_LEDGER_OBJECTS for array in arrays)
+                or sum(map(len, arrays)) > _MAX_LEDGER_OBJECTS
+                or not 1 <= len(encoded) <= _MAX_LEDGER_EXPORT_BYTES
+            ):
+                _fail(CL4Reason.OPENING_CAPACITY_EXHAUSTED)
+        staged_view = _parse_ledger_export(
+            staged_bytes,
+            target_account=plan.proof.account_scope_sha256,
+            identity_key=key,
+        )
+        committed_view = _parse_ledger_export(
+            committed_bytes,
+            target_account=plan.proof.account_scope_sha256,
+            identity_key=key,
+        )
+        if (
+            staged_view.store_revision != plan.pre_store_revision + 1
+            or staged_view.ledger_revision != plan.pre_ledger_revision
+            or staged_view.observations.get(plan.observation.sha256) is None
+            or committed_view.store_revision != plan.pre_store_revision + 2
+            or committed_view.ledger_revision != plan.pre_ledger_revision + 1
+            or committed_view.transactions.get(plan.transaction.sha256) is None
+            or committed_view.links.get(plan.transaction.sha256)
+            != plan.observation.sha256
+        ):
+            _fail(CL4Reason.OPENING_CAPACITY_EXHAUSTED)
+    except CL4Error:
+        failure = CL4Error(CL4Reason.OPENING_CAPACITY_EXHAUSTED)
+    except (_persistence.PersistenceError, _ledger.LedgerError, KeyError, TypeError, ValueError):
+        failure = CL4Error(CL4Reason.OPENING_CAPACITY_EXHAUSTED)
+    else:
+        return _ProspectiveStates(
+            staged_bytes=staged_bytes,
+            committed_bytes=committed_bytes,
+            staged_view=staged_view,
+            committed_view=committed_view,
+        )
+    raise failure from None
+
+
 def _valid_event(event: _persistence.InboxStatusEvent, status: str, number: int) -> bool:
     if event.event_no != number + 1 or event.from_status != status:
         return False
@@ -1235,7 +1462,7 @@ def _parse_ledger_export(
     value: object,
     *,
     target_account: str,
-    identity_key: bytes,
+    identity_key: bytes | None,
 ) -> _LedgerView:
     if type(value) is not bytes:
         _fail(CL4Reason.TYPE_INVALID)
@@ -1286,7 +1513,7 @@ def _parse_ledger_export(
 def _validate_export_graph(
     parsed: _Mapping[str, object],
     target_account: str,
-    identity_key: bytes,
+    identity_key: bytes | None,
     export_sha256: str,
 ) -> _LedgerView:
     codec_rows = parsed["codec_registry"]
@@ -1351,7 +1578,7 @@ def _validate_export_graph(
                 != _sha256(_canonical_bytes(_content_dict(content)))
             ):
                 _fail(CL4Reason.LEDGER_GRAPH_INVALID)
-            if content.account_scope_sha256 == target_account:
+            if content.account_scope_sha256 == target_account and identity_key is not None:
                 expected_observation, _ = _opening_graph(content, identity_key)
                 if expected_observation.canonical_bytes != observation.canonical_bytes:
                     _fail(CL4Reason.LEDGER_GRAPH_INVALID)
@@ -1657,7 +1884,7 @@ def _opening_record(
     )
     if (
         accepted_revision is None
-        or content.ledger_revision >= accepted_revision
+        or content.ledger_revision + 1 != accepted_revision
         or content.store_revision < content.ledger_revision
         or _head_at(view, content.ledger_revision) != content.ledger_head_sha256
     ):
@@ -1665,7 +1892,7 @@ def _opening_record(
     return OpeningRecord(
         accepted_ledger_revision=accepted_revision,
         account_scope_sha256=account,
-        baseline_ledger_export_sha256=content.ledger_export_sha256,
+        baseline_ledger_export_sha256=content.baseline_export_sha256,
         baseline_ledger_head_sha256=content.ledger_head_sha256,
         baseline_ledger_revision=content.ledger_revision,
         baseline_store_revision=content.store_revision,
@@ -1698,8 +1925,6 @@ def prepare_from_now_opening(
     if type(ledger_export_bytes) is not bytes:
         _fail(CL4Reason.TYPE_INVALID)
     checked_proof = _validate_proof(proof, identity_key, evaluated_at=evaluated_at)
-    if checked_proof.cash.minor_units <= 0 or checked_proof.cash.minor_units > _ledger.LEDGER_POSTING_MAX_MINOR_UNITS:
-        _fail(CL4Reason.OPENING_AMOUNT_UNSUPPORTED)
     view = _parse_ledger_export(
         ledger_export_bytes,
         target_account=checked_proof.account_scope_sha256,
@@ -1713,21 +1938,24 @@ def prepare_from_now_opening(
     ):
         _fail(CL4Reason.OPENING_CONFLICT)
     _validate_target_inbox_before(view, checked_proof.account_scope_sha256, checked_proof.as_of)
+    if checked_proof.cash.minor_units <= 0 or checked_proof.cash.minor_units > _ledger.LEDGER_POSTING_MAX_MINOR_UNITS:
+        _fail(CL4Reason.OPENING_AMOUNT_UNSUPPORTED)
     content = _OpeningContent(
         account_scope_sha256=checked_proof.account_scope_sha256,
+        baseline_export_sha256=view.export_sha256,
         broker_cash_proof_sha256=checked_proof.sha256,
+        contract_version=_CL4_CONTRACT_VERSION,
         cutoff=checked_proof.as_of,
         environment=checked_proof.environment,
         identity_key_id=checked_proof.identity_key_id,
-        ledger_export_sha256=view.export_sha256,
         ledger_head_sha256=view.ledger_head_sha256,
         ledger_revision=view.ledger_revision,
         opening_minor_units=checked_proof.cash.minor_units,
-        response_identity_sha256=checked_proof.response_identity_sha256,
+        proof_identity_sha256=checked_proof.proof_identity_sha256,
         store_revision=view.store_revision,
     )
     observation, transaction = _opening_graph(content, identity_key)
-    return OpeningPlan(
+    plan = OpeningPlan(
         proof=checked_proof,
         observation=observation,
         transaction=transaction,
@@ -1736,44 +1964,58 @@ def prepare_from_now_opening(
         pre_store_revision=view.store_revision,
         pre_ledger_revision=view.ledger_revision,
         pre_ledger_head_sha256=view.ledger_head_sha256,
-        pre_ledger_export_sha256=view.export_sha256,
+        baseline_export_sha256=view.export_sha256,
+        baseline_export_bytes=ledger_export_bytes,
     )
+    _prospective_states(plan, _require_key(identity_key))
+    return plan
 
 
-def _validate_plan(plan: object, identity_key: object) -> OpeningPlan:
-    if not isinstance(plan, OpeningPlan):
+def _validate_plan_structure(plan: object) -> OpeningPlan:
+    if type(plan) is not OpeningPlan:
         _fail(CL4Reason.TYPE_INVALID)
-    key = _require_key(identity_key)
+    if type(plan.version) is not int or plan.version != _OPENING_PLAN_VERSION:
+        _fail(CL4Reason.VERSION_UNSUPPORTED)
     try:
-        proof = _validate_proof(plan.proof, key, evaluated_at=None)
+        raw_proof = plan.proof
+        if type(raw_proof) is not BrokerCashProof:
+            _fail(CL4Reason.TYPE_INVALID)
+        if type(raw_proof.version) is not int or raw_proof.version != _BROKER_CASH_PROOF_VERSION:
+            _fail(CL4Reason.VERSION_UNSUPPORTED)
+        proof = BrokerCashProof(
+            account_scope_sha256=raw_proof.account_scope_sha256,
+            environment=raw_proof.environment,
+            as_of=raw_proof.as_of,
+            cash=raw_proof.cash,
+            response_canonical_sha256=raw_proof.response_canonical_sha256,
+            proof_identity_sha256=raw_proof.proof_identity_sha256,
+            identity_key_id=raw_proof.identity_key_id,
+            response_complete=raw_proof.response_complete,
+            version=raw_proof.version,
+        )
+        observation = _persistence.InboxObservation.from_canonical_bytes(
+            plan.observation.canonical_bytes,
+            (CL4_OPENING_CODEC,),
+        )
+        transaction = _ledger.LedgerTransaction.from_canonical_dict(
+            _persistence.parse_canonical_json(plan.transaction.canonical_bytes)
+        )
         checked = OpeningPlan(
             proof=proof,
-            observation=plan.observation,
-            transaction=plan.transaction,
+            observation=observation,
+            transaction=transaction,
             mode=plan.mode,
             generation=plan.generation,
             pre_store_revision=plan.pre_store_revision,
             pre_ledger_revision=plan.pre_ledger_revision,
             pre_ledger_head_sha256=plan.pre_ledger_head_sha256,
-            pre_ledger_export_sha256=plan.pre_ledger_export_sha256,
+            baseline_export_sha256=plan.baseline_export_sha256,
+            baseline_export_bytes=plan.baseline_export_bytes,
             version=plan.version,
         )
-        content = _OpeningContent(
-            account_scope_sha256=proof.account_scope_sha256,
-            broker_cash_proof_sha256=proof.sha256,
-            cutoff=proof.as_of,
-            environment=proof.environment,
-            identity_key_id=proof.identity_key_id,
-            ledger_export_sha256=plan.pre_ledger_export_sha256,
-            ledger_head_sha256=plan.pre_ledger_head_sha256,
-            ledger_revision=plan.pre_ledger_revision,
-            opening_minor_units=proof.cash.minor_units,
-            response_identity_sha256=proof.response_identity_sha256,
-            store_revision=plan.pre_store_revision,
-        )
-        observation, transaction = _opening_graph(content, key)
         same = (
-            observation.canonical_bytes == plan.observation.canonical_bytes
+            proof.canonical_bytes == raw_proof.canonical_bytes
+            and observation.canonical_bytes == plan.observation.canonical_bytes
             and transaction.canonical_bytes == plan.transaction.canonical_bytes
             and checked.canonical_bytes == plan.canonical_bytes
         )
@@ -1784,6 +2026,65 @@ def _validate_plan(plan: object, identity_key: object) -> OpeningPlan:
     else:
         if not same:
             _fail(CL4Reason.OPENING_CONFLICT)
+        return checked
+    raise failure from None
+
+
+def _validate_plan(plan: object, identity_key: object) -> OpeningPlan:
+    checked = _validate_plan_structure(plan)
+    try:
+        proof = _validate_proof(checked.proof, identity_key, evaluated_at=None)
+        key = _require_key(identity_key)
+        content = _OpeningContent(
+            account_scope_sha256=proof.account_scope_sha256,
+            baseline_export_sha256=checked.baseline_export_sha256,
+            broker_cash_proof_sha256=proof.sha256,
+            contract_version=_CL4_CONTRACT_VERSION,
+            cutoff=proof.as_of,
+            environment=proof.environment,
+            identity_key_id=proof.identity_key_id,
+            ledger_head_sha256=checked.pre_ledger_head_sha256,
+            ledger_revision=checked.pre_ledger_revision,
+            opening_minor_units=proof.cash.minor_units,
+            proof_identity_sha256=proof.proof_identity_sha256,
+            store_revision=checked.pre_store_revision,
+        )
+        observation, transaction = _opening_graph(content, key)
+        same = (
+            observation.canonical_bytes == checked.observation.canonical_bytes
+            and transaction.canonical_bytes == checked.transaction.canonical_bytes
+        )
+        if not same:
+            _fail(CL4Reason.OPENING_CONFLICT)
+        baseline = _parse_ledger_export(
+            checked.baseline_export_bytes,
+            target_account=proof.account_scope_sha256,
+            identity_key=key,
+        )
+        if (
+            baseline.export_sha256 != checked.baseline_export_sha256
+            or baseline.store_revision != checked.pre_store_revision
+            or baseline.ledger_revision != checked.pre_ledger_revision
+            or baseline.ledger_head_sha256 != checked.pre_ledger_head_sha256
+        ):
+            _fail(CL4Reason.OPENING_CONFLICT)
+        if _opening_record(baseline, proof.account_scope_sha256, key) is not None or any(
+            item.account_scope_sha256 == proof.account_scope_sha256
+            for item in baseline.cl4_content.values()
+        ):
+            _fail(CL4Reason.OPENING_CONFLICT)
+        _validate_target_inbox_before(
+            baseline,
+            proof.account_scope_sha256,
+            proof.as_of,
+        )
+        if proof.cash.minor_units <= 0 or proof.cash.minor_units > _ledger.LEDGER_POSTING_MAX_MINOR_UNITS:
+            _fail(CL4Reason.OPENING_AMOUNT_UNSUPPORTED)
+    except CL4Error:
+        raise
+    except Exception:  # noqa: BLE001 - forged DTO must not leak internals
+        failure = CL4Error(CL4Reason.OPENING_CONFLICT)
+    else:
         return checked
     raise failure from None
 
@@ -1799,7 +2100,7 @@ def _acceptance(view: _LedgerView, record: OpeningRecord, disposition: str) -> O
 
 
 def _export_store(store: object) -> bytes:
-    if not isinstance(store, _persistence.CashLedgerStore):
+    if type(store) is not _persistence.CashLedgerStore:
         _fail(CL4Reason.TYPE_INVALID)
     try:
         return store.export_bytes()
@@ -1834,53 +2135,59 @@ def _opening_persistence_failure(
 
 
 def _classify_accept_state(
+    export_bytes: bytes,
     view: _LedgerView,
     plan: OpeningPlan,
-    key: bytes,
+    key: bytes | None,
+    staged_bytes: bytes,
+    committed_bytes: bytes,
 ) -> tuple[str, OpeningRecord | None]:
     account = plan.proof.account_scope_sha256
-    record = _opening_record(view, account, key)
-    if record is not None:
+    if export_bytes == plan.baseline_export_bytes:
+        return "ABSENT", None
+    if export_bytes == staged_bytes:
+        return "STAGED", None
+    if export_bytes == committed_bytes:
+        if key is None:
+            return "COMMITTED", None
+        record = _opening_record(view, account, key)
         if (
-            record.broker_cash_proof_sha256 == plan.proof.sha256
+            record is not None
+            and record.broker_cash_proof_sha256 == plan.proof.sha256
             and record.observation_sha256 == plan.observation.sha256
             and record.transaction_sha256 == plan.transaction.sha256
-            and record.baseline_ledger_export_sha256 == plan.pre_ledger_export_sha256
+            and record.baseline_ledger_export_sha256 == plan.baseline_export_sha256
             and record.baseline_ledger_head_sha256 == plan.pre_ledger_head_sha256
             and record.baseline_ledger_revision == plan.pre_ledger_revision
             and record.baseline_store_revision == plan.pre_store_revision
         ):
             return "COMMITTED", record
-        _fail(CL4Reason.OPENING_CONFLICT)
+        _fail(CL4Reason.POSTCONDITION_FAILED)
     target_cl4 = [
         observation_hash
         for observation_hash, content in view.cl4_content.items()
         if content.account_scope_sha256 == account
     ]
-    if target_cl4:
-        if (
-            target_cl4 == [plan.observation.sha256]
-            and view.observations[plan.observation.sha256].canonical_bytes == plan.observation.canonical_bytes
-            and view.current_status[plan.observation.sha256] == "OBSERVED"
-            and plan.transaction.sha256 not in view.transactions
-            and _head_at(view, plan.pre_ledger_revision) == plan.pre_ledger_head_sha256
-        ):
-            return "STAGED", None
-        _fail(CL4Reason.OPENING_CONFLICT)
-    if any(
-        transaction.source.account_scope_sha256 == account
-        and transaction.classification is _ledger.LedgerClassification.OPENING_BALANCE
+    target_openings = [
+        transaction
         for transaction in view.transactions.values()
-    ):
+        if transaction.source.account_scope_sha256 == account
+        and transaction.classification is _ledger.LedgerClassification.OPENING_BALANCE
+    ]
+    same_observation = (
+        target_cl4 == [plan.observation.sha256]
+        and view.observations[plan.observation.sha256].canonical_bytes
+        == plan.observation.canonical_bytes
+    )
+    same_transaction = (
+        len(target_openings) == 1
+        and target_openings[0].canonical_bytes == plan.transaction.canonical_bytes
+    )
+    if target_cl4 or target_openings:
+        if same_observation and (not target_openings or same_transaction):
+            _fail(CL4Reason.BASELINE_STALE)
         _fail(CL4Reason.OPENING_CONFLICT)
-    if (
-        view.export_sha256 == plan.pre_ledger_export_sha256
-        and view.store_revision == plan.pre_store_revision
-        and view.ledger_revision == plan.pre_ledger_revision
-        and view.ledger_head_sha256 == plan.pre_ledger_head_sha256
-    ):
-        return "ABSENT", None
-    _fail(CL4Reason.OPENING_PLAN_STALE)
+    _fail(CL4Reason.BASELINE_STALE)
 
 
 def accept_from_now_opening(
@@ -1891,7 +2198,7 @@ def accept_from_now_opening(
     evaluated_at: str,
     identity_key: bytes,
 ) -> OpeningAcceptance:
-    if type(confirmation) is not str or not isinstance(plan, OpeningPlan):
+    if type(confirmation) is not str:
         _fail(CL4Reason.CONFIRMATION_INVALID)
     try:
         expected_confirmation = f"ACCEPT V3.10 CL4 FROM_NOW OPENING {plan.sha256}"
@@ -1899,19 +2206,77 @@ def accept_from_now_opening(
         expected_confirmation = ""
     if confirmation != expected_confirmation:
         _fail(CL4Reason.CONFIRMATION_INVALID)
-    checked_plan = _validate_plan(plan, identity_key)
-    _timestamp_ns(evaluated_at)
-    if not isinstance(store, _persistence.CashLedgerStore):
+    if type(plan) is not OpeningPlan:
         _fail(CL4Reason.TYPE_INVALID)
-    key = _require_key(identity_key)
+    structural_plan = _validate_plan_structure(plan)
+    _timestamp_ns(evaluated_at)
+    if type(store) is not _persistence.CashLedgerStore:
+        _fail(CL4Reason.TYPE_INVALID)
     before_bytes = _export_store(store)
-    before = _parse_ledger_export(before_bytes, target_account=checked_plan.proof.account_scope_sha256, identity_key=key)
-    state, record = _classify_accept_state(before, checked_plan, key)
+    before = _parse_ledger_export(
+        before_bytes,
+        target_account=structural_plan.proof.account_scope_sha256,
+        identity_key=None,
+    )
+    if before_bytes == structural_plan.baseline_export_bytes:
+        structural_state = "ABSENT"
+        staged_bytes = b""
+        committed_bytes = b""
+    else:
+        try:
+            staged_bytes, committed_bytes = _assemble_prospective_exports(
+                structural_plan
+            )
+        except (
+            CL4Error,
+            _persistence.PersistenceError,
+            _ledger.LedgerError,
+            AttributeError,
+            KeyError,
+            TypeError,
+            UnicodeError,
+            ValueError,
+        ):
+            assembly_failed = True
+        else:
+            assembly_failed = False
+        if assembly_failed:
+            _fail(CL4Reason.BASELINE_STALE)
+        structural_state, _ = _classify_accept_state(
+            before_bytes,
+            before,
+            structural_plan,
+            None,
+            staged_bytes,
+            committed_bytes,
+        )
+    if structural_state == "ABSENT":
+        _require_fresh(structural_plan.proof.as_of, evaluated_at)
+    key = _require_key(identity_key)
+    checked_plan = _validate_plan(structural_plan, key)
+    before = _parse_ledger_export(
+        before_bytes,
+        target_account=checked_plan.proof.account_scope_sha256,
+        identity_key=key,
+    )
+    if structural_state == "ABSENT":
+        state, record = "ABSENT", None
+    else:
+        state, record = _classify_accept_state(
+            before_bytes,
+            before,
+            checked_plan,
+            key,
+            staged_bytes,
+            committed_bytes,
+        )
+    if state != structural_state:
+        _fail(CL4Reason.POSTCONDITION_FAILED)
+    prospective = _prospective_states(checked_plan, key)
     if state == "COMMITTED":
         assert record is not None
         return _acceptance(before, record, "OPENING_ALREADY_PRESENT")
     if state == "ABSENT":
-        _require_fresh(checked_plan.proof.as_of, evaluated_at)
         try:
             store.append_observation(
                 checked_plan.observation,
@@ -1922,12 +2287,20 @@ def accept_from_now_opening(
         except Exception:  # noqa: BLE001 - closed persistence boundary
             failure = CL4Error(CL4Reason.PERSISTENCE_FAILURE)
         else:
+            after_observation_bytes = _export_store(store)
             after_observation = _parse_ledger_export(
-                _export_store(store),
+                after_observation_bytes,
                 target_account=checked_plan.proof.account_scope_sha256,
                 identity_key=key,
             )
-            state, record = _classify_accept_state(after_observation, checked_plan, key)
+            state, record = _classify_accept_state(
+                after_observation_bytes,
+                after_observation,
+                checked_plan,
+                key,
+                prospective.staged_bytes,
+                prospective.committed_bytes,
+            )
             if state == "COMMITTED":
                 assert record is not None
                 return _acceptance(after_observation, record, "OPENING_ALREADY_PRESENT")
@@ -1948,12 +2321,20 @@ def accept_from_now_opening(
     except Exception:  # noqa: BLE001 - closed persistence boundary
         failure = CL4Error(CL4Reason.PERSISTENCE_FAILURE)
     else:
+        after_bytes = _export_store(store)
         after = _parse_ledger_export(
-            _export_store(store),
+            after_bytes,
             target_account=checked_plan.proof.account_scope_sha256,
             identity_key=key,
         )
-        state, record = _classify_accept_state(after, checked_plan, key)
+        state, record = _classify_accept_state(
+            after_bytes,
+            after,
+            checked_plan,
+            key,
+            prospective.staged_bytes,
+            prospective.committed_bytes,
+        )
         if state != "COMMITTED" or record is None:
             _fail(CL4Reason.POSTCONDITION_FAILED)
         disposition = (
@@ -1988,7 +2369,7 @@ def project_shadow_cash(
     if type(ledger_export_bytes) is not bytes:
         _fail(CL4Reason.TYPE_INVALID)
     account = _require_hash(account_scope_sha256, CL4Reason.ACCOUNT_SCOPE_INVALID)
-    if not isinstance(environment, _BrokerEnvironment) or environment is not _BrokerEnvironment.SANDBOX:
+    if type(environment) is not _BrokerEnvironment or environment is not _BrokerEnvironment.SANDBOX:
         _fail(CL4Reason.ENVIRONMENT_UNSUPPORTED)
     _timestamp_ns(as_of)
     key = _require_key(identity_key)
@@ -2060,7 +2441,7 @@ def reconcile_shadow_cash(
     evaluated_at: str,
     identity_key: bytes,
 ) -> CashReconciliation:
-    if type(ledger_export_bytes) is not bytes or not isinstance(proof, BrokerCashProof):
+    if type(ledger_export_bytes) is not bytes or type(proof) is not BrokerCashProof:
         _fail(CL4Reason.TYPE_INVALID)
     checked_proof = _validate_proof(proof, identity_key, evaluated_at=evaluated_at)
     projection = project_shadow_cash(
@@ -2080,7 +2461,7 @@ def reconcile_shadow_cash(
         _fail(CL4Reason.OPENING_MISSING)
     opening_content = view.cl4_content[record.observation_sha256]
     if opening_content.identity_key_id != checked_proof.identity_key_id:
-        _fail(CL4Reason.RESPONSE_IDENTITY_INVALID)
+        _fail(CL4Reason.PROOF_IDENTITY_INVALID)
     if (
         projection.account_scope_sha256 != checked_proof.account_scope_sha256
         or projection.environment is not checked_proof.environment
@@ -2115,12 +2496,54 @@ def reconcile_shadow_cash(
 
 
 def _validate_reconciliation(value: object) -> CashReconciliation:
-    if not isinstance(value, CashReconciliation):
+    if type(value) is not CashReconciliation:
         _fail(CL4Reason.TYPE_INVALID)
+    if type(value.version) is not int or value.version != _CASH_RECONCILIATION_VERSION:
+        _fail(CL4Reason.VERSION_UNSUPPORTED)
     try:
+        raw_proof = value.proof
+        raw_projection = value.projection
+        if (
+            type(raw_proof) is not BrokerCashProof
+            or type(raw_projection) is not LedgerCashProjection
+        ):
+            _fail(CL4Reason.TYPE_INVALID)
+        if (
+            type(raw_proof.version) is not int
+            or raw_proof.version != _BROKER_CASH_PROOF_VERSION
+            or type(raw_projection.version) is not int
+            or raw_projection.version != _LEDGER_CASH_PROJECTION_VERSION
+        ):
+            _fail(CL4Reason.VERSION_UNSUPPORTED)
+        proof = BrokerCashProof(
+            account_scope_sha256=raw_proof.account_scope_sha256,
+            environment=raw_proof.environment,
+            as_of=raw_proof.as_of,
+            cash=raw_proof.cash,
+            response_canonical_sha256=raw_proof.response_canonical_sha256,
+            proof_identity_sha256=raw_proof.proof_identity_sha256,
+            identity_key_id=raw_proof.identity_key_id,
+            response_complete=raw_proof.response_complete,
+            version=raw_proof.version,
+        )
+        projection = LedgerCashProjection(
+            account_scope_sha256=raw_projection.account_scope_sha256,
+            environment=raw_projection.environment,
+            currency=raw_projection.currency,
+            as_of=raw_projection.as_of,
+            opening_record_sha256=raw_projection.opening_record_sha256,
+            ledger_export_sha256=raw_projection.ledger_export_sha256,
+            ledger_revision=raw_projection.ledger_revision,
+            ledger_head_sha256=raw_projection.ledger_head_sha256,
+            expected_cash=raw_projection.expected_cash,
+            complete=raw_projection.complete,
+            incompleteness_kinds=raw_projection.incompleteness_kinds,
+            unresolved_observation_sha256=raw_projection.unresolved_observation_sha256,
+            version=raw_projection.version,
+        )
         checked = CashReconciliation(
-            proof=value.proof,
-            projection=value.projection,
+            proof=proof,
+            projection=projection,
             evaluated_at=value.evaluated_at,
             broker_cash=value.broker_cash,
             expected_cash=value.expected_cash,
@@ -2129,7 +2552,11 @@ def _validate_reconciliation(value: object) -> CashReconciliation:
             discrepancy_kind=value.discrepancy_kind,
             version=value.version,
         )
-        same = checked.canonical_bytes == value.canonical_bytes
+        same = (
+            proof.canonical_bytes == raw_proof.canonical_bytes
+            and projection.canonical_bytes == raw_projection.canonical_bytes
+            and checked.canonical_bytes == value.canonical_bytes
+        )
         correlated = (
             checked.broker_cash.canonical_bytes == checked.proof.cash.canonical_bytes
             and checked.expected_cash.canonical_bytes
@@ -2171,7 +2598,7 @@ def build_adoption_candidate(
     ledger_export_bytes: bytes,
     identity_key: bytes,
 ) -> AdoptionCandidate:
-    if not isinstance(reconciliation, CashReconciliation) or type(ledger_export_bytes) is not bytes:
+    if type(reconciliation) is not CashReconciliation or type(ledger_export_bytes) is not bytes:
         _fail(CL4Reason.TYPE_INVALID)
     checked = _validate_reconciliation(reconciliation)
     recomputed = reconcile_shadow_cash(

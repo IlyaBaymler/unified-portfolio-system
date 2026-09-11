@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from trading_robot import broker_read_adapters as broker
 from trading_robot import cash_ledger_domain as ledger
 from trading_robot import cash_ledger_opening_reconciliation as cl4
@@ -28,7 +27,7 @@ FIXTURE_PATH = (
     / "v3_10_cash_ledger_opening_reconciliation_vectors.json"
 )
 CL2_FIXTURE_PATH = CURRENT / "tests" / "fixtures" / "v3_10_cash_ledger_persistence_vectors.json"
-ACCEPTED_CONTRACT_HEAD = "4dab154fb6ed096aa23dc3f0fa0987859b598559"
+ACCEPTED_CONTRACT_HEAD = "03c73362691a4efe325326de214661e5dd93d163"
 CL3_PREDECESSOR = "4340c5d517dcece4f7db20b7cfc21e602c3efddc"
 ACCOUNT = "1" * 64
 OTHER_ACCOUNT = "2" * 64
@@ -365,22 +364,64 @@ def test_v310_cl4_03_money_codec_exactness_and_substitutes() -> None:
     _reason(cl4.CL4Reason.RESPONSE_SCHEMA_INVALID, _proof, response={"money": RESPONSE["totalAmountCurrencies"]})
 
 
-def test_v310_cl4_04_known_answer_hmac_forgery_and_privacy() -> None:
+def test_v310_cl4_04_known_answer_hmac_forgery_and_privacy(tmp_path: Path) -> None:
     proof = _proof()
     assert proof.response_canonical_sha256 == "204dba39888167e2384d8188817a5ad4a01f132a405a9b7b06f75f76aceed3ce"
-    assert proof.response_identity_sha256 == "78fbeb0620bd7fd086fb4c39e3a205d16ecd85e366c3bd77f28cbe9f45ac2190"
-    assert proof.sha256 == "8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d"
-    assert _proof(key=bytes(reversed(range(32)))).response_identity_sha256 != proof.response_identity_sha256
-    assert _proof(key_id="CL4_OTHER_KEY").response_identity_sha256 != proof.response_identity_sha256
-    forged = dataclasses.replace(proof, response_identity_sha256="0" * 64)
-    error = _reason(
-        cl4.CL4Reason.RESPONSE_IDENTITY_INVALID,
-        cl4.prepare_from_now_opening,
-        b"{}",
-        forged,
-        evaluated_at=EVALUATED_AT,
-        identity_key=KEY,
-    )
+    assert proof.proof_identity_sha256 == "d21e770a4268fafb4ec39b0cc9d21f3c2155801829cdd5e106f5588dc4e4efb1"
+    assert proof.sha256 == "588abe0b9d3979c300d8f681adccdf2776bc20c8dd4997e66ff8edaaa1e8010f"
+    assert _proof(key=bytes(reversed(range(32)))).proof_identity_sha256 != proof.proof_identity_sha256
+    assert _proof(key_id="CL4_OTHER_KEY").proof_identity_sha256 != proof.proof_identity_sha256
+    with _new_store(tmp_path) as store:
+        baseline = store.export_bytes()
+        mutations = (
+            ("cash", ledger.Money(currency="RUB", minor_units=proof.cash.minor_units + 1)),
+            ("cash", ledger.Money(currency="RUB", minor_units=proof.cash.minor_units - 1)),
+            ("as_of", "2026-01-02T03:04:05.123456788Z"),
+            ("response_canonical_sha256", "0" * 64),
+            ("account_scope_sha256", OTHER_ACCOUNT),
+            ("identity_key_id", "CL4_OTHER_KEY"),
+            ("proof_identity_sha256", "0" * 64),
+        )
+        for field, value in mutations:
+            forged = dataclasses.replace(proof, **{field: value})
+            _reason(
+                cl4.CL4Reason.PROOF_IDENTITY_INVALID,
+                cl4.prepare_from_now_opening,
+                baseline,
+                forged,
+                evaluated_at=EVALUATED_AT,
+                identity_key=KEY,
+            )
+        wrong_environment = copy.copy(proof)
+        object.__setattr__(wrong_environment, "environment", broker.BrokerEnvironment.PRODUCTION)
+        _reason(
+            cl4.CL4Reason.ENVIRONMENT_UNSUPPORTED,
+            cl4.prepare_from_now_opening,
+            baseline,
+            wrong_environment,
+            evaluated_at=EVALUATED_AT,
+            identity_key=KEY,
+        )
+        v1 = copy.copy(proof)
+        object.__setattr__(v1, "version", 1)
+        _reason(
+            cl4.CL4Reason.VERSION_UNSUPPORTED,
+            cl4.prepare_from_now_opening,
+            baseline,
+            v1,
+            evaluated_at=EVALUATED_AT,
+            identity_key=b"bad",
+        )
+        stale_bad_hmac = dataclasses.replace(proof, proof_identity_sha256="0" * 64)
+        _reason(
+            cl4.CL4Reason.PROOF_STALE,
+            cl4.prepare_from_now_opening,
+            baseline,
+            stale_bad_hmac,
+            evaluated_at="2026-01-02T03:06:05.123456790Z",
+            identity_key=KEY,
+        )
+    error = cl4.CL4Error(cl4.CL4Reason.PROOF_IDENTITY_INVALID)
     private = KEY.hex()
     assert private not in repr(proof) and private not in repr(error) and private not in str(error.evidence)
 
@@ -400,6 +441,100 @@ def test_v310_cl4_05_timestamp_freshness_boundaries() -> None:
     _reason(cl4.CL4Reason.TIMESTAMP_INVALID, _proof, as_of="2026-02-30T00:00:00.000000000Z")
     _reason(cl4.CL4Reason.TIMESTAMP_INVALID, _proof, as_of="2026-01-02T03:04:05.123Z")
     _reason(cl4.CL4Reason.PROOF_INCOMPLETE, cl4.build_broker_cash_proof, RESPONSE, account_scope_sha256=ACCOUNT, environment=broker.BrokerEnvironment.SANDBOX, as_of=AS_OF, evaluated_at=EVALUATED_AT, response_complete=False, identity_key=KEY, identity_key_id=KEY_ID)
+
+
+def test_v310_cl4_rs1_all_public_bounds_exact_max_and_max_plus_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limits = {
+        "_MAX_RESPONSE_DEPTH": cl4._MAX_RESPONSE_DEPTH,
+        "_MAX_RESPONSE_NODES": cl4._MAX_RESPONSE_NODES,
+        "_MAX_MAPPING_KEYS": cl4._MAX_MAPPING_KEYS,
+        "_MAX_KEY_SCALARS": cl4._MAX_KEY_SCALARS,
+        "_MAX_STRING_SCALARS": cl4._MAX_STRING_SCALARS,
+        "_MAX_RESPONSE_CANONICAL_BYTES": cl4._MAX_RESPONSE_CANONICAL_BYTES,
+        "_MAX_BASELINE_WITNESS_BYTES": cl4._MAX_BASELINE_WITNESS_BYTES,
+        "_MAX_LEDGER_EXPORT_BYTES": cl4._MAX_LEDGER_EXPORT_BYTES,
+        "_MAX_LEDGER_OBJECTS": cl4._MAX_LEDGER_OBJECTS,
+    }
+
+    for name, exact_max in (
+        ("_MAX_RESPONSE_DEPTH", 3),
+        ("_MAX_RESPONSE_NODES", 5),
+        ("_MAX_MAPPING_KEYS", 3),
+        ("_MAX_KEY_SCALARS", len("totalAmountCurrencies")),
+        ("_MAX_STRING_SCALARS", 3),
+        ("_MAX_RESPONSE_CANONICAL_BYTES", len(_canonical(RESPONSE))),
+    ):
+        monkeypatch.setattr(cl4, name, exact_max)
+        _proof()
+        monkeypatch.setattr(cl4, name, exact_max - 1)
+        _reason(cl4.CL4Reason.RESPONSE_BOUNDS_EXCEEDED, _proof)
+        monkeypatch.setattr(cl4, name, limits[name])
+
+    with _new_store(tmp_path) as store:
+        baseline = store.export_bytes()
+        monkeypatch.setattr(cl4, "_MAX_BASELINE_WITNESS_BYTES", len(baseline))
+        plan = _plan(store)
+        monkeypatch.setattr(cl4, "_MAX_BASELINE_WITNESS_BYTES", len(baseline) - 1)
+        _reason(
+            cl4.CL4Reason.LEDGER_EXPORT_INVALID,
+            cl4.prepare_from_now_opening,
+            baseline,
+            plan.proof,
+            evaluated_at=EVALUATED_AT,
+            identity_key=KEY,
+        )
+        monkeypatch.setattr(
+            cl4,
+            "_MAX_BASELINE_WITNESS_BYTES",
+            limits["_MAX_BASELINE_WITNESS_BYTES"],
+        )
+        _accept(store, plan)
+        exported = store.export_bytes()
+        document = json.loads(exported)
+        aggregate_objects = sum(
+            len(document[name])
+            for name in (
+                "codec_registry",
+                "observations",
+                "inbox_status_events",
+                "transactions",
+                "provenance_links",
+                "correction_bundles",
+                "ledger_transitions",
+            )
+        )
+        projection_arguments = {
+            "account_scope_sha256": ACCOUNT,
+            "environment": broker.BrokerEnvironment.SANDBOX,
+            "as_of": AS_OF,
+            "identity_key": KEY,
+        }
+        monkeypatch.setattr(cl4, "_MAX_LEDGER_EXPORT_BYTES", len(exported))
+        cl4.project_shadow_cash(exported, **projection_arguments)
+        monkeypatch.setattr(cl4, "_MAX_LEDGER_EXPORT_BYTES", len(exported) - 1)
+        _reason(
+            cl4.CL4Reason.LEDGER_EXPORT_INVALID,
+            cl4.project_shadow_cash,
+            exported,
+            **projection_arguments,
+        )
+        monkeypatch.setattr(
+            cl4,
+            "_MAX_LEDGER_EXPORT_BYTES",
+            limits["_MAX_LEDGER_EXPORT_BYTES"],
+        )
+        monkeypatch.setattr(cl4, "_MAX_LEDGER_OBJECTS", aggregate_objects)
+        cl4.project_shadow_cash(exported, **projection_arguments)
+        monkeypatch.setattr(cl4, "_MAX_LEDGER_OBJECTS", aggregate_objects - 1)
+        _reason(
+            cl4.CL4Reason.LEDGER_EXPORT_INVALID,
+            cl4.project_shadow_cash,
+            exported,
+            **projection_arguments,
+        )
 
 
 def test_v310_cl4_06_export_validation_schema_hash_head_and_order(tmp_path: Path, cl2_vectors: dict[str, dict[str, object]]) -> None:
@@ -444,21 +579,22 @@ def test_v310_cl4_06_export_validation_schema_hash_head_and_order(tmp_path: Path
 
 def test_v310_cl4_07_deterministic_plan_codec_content_and_postings(tmp_path: Path) -> None:
     with _new_store(tmp_path) as store:
+        baseline = store.export_bytes()
         plan = _plan(store)
         same = _plan(store)
         assert same.canonical_bytes == plan.canonical_bytes
-        assert cl4.CL4_OPENING_CODEC.schema_sha256 == "917b0b3a98748c2279ed9efb1007fddec6375afd3da7003143690544b7336d78"
-        assert cl4.CL4_OPENING_CODEC.sha256 == "159ebf8e748b104bf691a0da2cda4d6a94866417b1c0330124f406f35d17e6c2"
-        assert plan.observation.source.source_scope_sha256 == "d2b0be487681ab01e541fd8e594db29350da7401450efef7870a8217a28b9584"
-        assert plan.observation.source.source_content_sha256 == "91ba372c45fe11317a39a1a474f3a9f4490d9fd664d2fc4add8cb0a648ceaf91"
-        assert plan.observation.provenance_sha256 == "cb2313c95fb36f6beae746b5b4a449f0daa41b0b70e1a5538039ba442bf71507"
-        assert plan.observation.sha256 == "d9467aa68811d79288aa44040df798770b57ae7080bd823b50469cf77ab616d5"
-        assert plan.transaction.sha256 == "4f824590773db04fe95f91852182b70ae4fb0dbc92bb6d397306963d277a1a3a"
-        assert plan.sha256 == "d5b351c9e7132ff60fd0d20e452996932a6df992bc4ecff73772e7e1c4f65df2"
+        assert cl4.CL4_OPENING_CODEC.schema_sha256 == "1f15c6486dd348bdcf8f2b725111b01e583404efe5717ab5df0b7968d87bbfe3"
+        assert cl4.CL4_OPENING_CODEC.sha256 == "d80e3ccde02d469f5bd99d9884cd36524f1d11069d2ce8bab08e9c0b65b3659d"
+        assert plan.observation.source.source_scope_sha256 == "c6c936312caa64f076007b86d13941067ccee1f9e2a2cee06b3db5d272818410"
+        assert plan.observation.source.source_content_sha256 == "9673dea00bc76b4865ceff9424e63a097a0419f2afd29e4475b99e19e4471f3e"
+        assert plan.observation.provenance_sha256 == "9c212565e79474e62260d8da2276339c4509652cfff31d2614cf376beab0e6f7"
+        assert plan.observation.sha256 == "a539c06c4ce0d2c0c1e3c3e29e92b0d322c0b253ed9e0c83d3fa18d4ea955ec3"
+        assert plan.transaction.sha256 == "7c49d302b3a0cc20e0114ba56529f94dae4fff61501b9f7ce45bb435e1058ee5"
+        assert plan.sha256 == "d0312594d9ca205bc2a1876d4e865e6dc3b020c22992bf220724d4c4b74d6793"
         assert plan.transaction.classification is ledger.LedgerClassification.OPENING_BALANCE
         assert [posting.account for posting in plan.transaction.postings] == [ledger.LedgerAccount.ASSET_BROKER_CASH, ledger.LedgerAccount.EQUITY_OPENING_BALANCE]
         assert [posting.money.minor_units for posting in plan.transaction.postings] == [123_500_000_000, -123_500_000_000]
-    _reason(cl4.CL4Reason.OPENING_AMOUNT_UNSUPPORTED, cl4.prepare_from_now_opening, persistence.canonical_json_bytes({}), _proof(response={"totalAmountCurrencies": {"currency": "RUB", "units": "0", "nano": 0}}), evaluated_at=EVALUATED_AT, identity_key=KEY)
+    _reason(cl4.CL4Reason.OPENING_AMOUNT_UNSUPPORTED, cl4.prepare_from_now_opening, baseline, _proof(response={"totalAmountCurrencies": {"currency": "RUB", "units": "0", "nano": 0}}), evaluated_at=EVALUATED_AT, identity_key=KEY)
 
 
 def test_v310_cl4_08_wrong_confirmation_and_stale_plan_are_zero_write(tmp_path: Path, cl2_vectors: dict[str, dict[str, object]]) -> None:
@@ -475,8 +611,142 @@ def test_v310_cl4_08_wrong_confirmation_and_stale_plan_are_zero_write(tmp_path: 
         snapshot = store.snapshot()
         store.append_observation(unrelated, expected_store_revision=snapshot.store_revision)
         externally_changed = store.export_bytes()
-        _reason(cl4.CL4Reason.OPENING_PLAN_STALE, _accept, store, plan)
+        _reason(cl4.CL4Reason.BASELINE_STALE, _accept, store, plan)
         assert store.export_bytes() == externally_changed
+
+
+def test_v310_cl4_rs1_acceptance_literal_first_failure_order(
+    tmp_path: Path,
+    cl2_vectors: dict[str, dict[str, object]],
+) -> None:
+    descriptor = _descriptor(cl2_vectors)
+    wrong_key = bytes(reversed(range(32)))
+    with _new_store(tmp_path, descriptors=(descriptor,)) as store:
+        plan = _plan(store)
+        confirmation = f"ACCEPT V3.10 CL4 FROM_NOW OPENING {plan.sha256}"
+        _reason(
+            cl4.CL4Reason.TIMESTAMP_INVALID,
+            cl4.accept_from_now_opening,
+            store,
+            plan,
+            confirmation=confirmation,
+            evaluated_at="2026-01-02T03:04:06Z",
+            identity_key=wrong_key,
+        )
+
+        stale_bad_hmac = dataclasses.replace(
+            plan.proof,
+            proof_identity_sha256="0" * 64,
+        )
+        stale_plan = dataclasses.replace(plan, proof=stale_bad_hmac)
+        _reason(
+            cl4.CL4Reason.PROOF_STALE,
+            cl4.accept_from_now_opening,
+            store,
+            stale_plan,
+            confirmation=f"ACCEPT V3.10 CL4 FROM_NOW OPENING {stale_plan.sha256}",
+            evaluated_at="2026-01-02T03:06:05.123456790Z",
+            identity_key=wrong_key,
+        )
+
+        v1_plan = copy.copy(plan)
+        object.__setattr__(v1_plan, "version", 1)
+        _reason(
+            cl4.CL4Reason.VERSION_UNSUPPORTED,
+            cl4.accept_from_now_opening,
+            store,
+            v1_plan,
+            confirmation=f"ACCEPT V3.10 CL4 FROM_NOW OPENING {v1_plan.sha256}",
+            evaluated_at=EVALUATED_AT,
+            identity_key=b"bad",
+        )
+
+        malformed_witness = copy.copy(plan)
+        object.__setattr__(malformed_witness, "baseline_export_bytes", b"{}")
+        object.__setattr__(
+            malformed_witness,
+            "baseline_export_sha256",
+            hashlib.sha256(b"{}").hexdigest(),
+        )
+        _reason(
+            cl4.CL4Reason.BASELINE_STALE,
+            cl4.accept_from_now_opening,
+            store,
+            malformed_witness,
+            confirmation=(
+                "ACCEPT V3.10 CL4 FROM_NOW OPENING "
+                f"{malformed_witness.sha256}"
+            ),
+            evaluated_at=EVALUATED_AT,
+            identity_key=wrong_key,
+        )
+
+        unrelated = _custom_observation(descriptor, label="FOREIGN", account=OTHER_ACCOUNT)
+        store.append_observation(
+            unrelated,
+            expected_store_revision=store.snapshot().store_revision,
+        )
+        foreign = store.export_bytes()
+        _reason(
+            cl4.CL4Reason.BASELINE_STALE,
+            cl4.accept_from_now_opening,
+            store,
+            plan,
+            confirmation=confirmation,
+            evaluated_at=EVALUATED_AT,
+            identity_key=wrong_key,
+        )
+        assert store.export_bytes() == foreign
+
+
+def test_v310_cl4_rs1_exact_baseline_witness_and_transfer_fail_closed(
+    tmp_path: Path,
+    cl2_vectors: dict[str, dict[str, object]],
+) -> None:
+    descriptor = _descriptor(cl2_vectors)
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    lower_root = tmp_path / "lower"
+    first_root.mkdir()
+    second_root.mkdir()
+    lower_root.mkdir()
+    with _new_store(first_root, descriptors=(descriptor,)) as first:
+        first_observation = _custom_observation(
+            descriptor,
+            label="BASELINE_FIRST",
+            account=OTHER_ACCOUNT,
+        )
+        first.append_observation(first_observation, expected_store_revision=0)
+        plan = _plan(first)
+        assert plan.baseline_export_bytes == first.export_bytes()
+        assert plan.baseline_export_sha256 == hashlib.sha256(plan.baseline_export_bytes).hexdigest()
+        assert plan.baseline_export_bytes.decode("ascii") not in repr(plan)
+        forged_witness = copy.copy(plan)
+        object.__setattr__(forged_witness, "baseline_export_bytes", b"{}")
+        assert forged_witness != plan
+        _reason(
+            cl4.CL4Reason.LEDGER_EXPORT_INVALID,
+            _accept,
+            first,
+            forged_witness,
+        )
+    with _new_store(second_root, descriptors=(descriptor,)) as second:
+        second_observation = _custom_observation(
+            descriptor,
+            label="BASELINE_SECOND",
+            account=OTHER_ACCOUNT,
+        )
+        second.append_observation(second_observation, expected_store_revision=0)
+        assert second.snapshot().store_revision == plan.pre_store_revision
+        assert second.snapshot().ledger_revision == plan.pre_ledger_revision
+        assert second.snapshot().ledger_head_sha256 == plan.pre_ledger_head_sha256
+        before = second.export_bytes()
+        _reason(cl4.CL4Reason.BASELINE_STALE, _accept, second, plan)
+        assert second.export_bytes() == before
+    with _new_store(lower_root, descriptors=(descriptor,)) as lower:
+        before = lower.export_bytes()
+        _reason(cl4.CL4Reason.BASELINE_STALE, _accept, lower, plan)
+        assert lower.export_bytes() == before
 
 
 class _OnceFault:
@@ -497,13 +767,13 @@ def test_v310_cl4_09_fault_resume_and_lost_success_replay(tmp_path: Path, fault_
         plan = _plan(store)
         _reason(cl4.CL4Reason.PERSISTENCE_FAILURE, _accept, store, plan)
         accepted = _accept(store, plan, evaluated_at="2026-01-02T04:04:06.123456789Z")
-        assert accepted.record.sha256 == "9544462db024ed8d3a0eae9da5b0b037467565fb360925421821f8120e855cc1"
+        assert accepted.record.sha256 == "71109fceb92f5f3789e8e323e000fe1226266cb6733bf6072d6d33375a7747ce"
         again = _accept(store, plan, evaluated_at="2026-01-03T00:00:00.000000000Z")
         assert again.disposition == "OPENING_ALREADY_PRESENT"
         assert store.snapshot().ledger_revision == 1
 
 
-def test_v310_cl4_09_staged_recovery_allows_unrelated_append_and_expired_proof(
+def test_v310_cl4_09_staged_recovery_rejects_unrelated_append_fail_closed(
     tmp_path: Path,
     cl2_vectors: dict[str, dict[str, object]],
 ) -> None:
@@ -513,14 +783,140 @@ def test_v310_cl4_09_staged_recovery_allows_unrelated_append_and_expired_proof(
         store.append_observation(plan.observation, expected_store_revision=0)
         unrelated = _custom_observation(descriptor, label="STAGED_OTHER", account=OTHER_ACCOUNT)
         store.append_observation(unrelated, expected_store_revision=1)
-        accepted = _accept(
+        before = store.export_bytes()
+        _reason(
+            cl4.CL4Reason.BASELINE_STALE,
+            _accept,
             store,
             plan,
             evaluated_at="2026-01-03T00:00:00.000000000Z",
         )
-        assert accepted.disposition == "OPENING_APPENDED"
-        assert accepted.record.baseline_store_revision == 0
-        assert accepted.ledger_revision == 1
+        assert store.export_bytes() == before
+        assert store.snapshot().ledger_revision == 0
+
+
+def test_v310_cl4_rs1_prospective_capacity_exact_edges_and_zero_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cl2_vectors: dict[str, dict[str, object]],
+) -> None:
+    descriptor = _descriptor(cl2_vectors)
+    with _new_store(tmp_path, descriptors=(descriptor,)) as store:
+        baseline = store.export_bytes()
+        proof = _proof()
+        plan = _plan(store, proof)
+        prospective = cl4._prospective_states(plan, KEY)
+        staged = json.loads(prospective.staged_bytes)
+        committed = json.loads(prospective.committed_bytes)
+        array_names = (
+            "codec_registry",
+            "observations",
+            "inbox_status_events",
+            "transactions",
+            "provenance_links",
+            "correction_bundles",
+            "ledger_transitions",
+        )
+        exact_objects = max(
+            sum(len(document[name]) for name in array_names)
+            for document in (staged, committed)
+        )
+        exact_bytes = max(len(prospective.staged_bytes), len(prospective.committed_bytes))
+
+        monkeypatch.setattr(cl4, "_MAX_REVISION", 2)
+        cl4.prepare_from_now_opening(
+            baseline,
+            proof,
+            evaluated_at=EVALUATED_AT,
+            identity_key=KEY,
+        )
+        monkeypatch.setattr(cl4, "_MAX_REVISION", 1)
+        _reason(
+            cl4.CL4Reason.OPENING_CAPACITY_EXHAUSTED,
+            cl4.prepare_from_now_opening,
+            baseline,
+            proof,
+            evaluated_at=EVALUATED_AT,
+            identity_key=KEY,
+        )
+        assert store.export_bytes() == baseline
+
+        monkeypatch.setattr(cl4, "_MAX_REVISION", persistence.MAX_REVISION)
+        monkeypatch.setattr(cl4, "_MAX_LEDGER_OBJECTS", exact_objects)
+        cl4.prepare_from_now_opening(
+            baseline,
+            proof,
+            evaluated_at=EVALUATED_AT,
+            identity_key=KEY,
+        )
+        monkeypatch.setattr(cl4, "_MAX_LEDGER_OBJECTS", exact_objects - 1)
+        _reason(
+            cl4.CL4Reason.OPENING_CAPACITY_EXHAUSTED,
+            cl4.prepare_from_now_opening,
+            baseline,
+            proof,
+            evaluated_at=EVALUATED_AT,
+            identity_key=KEY,
+        )
+        assert store.export_bytes() == baseline
+
+        monkeypatch.setattr(cl4, "_MAX_LEDGER_OBJECTS", 100_000)
+        monkeypatch.setattr(cl4, "_MAX_LEDGER_EXPORT_BYTES", exact_bytes)
+        cl4.prepare_from_now_opening(
+            baseline,
+            proof,
+            evaluated_at=EVALUATED_AT,
+            identity_key=KEY,
+        )
+        monkeypatch.setattr(cl4, "_MAX_LEDGER_EXPORT_BYTES", exact_bytes - 1)
+        _reason(
+            cl4.CL4Reason.OPENING_CAPACITY_EXHAUSTED,
+            cl4.prepare_from_now_opening,
+            baseline,
+            proof,
+            evaluated_at=EVALUATED_AT,
+            identity_key=KEY,
+        )
+        assert store.export_bytes() == baseline
+
+        monkeypatch.setattr(cl4, "_MAX_LEDGER_EXPORT_BYTES", 16_777_216)
+        monkeypatch.setattr(cl4, "_MAX_REVISION", 1)
+        unrelated = _custom_observation(
+            descriptor,
+            label="CAPACITY_AND_FOREIGN",
+            account=OTHER_ACCOUNT,
+        )
+        store.append_observation(unrelated, expected_store_revision=0)
+        foreign = store.export_bytes()
+        _reason(cl4.CL4Reason.BASELINE_STALE, _accept, store, plan)
+        assert store.export_bytes() == foreign
+
+
+def test_v310_cl4_rs1_capacity_descriptor_present_path(tmp_path: Path) -> None:
+    with _new_store(tmp_path) as store:
+        other_key = bytes(reversed(range(32)))
+        other_proof = _proof(
+            account=OTHER_ACCOUNT,
+            key=other_key,
+            key_id="OTHER_ACCOUNT_KEY",
+        )
+        other_plan = cl4.prepare_from_now_opening(
+            store.export_bytes(),
+            other_proof,
+            evaluated_at=EVALUATED_AT,
+            identity_key=other_key,
+        )
+        store.append_observation(other_plan.observation, expected_store_revision=0)
+        baseline = store.export_bytes()
+        plan = _plan(store)
+        prospective = cl4._prospective_states(plan, KEY)
+        staged = json.loads(prospective.staged_bytes)
+        assert sum(
+            row["sha256"] == cl4.CL4_OPENING_CODEC.sha256
+            for row in staged["codec_registry"]
+        ) == 1
+        assert len(staged["observations"]) == 2
+        assert store.export_bytes() == baseline
 
 
 def test_v310_cl4_09_prepare_rejects_unresolved_or_post_proof_evidence(
@@ -555,17 +951,166 @@ def test_v310_cl4_10_same_and_different_plan_create_once(tmp_path: Path) -> None
         _reason(cl4.CL4Reason.OPENING_CONFLICT, cl4.prepare_from_now_opening, store.export_bytes(), _proof(), evaluated_at=EVALUATED_AT, identity_key=KEY)
 
 
+def test_v310_cl4_rs1_cas_races_never_create_partial_economic_opening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cl2_vectors: dict[str, dict[str, object]],
+) -> None:
+    descriptor = _descriptor(cl2_vectors)
+    observation_root = tmp_path / "observation"
+    transaction_root = tmp_path / "transaction"
+    observation_root.mkdir()
+    transaction_root.mkdir()
+    original_observation = persistence.CashLedgerStore.append_observation
+    with _new_store(observation_root, descriptors=(descriptor,)) as store:
+        plan = _plan(store)
+        unrelated = _custom_observation(
+            descriptor,
+            label="RACE_BEFORE_OBSERVATION_CAS",
+            account=OTHER_ACCOUNT,
+        )
+        armed = True
+
+        def raced_observation(
+            self: persistence.CashLedgerStore,
+            value: persistence.InboxObservation,
+            *,
+            expected_store_revision: int,
+        ) -> persistence.PersistenceDisposition:
+            nonlocal armed
+            if armed:
+                armed = False
+                original_observation(
+                    self,
+                    unrelated,
+                    expected_store_revision=expected_store_revision,
+                )
+            return original_observation(
+                self,
+                value,
+                expected_store_revision=expected_store_revision,
+            )
+
+        monkeypatch.setattr(
+            persistence.CashLedgerStore,
+            "append_observation",
+            raced_observation,
+        )
+        _reason(cl4.CL4Reason.OPENING_PLAN_STALE, _accept, store, plan)
+        exported = json.loads(store.export_bytes())
+        assert store.snapshot().ledger_revision == 0
+        assert all(row["sha256"] != plan.observation.sha256 for row in exported["observations"])
+        monkeypatch.setattr(
+            persistence.CashLedgerStore,
+            "append_observation",
+            original_observation,
+        )
+
+    original_transaction = persistence.CashLedgerStore.append_transaction
+    with _new_store(transaction_root, descriptors=(descriptor,)) as store:
+        plan = _plan(store)
+        store.append_observation(plan.observation, expected_store_revision=0)
+        unrelated = _custom_observation(
+            descriptor,
+            label="RACE_BEFORE_TRANSACTION_CAS",
+            account=OTHER_ACCOUNT,
+        )
+        armed = True
+
+        def raced_transaction(
+            self: persistence.CashLedgerStore,
+            transaction: ledger.LedgerTransaction,
+            observation_sha256: str,
+            *,
+            expected_store_revision: int,
+            expected_ledger_revision: int,
+        ) -> persistence.PersistenceDisposition:
+            nonlocal armed
+            if armed:
+                armed = False
+                original_observation(
+                    self,
+                    unrelated,
+                    expected_store_revision=expected_store_revision,
+                )
+            return original_transaction(
+                self,
+                transaction,
+                observation_sha256,
+                expected_store_revision=expected_store_revision,
+                expected_ledger_revision=expected_ledger_revision,
+            )
+
+        monkeypatch.setattr(
+            persistence.CashLedgerStore,
+            "append_transaction",
+            raced_transaction,
+        )
+        _reason(cl4.CL4Reason.OPENING_PLAN_STALE, _accept, store, plan)
+        exported = json.loads(store.export_bytes())
+        assert store.snapshot().ledger_revision == 0
+        assert exported["transactions"] == []
+
+
 def test_v310_cl4_11_record_and_known_answer_graph(tmp_path: Path) -> None:
     with _new_store(tmp_path) as store:
         accepted = _accept(store, _plan(store))
         assert accepted.store_revision == 2
         assert accepted.ledger_revision == 1
-        assert accepted.ledger_head_sha256 == "adcfaa4c9d4c0460b96ca1845882c748f4531b79c27cd807b03577576d23a892"
-        assert hashlib.sha256(store.export_bytes()).hexdigest() == "6c2e5d71a02d5ea07b8a18bcd6ac89d8f4b67ad2c6e73352f47d09c7f111942d"
-        assert accepted.record.sha256 == "9544462db024ed8d3a0eae9da5b0b037467565fb360925421821f8120e855cc1"
+        assert accepted.ledger_head_sha256 == "53dcc785fd962de251ce3745138866005584dd6ba179ae3e32a2d97b7fde6999"
+        assert hashlib.sha256(store.export_bytes()).hexdigest() == "f7d0e10b4133ff989425fa276b1b3e18ef440668b5e68fcb0f2df67ad03484a2"
+        assert accepted.record.sha256 == "71109fceb92f5f3789e8e323e000fe1226266cb6733bf6072d6d33375a7747ce"
         document = json.loads(store.export_bytes())
     document["observations"][0]["current_status"] = "OBSERVED"
     _reason(cl4.CL4Reason.LEDGER_GRAPH_INVALID, cl4.project_shadow_cash, _canonical(document), account_scope_sha256=ACCOUNT, environment=broker.BrokerEnvironment.SANDBOX, as_of=AS_OF, identity_key=KEY)
+
+
+def test_v310_cl4_rs1_record_requires_immediate_successor_revision(
+    tmp_path: Path,
+    cl2_vectors: dict[str, dict[str, object]],
+) -> None:
+    descriptor = _descriptor(cl2_vectors)
+    with _new_store(tmp_path, descriptors=(descriptor,)) as store:
+        prior_observation = _custom_observation(
+            descriptor,
+            label="PRIOR_REVISION",
+            account=OTHER_ACCOUNT,
+        )
+        _append_transaction(
+            store,
+            prior_observation,
+            _custom_transaction(prior_observation, minor_units=1),
+        )
+        proof = _proof()
+        plan = _plan(store, proof)
+        forged_content = cl4._OpeningContent(
+            account_scope_sha256=ACCOUNT,
+            baseline_export_sha256=plan.baseline_export_sha256,
+            broker_cash_proof_sha256=proof.sha256,
+            contract_version=2,
+            cutoff=proof.as_of,
+            environment=broker.BrokerEnvironment.SANDBOX,
+            identity_key_id=KEY_ID,
+            ledger_head_sha256=persistence.GENESIS_HEAD_SHA256,
+            ledger_revision=0,
+            opening_minor_units=proof.cash.minor_units,
+            proof_identity_sha256=proof.proof_identity_sha256,
+            store_revision=plan.pre_store_revision,
+        )
+        forged_observation, forged_transaction = cl4._opening_graph(
+            forged_content,
+            KEY,
+        )
+        _append_transaction(store, forged_observation, forged_transaction)
+        _reason(
+            cl4.CL4Reason.OPENING_CONFLICT,
+            cl4.project_shadow_cash,
+            store.export_bytes(),
+            account_scope_sha256=ACCOUNT,
+            environment=broker.BrokerEnvironment.SANDBOX,
+            as_of=AS_OF,
+            identity_key=KEY,
+        )
 
 
 @pytest.mark.parametrize(
@@ -729,14 +1274,14 @@ def test_v310_cl4_17_candidate_is_fail_closed_and_recomputed(tmp_path: Path) -> 
         assert candidate.automatic_adoption is False
         assert candidate.requires_locked_revalidation is True
         assert candidate.runtime_cash_owner_changed is False
-        assert candidate.sha256 == "8de3f3e4cdbed751d7593dbcb96730f1a1ac5552a450f75869fe9f955a4f3304"
+        assert candidate.sha256 == "017a995a90ab719da91edb0f89fdeecd7350c485f51ac279216512c5ddac20a3"
         forged = copy.copy(reconciliation)
         object.__setattr__(forged, "delta_minor_units", 1)
         _reason(cl4.CL4Reason.RECONCILIATION_INVALID, cl4.build_adoption_candidate, forged, ledger_export_bytes=exported, identity_key=KEY)
-        _reason(cl4.CL4Reason.RESPONSE_IDENTITY_INVALID, cl4.build_adoption_candidate, reconciliation, ledger_export_bytes=exported, identity_key=b"x" * 32)
+        _reason(cl4.CL4Reason.PROOF_IDENTITY_INVALID, cl4.build_adoption_candidate, reconciliation, ledger_export_bytes=exported, identity_key=b"x" * 32)
         rotated = _proof(key_id="CL4_ROTATED_KEY")
         _reason(
-            cl4.CL4Reason.RESPONSE_IDENTITY_INVALID,
+            cl4.CL4Reason.PROOF_IDENTITY_INVALID,
             cl4.reconcile_shadow_cash,
             exported,
             rotated,
@@ -790,6 +1335,169 @@ def test_v310_cl4_18_privacy_safe_objects_errors_and_fixture() -> None:
     error = cl4.CL4Error(cl4.CL4Reason.TYPE_INVALID, "PRIVATE_TOKEN", {"stage": "BAD STAGE", "unknown": raw})
     assert error.cause_reason is None
     assert raw not in repr(error) and raw not in str(error.evidence)
+
+
+def test_v310_cl4_rs1_unexpected_dependency_failure_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private = "PRIVATE_PROVIDER_FAILURE"
+
+    def fail_money_value(_: object) -> ledger.Money:
+        raise RuntimeError(private)
+
+    monkeypatch.setattr(broker, "money_value_to_money", fail_money_value)
+    error = _reason(cl4.CL4Reason.INTERNAL_BOUNDARY_FAILED, _proof)
+    assert private not in repr(error)
+    assert private not in str(error)
+    assert private not in str(error.evidence)
+
+
+def test_v310_cl4_rs1_all_v1_public_artifacts_fail_closed(tmp_path: Path) -> None:
+    with _new_store(tmp_path) as store:
+        proof = _proof()
+        plan = _plan(store, proof)
+        accepted = _accept(store, plan)
+        exported = store.export_bytes()
+        projection = cl4.project_shadow_cash(
+            exported,
+            account_scope_sha256=ACCOUNT,
+            environment=broker.BrokerEnvironment.SANDBOX,
+            as_of=AS_OF,
+            identity_key=KEY,
+        )
+        reconciliation = cl4.reconcile_shadow_cash(
+            exported,
+            proof,
+            evaluated_at=EVALUATED_AT,
+            identity_key=KEY,
+        )
+        candidate = cl4.build_adoption_candidate(
+            reconciliation,
+            ledger_export_bytes=exported,
+            identity_key=KEY,
+        )
+
+        v1_plan = copy.copy(plan)
+        object.__setattr__(v1_plan, "version", 1)
+        _reason(cl4.CL4Reason.VERSION_UNSUPPORTED, _accept, store, v1_plan)
+        v1_nested_proof = copy.copy(proof)
+        object.__setattr__(v1_nested_proof, "version", 1)
+        v1_nested_plan = copy.copy(plan)
+        object.__setattr__(v1_nested_plan, "proof", v1_nested_proof)
+        _reason(
+            cl4.CL4Reason.VERSION_UNSUPPORTED,
+            cl4.accept_from_now_opening,
+            store,
+            v1_nested_plan,
+            confirmation=(
+                "ACCEPT V3.10 CL4 FROM_NOW OPENING "
+                f"{v1_nested_plan.sha256}"
+            ),
+            evaluated_at="invalid",
+            identity_key=b"bad",
+        )
+        for artifact in (
+            accepted.record,
+            projection,
+            candidate,
+        ):
+            _reason(
+                cl4.CL4Reason.VERSION_UNSUPPORTED,
+                dataclasses.replace,
+                artifact,
+                version=1,
+            )
+        v1_reconciliation = copy.copy(reconciliation)
+        object.__setattr__(v1_reconciliation, "version", 1)
+        _reason(
+            cl4.CL4Reason.VERSION_UNSUPPORTED,
+            cl4.build_adoption_candidate,
+            v1_reconciliation,
+            ledger_export_bytes=exported,
+            identity_key=KEY,
+        )
+        for field, nested in (
+            ("proof", v1_nested_proof),
+            (
+                "projection",
+                copy.copy(projection),
+            ),
+        ):
+            if field == "projection":
+                object.__setattr__(nested, "version", 1)
+            forged = copy.copy(reconciliation)
+            object.__setattr__(forged, field, nested)
+            _reason(
+                cl4.CL4Reason.VERSION_UNSUPPORTED,
+                cl4.build_adoption_candidate,
+                forged,
+                ledger_export_bytes=b"{}",
+                identity_key=b"bad",
+            )
+
+
+def test_v310_cl4_rs1_public_boundaries_reject_dto_subclasses(
+    tmp_path: Path,
+) -> None:
+    class ProofSubclass(cl4.BrokerCashProof):
+        __slots__ = ()
+
+    class PlanSubclass(cl4.OpeningPlan):
+        __slots__ = ()
+
+    class ReconciliationSubclass(cl4.CashReconciliation):
+        __slots__ = ()
+
+    with _new_store(tmp_path) as store:
+        proof = _proof()
+        plan = _plan(store, proof)
+        proof_subclass = ProofSubclass(
+            **{item.name: getattr(proof, item.name) for item in dataclasses.fields(proof)}
+        )
+        _reason(
+            cl4.CL4Reason.TYPE_INVALID,
+            cl4.prepare_from_now_opening,
+            store.export_bytes(),
+            proof_subclass,
+            evaluated_at=EVALUATED_AT,
+            identity_key=KEY,
+        )
+        plan_subclass = PlanSubclass(
+            **{item.name: getattr(plan, item.name) for item in dataclasses.fields(plan)}
+        )
+        _reason(
+            cl4.CL4Reason.TYPE_INVALID,
+            cl4.accept_from_now_opening,
+            store,
+            plan_subclass,
+            confirmation=(
+                "ACCEPT V3.10 CL4 FROM_NOW OPENING "
+                f"{plan_subclass.sha256}"
+            ),
+            evaluated_at=EVALUATED_AT,
+            identity_key=KEY,
+        )
+        accepted = _accept(store, plan)
+        reconciliation = cl4.reconcile_shadow_cash(
+            store.export_bytes(),
+            proof,
+            evaluated_at=EVALUATED_AT,
+            identity_key=KEY,
+        )
+        reconciliation_subclass = ReconciliationSubclass(
+            **{
+                item.name: getattr(reconciliation, item.name)
+                for item in dataclasses.fields(reconciliation)
+            }
+        )
+        _reason(
+            cl4.CL4Reason.TYPE_INVALID,
+            cl4.build_adoption_candidate,
+            reconciliation_subclass,
+            ledger_export_bytes=store.export_bytes(),
+            identity_key=KEY,
+        )
+        assert accepted.record.opening_money == proof.cash
 
 
 def test_v310_cl4_19_static_no_authority_drift_and_exact_two_mutators() -> None:
@@ -854,19 +1562,23 @@ def test_v310_cl4_21_cross_language_fixture_exact_known_answers(
     cl2_vectors: dict[str, dict[str, object]],
 ) -> None:
     assert fixture["domain"] == "v3.10-cl4-opening-reconciliation-fixture"
-    assert fixture["version"] == 1
+    assert fixture["version"] == 2
     known = fixture["known_answer"]
     with _new_store(tmp_path) as store:
+        baseline = store.export_bytes()
         proof = _proof()
         plan = _plan(store, proof)
+        staged_export, expected_post_export = cl4._assemble_prospective_exports(plan)
         accepted = _accept(store, plan)
         exported = store.export_bytes()
+        assert exported == expected_post_export
         projection = cl4.project_shadow_cash(exported, account_scope_sha256=ACCOUNT, environment=broker.BrokerEnvironment.SANDBOX, as_of=AS_OF, identity_key=KEY)
         reconciliation = cl4.reconcile_shadow_cash(exported, proof, evaluated_at=EVALUATED_AT, identity_key=KEY)
         candidate = cl4.build_adoption_candidate(reconciliation, ledger_export_bytes=exported, identity_key=KEY)
+        plus_one_nano_proof = _proof(response={"totalAmountCurrencies": {"currency": "RUB", "units": "123", "nano": 500_000_001}})
         discrepancy = cl4.reconcile_shadow_cash(
             exported,
-            _proof(response={"totalAmountCurrencies": {"currency": "RUB", "units": "123", "nano": 500_000_001}}),
+            plus_one_nano_proof,
             evaluated_at=EVALUATED_AT,
             identity_key=KEY,
         )
@@ -902,17 +1614,24 @@ def test_v310_cl4_21_cross_language_fixture_exact_known_answers(
             evaluated_at=EVALUATED_AT,
             identity_key=KEY,
         )
+        incomplete_export = store.export_bytes()
     actual = {
+        "baseline_export": (persistence.parse_canonical_json(baseline), baseline.decode("ascii"), persistence.sha256_hex(baseline)),
         "proof": (proof.to_canonical_dict(), proof.canonical_bytes.decode("ascii"), proof.sha256),
         "codec": (cl4.CL4_OPENING_CODEC.to_canonical_dict(), cl4.CL4_OPENING_CODEC.canonical_bytes.decode("ascii"), cl4.CL4_OPENING_CODEC.sha256),
         "content": (json.loads(plan.observation.content_json_ascii), plan.observation.content_json_ascii, plan.observation.source.source_content_sha256),
         "observation": (plan.observation.to_canonical_dict(), plan.observation.canonical_bytes.decode("ascii"), plan.observation.sha256),
         "transaction": (plan.transaction.to_canonical_dict(), plan.transaction.canonical_bytes.decode("ascii"), plan.transaction.sha256),
         "plan": (plan.to_canonical_dict(), plan.canonical_bytes.decode("ascii"), plan.sha256),
+        "staged_export": (persistence.parse_canonical_json(staged_export), staged_export.decode("ascii"), persistence.sha256_hex(staged_export)),
+        "post_opening_export": (persistence.parse_canonical_json(exported), exported.decode("ascii"), persistence.sha256_hex(exported)),
         "record": (accepted.record.to_canonical_dict(), accepted.record.canonical_bytes.decode("ascii"), accepted.record.sha256),
         "projection": (projection.to_canonical_dict(), projection.canonical_bytes.decode("ascii"), projection.sha256),
         "matched_reconciliation": (reconciliation.to_canonical_dict(), reconciliation.canonical_bytes.decode("ascii"), reconciliation.sha256),
+        "plus_one_nano_proof": (plus_one_nano_proof.to_canonical_dict(), plus_one_nano_proof.canonical_bytes.decode("ascii"), plus_one_nano_proof.sha256),
         "discrepancy_reconciliation": (discrepancy.to_canonical_dict(), discrepancy.canonical_bytes.decode("ascii"), discrepancy.sha256),
+        "incomplete_export": (persistence.parse_canonical_json(incomplete_export), incomplete_export.decode("ascii"), persistence.sha256_hex(incomplete_export)),
+        "incomplete_projection": (incomplete.projection.to_canonical_dict(), incomplete.projection.canonical_bytes.decode("ascii"), incomplete.projection.sha256),
         "incomplete_reconciliation": (incomplete.to_canonical_dict(), incomplete.canonical_bytes.decode("ascii"), incomplete.sha256),
         "adoption_candidate": (candidate.to_canonical_dict(), candidate.canonical_bytes.decode("ascii"), candidate.sha256),
     }
@@ -922,4 +1641,4 @@ def test_v310_cl4_21_cross_language_fixture_exact_known_answers(
         assert known[name]["sha256"] == sha256
     assert known["response"]["canonical_json_ascii"] == _canonical(RESPONSE).decode("ascii")
     assert known["response"]["sha256"] == proof.response_canonical_sha256
-    assert known["response"]["identity_hmac_sha256"] == proof.response_identity_sha256
+    assert known["response"]["proof_identity_hmac_sha256"] == proof.proof_identity_sha256
