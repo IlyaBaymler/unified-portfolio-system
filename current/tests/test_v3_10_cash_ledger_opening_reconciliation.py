@@ -1052,6 +1052,64 @@ def test_v310_cl4_rs1_cas_races_never_create_partial_economic_opening(
         assert exported["transactions"] == []
 
 
+def test_v310_cl4_rs1_nonexact_post_transaction_readback_is_postcondition_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cl2_vectors: dict[str, dict[str, object]],
+) -> None:
+    descriptor = _descriptor(cl2_vectors)
+    original_observation = persistence.CashLedgerStore.append_observation
+    original_transaction = persistence.CashLedgerStore.append_transaction
+    with _new_store(tmp_path, descriptors=(descriptor,)) as store:
+        plan = _plan(store)
+        unrelated = _custom_observation(
+            descriptor,
+            label="RACE_AFTER_TRANSACTION_COMMIT",
+            account=OTHER_ACCOUNT,
+        )
+        armed = True
+
+        def transaction_then_foreign_append(
+            self: persistence.CashLedgerStore,
+            transaction: ledger.LedgerTransaction,
+            observation_sha256: str,
+            *,
+            expected_store_revision: int,
+            expected_ledger_revision: int,
+        ) -> persistence.PersistenceDisposition:
+            nonlocal armed
+            disposition = original_transaction(
+                self,
+                transaction,
+                observation_sha256,
+                expected_store_revision=expected_store_revision,
+                expected_ledger_revision=expected_ledger_revision,
+            )
+            if armed:
+                armed = False
+                original_observation(
+                    self,
+                    unrelated,
+                    expected_store_revision=self.snapshot().store_revision,
+                )
+            return disposition
+
+        monkeypatch.setattr(
+            persistence.CashLedgerStore,
+            "append_transaction",
+            transaction_then_foreign_append,
+        )
+        _reason(cl4.CL4Reason.POSTCONDITION_FAILED, _accept, store, plan)
+        exported = json.loads(store.export_bytes())
+        classifications = [
+            json.loads(row["canonical_json_ascii"])["classification"]
+            for row in exported["transactions"]
+        ]
+        assert store.snapshot().store_revision == 3
+        assert store.snapshot().ledger_revision == 1
+        assert classifications.count("OPENING_BALANCE") == 1
+
+
 def test_v310_cl4_11_record_and_known_answer_graph(tmp_path: Path) -> None:
     with _new_store(tmp_path) as store:
         accepted = _accept(store, _plan(store))

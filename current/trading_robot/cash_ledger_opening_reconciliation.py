@@ -2322,6 +2322,8 @@ def accept_from_now_opening(
         failure = CL4Error(CL4Reason.PERSISTENCE_FAILURE)
     else:
         after_bytes = _export_store(store)
+        if after_bytes != prospective.committed_bytes:
+            _fail(CL4Reason.POSTCONDITION_FAILED)
         after = _parse_ledger_export(
             after_bytes,
             target_account=checked_plan.proof.account_scope_sha256,
