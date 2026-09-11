@@ -128,8 +128,6 @@ _PORTFOLIO_TIMESTAMP_RE = _re.compile(
     r"(?:\.([0-9]{1,6}))?(Z|[+-][0-9]{2}:[0-9]{2})",
     _re.ASCII,
 )
-_INT64_MIN = -(2**63)
-_INT64_MAX = 2**63 - 1
 _NONE_TYPE = type(None)
 
 
@@ -2157,11 +2155,98 @@ def _scalar_preflight(value: object, reason: CL6Reason) -> None:
     value_type = type(value)
     if value_type is str:
         _require_string(value, reason)
-    elif value_type is int:
-        if not _INT64_MIN <= value <= _INT64_MAX:
-            _fail(reason)
     elif value_type is float and not _math.isfinite(value):
         _fail(reason)
+
+
+def _portfolio_semantic_preflight(
+    lease: _portfolio_preflight.PortfolioSnapshotLease,
+) -> None:
+    reason = CL6Reason.PORTFOLIO_EVIDENCE_INVALID
+    state = object.__getattribute__(lease, "state")
+    lease_revision = object.__getattribute__(lease, "revision")
+    state_revision = object.__getattribute__(state, "revision")
+    if (
+        not 0 <= lease_revision <= MAX_REVISION
+        or not 0 <= state_revision <= MAX_REVISION
+        or object.__getattribute__(state, "version")
+        != _portfolio.PORTFOLIO_STATE_SCHEMA_VERSION
+    ):
+        _fail(reason)
+
+    account = object.__getattribute__(state, "account")
+    account_id = object.__getattribute__(account, "account_id")
+    if account_id != account_id.strip():
+        _fail(reason)
+    balances = object.__getattribute__(account, "cash_balances")
+    currencies: list[str] = []
+    for balance in balances:
+        currency = object.__getattribute__(balance, "currency")
+        if not currency or currency != currency.strip().lower():
+            _fail(reason)
+        currencies.append(currency)
+    if len(currencies) != len(set(currencies)):
+        _fail(reason)
+
+    position_ids: list[str] = []
+    for position in object.__getattribute__(state, "positions"):
+        instrument_id = object.__getattribute__(position, "instrument_id")
+        if not instrument_id or instrument_id != instrument_id.strip():
+            _fail(reason)
+        position_ids.append(instrument_id)
+        target = object.__getattribute__(position, "target")
+        if target is not None:
+            target_id = object.__getattribute__(target, "instrument_id")
+            if target_id != instrument_id or target_id != target_id.strip():
+                _fail(reason)
+        reconciliation = object.__getattribute__(position, "reconciliation")
+        if object.__getattribute__(reconciliation, "instrument_id") != instrument_id:
+            _fail(reason)
+        reconciliation_status = object.__getattribute__(reconciliation, "status")
+        if (
+            reconciliation_status is not _portfolio.ReconciliationStatus.MATCHED
+            and not object.__getattribute__(reconciliation, "blocking")
+        ):
+            _fail(reason)
+        if any(
+            not item
+            for item in object.__getattribute__(reconciliation, "pending_order_ids")
+        ):
+            _fail(reason)
+        ownership = object.__getattribute__(position, "ownership")
+        if ownership is not None:
+            for name in ("strategy_id", "config_hash", "candle_interval"):
+                text = object.__getattribute__(ownership, name)
+                if not text or text != text.strip():
+                    _fail(reason)
+            source = object.__getattribute__(ownership, "source")
+            if not source or source != source.strip().upper():
+                _fail(reason)
+        for order in object.__getattribute__(position, "pending_orders"):
+            requested = object.__getattribute__(order, "requested_lots")
+            executed = object.__getattribute__(order, "executed_lots")
+            if requested < 0 or executed < 0 or executed > requested:
+                _fail(reason)
+            for name in ("order_request_id", "instrument_id"):
+                text = object.__getattribute__(order, name)
+                if not text or text != text.strip():
+                    _fail(reason)
+            for name in ("direction", "source"):
+                text = object.__getattribute__(order, name)
+                if not text or text != text.strip().upper():
+                    _fail(reason)
+    if len(position_ids) != len(set(position_ids)):
+        _fail(reason)
+
+    for name in (
+        "source",
+        "state_status",
+        "portfolio_source",
+        "last_transaction_status",
+    ):
+        text = object.__getattribute__(state, name)
+        if not text or text != text.strip().upper():
+            _fail(reason)
 
 
 def _preflight_portfolio_lease(
@@ -2205,10 +2290,7 @@ def _preflight_portfolio_lease(
                     visit(item, (item_type,))
 
     visit(value, (_portfolio_preflight.PortfolioSnapshotLease,))
-    state = object.__getattribute__(value, "state")
-    revision = object.__getattribute__(state, "revision")
-    if not 0 <= revision <= MAX_REVISION:
-        _fail(CL6Reason.PORTFOLIO_EVIDENCE_INVALID)
+    _portfolio_semantic_preflight(value)
 
 
 _RISK_SPECS: dict[
@@ -2345,6 +2427,135 @@ def _risk_preflight(policy: _risk.RiskPolicy, state: _risk.RiskState) -> None:
 
     visit(policy, (_risk.RiskPolicy,))
     visit(state, (_risk.RiskState,))
+    _risk_semantic_preflight(policy, state)
+
+
+def _risk_semantic_preflight(
+    policy: _risk.RiskPolicy,
+    state: _risk.RiskState,
+) -> None:
+    reason = CL6Reason.RISK_EVIDENCE_INVALID
+
+    def optional_positive(name: str) -> None:
+        value = object.__getattribute__(policy, name)
+        if value is not None and value <= 0:
+            _fail(reason)
+
+    def optional_fraction(name: str) -> None:
+        value = object.__getattribute__(policy, name)
+        if value is not None and not 0 < value <= 1:
+            _fail(reason)
+
+    if object.__getattribute__(policy, "max_position_lots") < 0:
+        _fail(reason)
+    for name in (
+        "max_position_value_rub",
+        "max_order_value_rub",
+        "risk_per_trade_rub",
+        "daily_loss_limit_rub",
+        "weekly_loss_limit_rub",
+        "max_daily_turnover_rub",
+        "max_gross_exposure_rub",
+    ):
+        optional_positive(name)
+    for name in (
+        "max_position_share_of_equity",
+        "risk_per_trade_fraction",
+        "daily_loss_limit_fraction",
+        "weekly_loss_limit_fraction",
+        "max_drawdown_fraction",
+        "max_gross_exposure_fraction",
+        "max_net_exposure_fraction",
+        "max_instrument_concentration_fraction",
+        "max_strategy_concentration_fraction",
+        "max_asset_class_concentration_fraction",
+        "min_cash_reserve_fraction",
+        "max_daily_turnover_fraction",
+    ):
+        optional_fraction(name)
+    if (
+        object.__getattribute__(policy, "cash_reserve_rub") < 0
+        or not 0 < object.__getattribute__(policy, "max_cash_usage_fraction") <= 1
+        or not 0 <= object.__getattribute__(policy, "commission_buffer_fraction") < 1
+        or object.__getattribute__(policy, "atr_multiplier") <= 0
+        or not 0
+        < object.__getattribute__(policy, "portfolio_warning_utilization_fraction")
+        <= 1
+    ):
+        _fail(reason)
+    for name, minimum in (
+        ("max_orders_per_day", 1),
+        ("max_snapshot_age_seconds", 0),
+        ("max_open_positions", 1),
+        ("max_price_age_seconds", 0),
+    ):
+        value = object.__getattribute__(policy, name)
+        if value is not None and value < minimum:
+            _fail(reason)
+        if name == "max_snapshot_age_seconds" and value is not None:
+            try:
+                finite = _math.isfinite(float(value))
+            except OverflowError:
+                _fail(reason)
+            if not finite:
+                _fail(reason)
+    mode = object.__getattribute__(policy, "portfolio_policy_mode")
+    if mode not in {"OBSERVE_ONLY", "ENFORCED"} or mode != mode.strip().upper():
+        _fail(reason)
+    limits = object.__getattribute__(policy, "asset_class_concentration_limits")
+    names: list[str] = []
+    for name, fraction in limits:
+        if not name or name != name.strip().upper() or not 0 < fraction <= 1:
+            _fail(reason)
+        names.append(name)
+    if len(names) != len(set(names)) or limits != tuple(sorted(limits)):
+        _fail(reason)
+
+    if (
+        object.__getattribute__(state, "version") > _risk.RISK_STATE_VERSION
+        or object.__getattribute__(state, "daily_turnover_rub") < 0
+        or object.__getattribute__(state, "daily_order_count") < 0
+    ):
+        _fail(reason)
+    halts = object.__getattribute__(state, "instrument_kill_switches")
+    halt_ids: list[str] = []
+    for halt in halts:
+        instrument_id = object.__getattribute__(halt, "instrument_id")
+        halt_reason = object.__getattribute__(halt, "reason")
+        source = object.__getattribute__(halt, "source")
+        operator_ref = object.__getattribute__(halt, "operator_ref")
+        if (
+            not instrument_id
+            or instrument_id != instrument_id.strip()
+            or not halt_reason
+            or halt_reason != halt_reason.strip()
+            or not source
+            or source != source.strip().upper()
+            or (
+                operator_ref is not None
+                and (not operator_ref or operator_ref != operator_ref.strip())
+            )
+        ):
+            _fail(reason)
+        set_at = object.__getattribute__(halt, "set_at")
+        try:
+            parsed = _datetime.fromisoformat(set_at.replace("Z", "+00:00"))
+        except ValueError:
+            _fail(reason)
+        if (
+            parsed.tzinfo is None
+            or parsed.utcoffset() is None
+            or set_at != parsed.astimezone(_timezone.utc).isoformat()
+        ):
+            _fail(reason)
+        halt_ids.append(instrument_id)
+    if len(halt_ids) != len(set(halt_ids)) or halt_ids != sorted(halt_ids):
+        _fail(reason)
+    resync_source = object.__getattribute__(state, "risk_resync_source")
+    if resync_source is not None and (
+        not resync_source or resync_source != resync_source.strip().upper()
+    ):
+        _fail(reason)
 
 
 def _portfolio_evidence_identity(
@@ -2640,11 +2851,11 @@ def build_portfolio_risk_cash_context(
         or type(identity_key_id) is not str
     ):
         _fail(CL6Reason.TYPE_INVALID)
-    if not 1 <= len(ledger_export_bytes) <= MAX_LEDGER_EXPORT_BYTES:
-        _fail(CL6Reason.LEDGER_EXPORT_INVALID)
     evaluated_ns = _timestamp_ns(evaluated_at)
     key = _require_key(identity_key)
     key_id = _require_key_id(identity_key_id)
+    if not 1 <= len(ledger_export_bytes) <= MAX_LEDGER_EXPORT_BYTES:
+        _fail(CL6Reason.LEDGER_EXPORT_INVALID)
     rebuilt = _rebuild_availability(
         ledger_export_bytes,
         reconciliation,

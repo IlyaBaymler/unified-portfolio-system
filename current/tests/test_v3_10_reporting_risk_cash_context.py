@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
 from trading_robot import broker_read_adapters as broker
 from trading_robot import cash_availability as cl5
 from trading_robot import cash_ledger_domain as ledger
@@ -313,6 +314,72 @@ def _context(
         evaluated_at=evaluated_at,
         identity_key=KEY,
         identity_key_id=KEY_ID,
+    )
+
+
+def _portfolio_lease_with_pending() -> tuple[
+    portfolio_preflight.PortfolioSnapshotLease,
+    portfolio_model.PendingOrderState,
+]:
+    instrument_id = "BBG000000001"
+    order = portfolio_model.PendingOrderState(
+        order_request_id="request-1",
+        instrument_id=instrument_id,
+        direction="BUY",
+        requested_lots=2,
+        executed_lots=1,
+        status=portfolio_model.PendingOrderStatus.PARTIALLY_FILLED,
+        source="LOCAL",
+    )
+    reconciliation = portfolio_model.ReconciliationResult(
+        instrument_id=instrument_id,
+        status=portfolio_model.ReconciliationStatus.PENDING_ORDER,
+        blocking=True,
+        reasons=("PENDING_ORDER",),
+        actual_lots=0,
+        target_lots=2,
+        pending_order_ids=(order.order_request_id,),
+        checked_at=END_ISO,
+    )
+    position = portfolio_model.PositionState(
+        instrument_id=instrument_id,
+        figi=instrument_id,
+        ticker="TEST",
+        class_code="TQBR",
+        asset_type="share",
+        currency="rub",
+        quantity=0.0,
+        actual_lots=0,
+        average_price=None,
+        current_price=None,
+        market_value=None,
+        expected_yield=None,
+        target=None,
+        ownership=None,
+        ownership_status=portfolio_model.OwnershipStatus.FLAT,
+        pending_orders=(order,),
+        reconciliation=reconciliation,
+        origin=portfolio_model.PositionOrigin.STRATEGY,
+    )
+    state = portfolio_model.PortfolioState(
+        version=portfolio_model.PORTFOLIO_STATE_SCHEMA_VERSION,
+        account=portfolio_model.AccountState(RAW_ACCOUNT, None, None, None, ()),
+        snapshot_at=END_ISO,
+        generated_at=END_ISO,
+        freshness=portfolio_model.SnapshotFreshness.FRESH,
+        source="TBANK",
+        positions=(position,),
+        warnings=(),
+        state_status="READY",
+        blocking=True,
+        revision=9,
+    )
+    return (
+        portfolio_preflight.PortfolioSnapshotLease.from_state(
+            state,
+            leased_at=END_ISO,
+        ),
+        order,
     )
 
 
@@ -847,3 +914,549 @@ def test_v310_cl6_24_fixture_and_module_are_only_new_paths() -> None:
     assert Path(__file__).resolve().is_file()
     assert _scope() == ACCOUNT_SCOPE
     assert os.environ.get("CL6_START_EXPERIMENT") is None
+
+
+def test_v310_cl6_25_contract_owned_evidence_kats_are_executed(
+    vectors: dict[str, object],
+) -> None:
+    expected = vectors["contract_owned_kat"]
+    kat_at = "2026-09-11T10:00:00.000000000Z"
+    report = dataclasses.replace(
+        _report(vectors),
+        ledger_export_sha256="3" * 64,
+        ledger_revision=5,
+        ledger_head_sha256="4" * 64,
+        ledger_projection_sha256="6" * 64,
+        report_identity_sha256="0" * 64,
+    )
+    report = dataclasses.replace(
+        report,
+        report_identity_sha256=cl6._report_identity(report, KEY),
+    )
+    portfolio = cl6.PortfolioIdentityEvidence(
+        account_scope_sha256=ACCOUNT_SCOPE,
+        environment=ENV,
+        captured_at=kat_at,
+        portfolio_snapshot_at=kat_at,
+        portfolio_revision=9,
+        portfolio_decision_checksum="a" * 64,
+        portfolio_document_checksum="ab" * 32,
+        portfolio_schema_version=2,
+        portfolio_source="CANONICAL",
+        migration_status="COMPLETED",
+        legacy_read_path_enabled=False,
+        freshness="FRESH",
+        state_status="READY",
+        blocking=False,
+        identity_key_id=KEY_ID,
+        evidence_identity_sha256="0" * 64,
+    )
+    portfolio = dataclasses.replace(
+        portfolio,
+        evidence_identity_sha256=cl6._portfolio_evidence_identity(portfolio, KEY),
+    )
+    guard = cl6.RiskGuardEvidence(
+        account_scope_sha256=ACCOUNT_SCOPE,
+        environment=ENV,
+        captured_at=kat_at,
+        risk_policy_hash="d" * 64,
+        risk_state_guard_hash="e" * 64,
+        risk_state_version=4,
+        identity_key_id=KEY_ID,
+        evidence_identity_sha256="0" * 64,
+    )
+    guard = dataclasses.replace(
+        guard,
+        evidence_identity_sha256=cl6._risk_evidence_identity(guard, KEY),
+    )
+    context = cl6.PortfolioRiskCashContext(
+        account_scope_sha256=ACCOUNT_SCOPE,
+        environment=ENV,
+        evaluated_at=kat_at,
+        status=cl6.RiskCashContextStatus.READY_FOR_LOCKED_REVALIDATION,
+        reason=cl6.RiskCashContextReason.READY,
+        availability_sha256=(
+            "cd375c47f6dc528ae8e64a13dfb7de9145f5964988893c7ef20561050411e238"
+        ),
+        availability_status="READY",
+        availability_reason="READY",
+        availability_evaluated_at=kat_at,
+        broker_cash_as_of=kat_at,
+        broker_positions_as_of=kat_at,
+        free_investable_cash=_money(50),
+        ledger_export_sha256="3" * 64,
+        ledger_revision=5,
+        ledger_head_sha256="4" * 64,
+        reconciliation_sha256="1" * 64,
+        central_order_revision=7,
+        reservation_projection_hash="5" * 64,
+        central_projection_evaluated_at=kat_at,
+        portfolio_evidence_sha256=portfolio.sha256,
+        portfolio_revision=9,
+        portfolio_decision_checksum="a" * 64,
+        portfolio_document_checksum="ab" * 32,
+        portfolio_snapshot_at=kat_at,
+        portfolio_captured_at=kat_at,
+        risk_guard_evidence_sha256=guard.sha256,
+        risk_guard_captured_at=kat_at,
+        risk_policy_hash="d" * 64,
+        risk_state_guard_hash="e" * 64,
+        identity_key_id=KEY_ID,
+        context_identity_sha256="0" * 64,
+    )
+    context = dataclasses.replace(
+        context,
+        context_identity_sha256=cl6._context_identity(context, KEY),
+    )
+    assert (
+        report.report_identity_sha256 == expected["performance_report_identity_sha256"]
+    )
+    assert report.sha256 == expected["performance_report_sha256"]
+    assert (
+        portfolio.evidence_identity_sha256
+        == expected["portfolio_identity_evidence_identity_sha256"]
+    )
+    assert portfolio.sha256 == expected["portfolio_identity_evidence_sha256"]
+    assert (
+        guard.evidence_identity_sha256
+        == expected["risk_guard_evidence_identity_sha256"]
+    )
+    assert guard.sha256 == expected["risk_guard_evidence_sha256"]
+    assert context.context_identity_sha256 == expected["context_identity_sha256"]
+    assert context.sha256 == expected["context_sha256"]
+
+
+def test_v310_cl6_26_risk_semantic_ranges_precede_hash_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatches: list[str] = []
+
+    def policy_trap(self: risk.RiskPolicy) -> str:
+        dispatches.append("policy")
+        return "0" * 64
+
+    def state_trap(state: risk.RiskState) -> str:
+        dispatches.append("state")
+        return "0" * 64
+
+    monkeypatch.setattr(risk.RiskPolicy, "policy_hash", property(policy_trap))
+    monkeypatch.setattr(cl6._risk_runtime, "risk_state_guard_hash", state_trap)
+    cases = (
+        ("policy", "max_position_lots", -1),
+        ("policy", "max_orders_per_day", 0),
+        ("policy", "max_snapshot_age_seconds", 2**1075),
+        ("policy", "max_cash_usage_fraction", 0.0),
+        ("policy", "commission_buffer_fraction", 1.0),
+        ("state", "daily_order_count", -1),
+        ("state", "daily_turnover_rub", -1.0),
+    )
+    for target, field, invalid in cases:
+        policy = risk.RiskPolicy()
+        state = risk.RiskState()
+        object.__setattr__(policy if target == "policy" else state, field, invalid)
+        _reason(
+            cl6.CL6Reason.RISK_EVIDENCE_INVALID,
+            cl6.build_risk_guard_evidence,
+            policy,
+            state,
+            raw_account_id=RAW_ACCOUNT,
+            account_scope_sha256=ACCOUNT_SCOPE,
+            environment=ENV,
+            captured_at=END,
+            evaluated_at=END,
+            identity_key=KEY,
+            identity_key_id=KEY_ID,
+        )
+    assert dispatches == []
+
+
+def test_v310_cl6_27_predecessor_valid_unbounded_integers_are_accepted() -> None:
+    large = 2**70
+    guard = cl6.build_risk_guard_evidence(
+        risk.RiskPolicy(max_position_lots=large),
+        risk.RiskState(daily_order_count=large),
+        raw_account_id=RAW_ACCOUNT,
+        account_scope_sha256=ACCOUNT_SCOPE,
+        environment=ENV,
+        captured_at=END,
+        evaluated_at=END,
+        identity_key=KEY,
+        identity_key_id=KEY_ID,
+    )
+    assert guard.risk_state_version == risk.RISK_STATE_VERSION
+
+
+def test_v310_cl6_28_portfolio_lot_ranges_precede_serialization_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cases = ((-1, 0), (2, -1), (2, 3))
+    forged: list[portfolio_preflight.PortfolioSnapshotLease] = []
+    for requested, executed in cases:
+        lease, order = _portfolio_lease_with_pending()
+        object.__setattr__(order, "requested_lots", requested)
+        object.__setattr__(order, "executed_lots", executed)
+        forged.append(lease)
+
+    def trap(*args: object, **kwargs: object) -> object:
+        raise AssertionError("portfolio serialization reached")
+
+    monkeypatch.setattr(portfolio_model.PortfolioState, "to_dict", trap)
+    for lease in forged:
+        _reason(
+            cl6.CL6Reason.PORTFOLIO_EVIDENCE_INVALID,
+            cl6.build_portfolio_identity_evidence,
+            lease,
+            account_scope_sha256=ACCOUNT_SCOPE,
+            environment=ENV,
+            evaluated_at=END,
+            identity_key=KEY,
+            identity_key_id=KEY_ID,
+        )
+
+
+def test_v310_cl6_29_context_key_and_timestamp_precede_ledger_bounds(
+    vectors: dict[str, object],
+) -> None:
+    reconciliation, positions, reservations, availability = _cash_inputs(vectors)
+    positional = (
+        b"",
+        reconciliation,
+        positions,
+        reservations,
+        availability,
+        _portfolio_evidence(),
+        _risk_evidence(),
+    )
+    _reason(
+        cl6.CL6Reason.TIMESTAMP_INVALID,
+        cl6.build_portfolio_risk_cash_context,
+        *positional,
+        evaluated_at="bad",
+        identity_key=b"",
+        identity_key_id="bad",
+    )
+    _reason(
+        cl6.CL6Reason.IDENTITY_KEY_INVALID,
+        cl6.build_portfolio_risk_cash_context,
+        *positional,
+        evaluated_at=END,
+        identity_key=b"",
+        identity_key_id="bad",
+    )
+    _reason(
+        cl6.CL6Reason.LEDGER_EXPORT_INVALID,
+        cl6.build_portfolio_risk_cash_context,
+        *positional,
+        evaluated_at=END,
+        identity_key=KEY,
+        identity_key_id=KEY_ID,
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        b'{"version":1,"version":1}',
+        b'{"value":1.0}',
+        b'{"value":"\\ud800"}',
+    ),
+)
+def test_v310_cl6_30_canonical_ledger_json_rejections(
+    raw: bytes,
+) -> None:
+    _reason(
+        cl6.CL6Reason.LEDGER_EXPORT_INVALID,
+        cl6.build_performance_report,
+        raw,
+        _points(),
+        account_scope_sha256=ACCOUNT_SCOPE,
+        environment=ENV,
+        period_start=START,
+        period_end=END,
+        generated_at=END,
+        identity_key=KEY,
+        identity_key_id=KEY_ID,
+    )
+
+
+def test_v310_cl6_31_reporting_classification_matrix_is_complete() -> None:
+    expected = {
+        ledger.LedgerClassification.OPENING_BALANCE: cl6.ReportingCategory.OPENING,
+        ledger.LedgerClassification.DEPOSIT: cl6.ReportingCategory.EXTERNAL_FLOW,
+        ledger.LedgerClassification.WITHDRAWAL: cl6.ReportingCategory.EXTERNAL_FLOW,
+        ledger.LedgerClassification.DIVIDEND: cl6.ReportingCategory.INVESTMENT_INCOME,
+        ledger.LedgerClassification.COUPON: cl6.ReportingCategory.INVESTMENT_INCOME,
+        ledger.LedgerClassification.INTEREST: cl6.ReportingCategory.INVESTMENT_INCOME,
+        ledger.LedgerClassification.COMMISSION: cl6.ReportingCategory.EXPENSE,
+        ledger.LedgerClassification.TAX: cl6.ReportingCategory.EXPENSE,
+        ledger.LedgerClassification.REFUND: cl6.ReportingCategory.EXPENSE,
+        ledger.LedgerClassification.TRADE_SETTLEMENT: (
+            cl6.ReportingCategory.INTERNAL_SETTLEMENT
+        ),
+        ledger.LedgerClassification.MANUAL_ADJUSTMENT: (
+            cl6.ReportingCategory.MANUAL_ADJUSTMENT
+        ),
+    }
+    assert cl6._CATEGORY_BY_CLASSIFICATION == expected
+    assert ledger.LedgerClassification.REVERSAL not in expected
+
+
+def test_v310_cl6_32_twr_and_xirr_edge_matrix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = _point(
+        100, START, cl6.ValuationPhase.PERIOD_START, 1, "a" * 64, "b" * 64, "c" * 64
+    )
+    end = _point(
+        120, END, cl6.ValuationPhase.PERIOD_END, 2, "d" * 64, "e" * 64, "f" * 64
+    )
+    no_flow = cl6._twr(initial_reason=None, start=start, end=end, pre={}, external={})
+    assert no_flow.rate_decimal == "0.200000000000"
+
+    pre_end = _point(
+        100, END, cl6.ValuationPhase.PRE_EXTERNAL_FLOW, 3, "1" * 64, "2" * 64, "3" * 64
+    )
+    ambiguous = cl6._twr(
+        initial_reason=None,
+        start=start,
+        end=end,
+        pre={END: pre_end},
+        external={END: _money(10).minor_units},
+    )
+    assert ambiguous.reason is cl6.MetricReason.END_FLOW_VALUATION_AMBIGUOUS
+
+    zero = _point(
+        0, START, cl6.ValuationPhase.PERIOD_START, 1, "a" * 64, "b" * 64, "c" * 64
+    )
+    non_positive = cl6._twr(
+        initial_reason=None,
+        start=zero,
+        end=end,
+        pre={},
+        external={},
+    )
+    assert non_positive.reason is cl6.MetricReason.NON_POSITIVE_SUBPERIOD_BASE
+
+    monkeypatch.setattr(cl6, "MAX_RATIONAL_DECIMAL_DIGITS", 0)
+    bounded = cl6._twr(initial_reason=None, start=start, end=end, pre={}, external={})
+    assert bounded.reason is cl6.MetricReason.RATIONAL_LIMIT_EXCEEDED
+    monkeypatch.setattr(cl6, "MAX_RATIONAL_DECIMAL_DIGITS", 4_096)
+
+    no_sign = cl6._xirr(initial_reason=None, start=zero, end=end, external={})
+    assert no_sign.reason is cl6.MetricReason.XIRR_NO_SIGN_CHANGE
+    multi = cl6._xirr(
+        initial_reason=None,
+        start=start,
+        end=end,
+        external={
+            "2026-04-01T00:00:00.000000000Z": -300_000_000_000,
+            "2026-08-01T00:00:00.000000000Z": 300_000_000_000,
+        },
+    )
+    assert multi.reason is cl6.MetricReason.XIRR_MULTIPLE_SIGN_CHANGES
+    assert multi.status is cl6.MetricStatus.AMBIGUOUS
+    huge_end = _point(
+        200_000, END, cl6.ValuationPhase.PERIOD_END, 2, "d" * 64, "e" * 64, "f" * 64
+    )
+    outside = cl6._xirr(initial_reason=None, start=start, end=huge_end, external={})
+    assert outside.reason is cl6.MetricReason.XIRR_ROOT_OUT_OF_RANGE
+
+
+def test_v310_cl6_33_every_context_identity_field_is_hmac_bound(
+    vectors: dict[str, object],
+) -> None:
+    context = _context(vectors)
+    mutations = {
+        "account_scope_sha256": "f" * 64,
+        "environment": broker.BrokerEnvironment.PRODUCTION,
+        "evaluated_at": END_PLUS_10,
+        "status": cl6.RiskCashContextStatus.BLOCKED,
+        "reason": cl6.RiskCashContextReason.CASH_AVAILABILITY_STALE,
+        "availability_sha256": "f" * 64,
+        "availability_status": "BLOCKED",
+        "availability_reason": "TEST",
+        "availability_evaluated_at": END_PLUS_10,
+        "broker_cash_as_of": END_PLUS_10,
+        "broker_positions_as_of": END_PLUS_10,
+        "free_investable_cash": _money(131),
+        "ledger_export_sha256": "f" * 64,
+        "ledger_revision": context.ledger_revision + 1,
+        "ledger_head_sha256": "f" * 64,
+        "reconciliation_sha256": "f" * 64,
+        "central_order_revision": context.central_order_revision + 1,
+        "reservation_projection_hash": "f" * 64,
+        "central_projection_evaluated_at": END_PLUS_10,
+        "portfolio_evidence_sha256": "f" * 64,
+        "portfolio_revision": context.portfolio_revision + 1,
+        "portfolio_decision_checksum": "f" * 64,
+        "portfolio_document_checksum": "f" * 64,
+        "portfolio_snapshot_at": END_PLUS_10,
+        "portfolio_captured_at": END_PLUS_10,
+        "risk_guard_evidence_sha256": "f" * 64,
+        "risk_guard_captured_at": END_PLUS_10,
+        "risk_policy_hash": "f" * 64,
+        "risk_state_guard_hash": "f" * 64,
+        "identity_key_id": "CL6_MUTATION_KEY_V1",
+        "version": 2,
+    }
+    identity_fields = {
+        field.name
+        for field in dataclasses.fields(context)
+        if field.name != "context_identity_sha256"
+    }
+    assert set(mutations) == identity_fields
+    for field, value in mutations.items():
+        forged = dataclasses.replace(context)
+        object.__setattr__(forged, field, value)
+        assert cl6._context_identity(forged, KEY) != context.context_identity_sha256
+
+
+def test_v310_cl6_34_mandatory_acceptance_matrix_has_exact_traceability(
+    vectors: dict[str, object],
+) -> None:
+    assert vectors["mandatory_acceptance_ids"] == [
+        f"V310-CL6-{index:02d}" for index in range(1, 69)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("total_value", _money(101)),
+        ("as_of", FLOW),
+        ("phase", cl6.ValuationPhase.PRE_EXTERNAL_FLOW),
+        ("portfolio_revision", 2),
+        ("portfolio_decision_checksum", "d" * 64),
+        ("portfolio_document_checksum", "d" * 64),
+        ("source_sha256", "d" * 64),
+        ("account_scope_sha256", "d" * 64),
+        ("environment", broker.BrokerEnvironment.PRODUCTION),
+        ("identity_key_id", "CL6_MUTATION_KEY_V1"),
+        ("valuation_identity_sha256", "d" * 64),
+        ("version", 2),
+    ),
+)
+def test_v310_cl6_35_valuation_retained_hmac_mutation_matrix(
+    field: str,
+    replacement: object,
+) -> None:
+    point = _points()[0]
+    object.__setattr__(point, field, replacement)
+    with pytest.raises(cl6.CL6Error) as captured:
+        cl6._validated_valuation(point, KEY)
+    assert captured.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("portfolio_revision", 10),
+        ("portfolio_decision_checksum", "f" * 64),
+        ("portfolio_document_checksum", "f" * 64),
+        ("portfolio_snapshot_at", "2026-12-31T23:59:59.000000000Z"),
+        ("captured_at", "2026-12-31T23:59:59.000000000Z"),
+        ("freshness", "STALE"),
+        ("state_status", "BLOCKED"),
+        ("migration_status", "BLOCKED"),
+        ("legacy_read_path_enabled", True),
+        ("blocking", True),
+        ("portfolio_source", "LEGACY"),
+        ("account_scope_sha256", "f" * 64),
+        ("evidence_identity_sha256", "f" * 64),
+        ("version", 2),
+    ),
+)
+def test_v310_cl6_36_portfolio_evidence_retained_hmac_mutation_matrix(
+    field: str,
+    replacement: object,
+) -> None:
+    evidence = _portfolio_evidence()
+    object.__setattr__(evidence, field, replacement)
+    with pytest.raises(cl6.CL6Error) as captured:
+        cl6._validated_portfolio_evidence(evidence, KEY)
+    assert captured.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("risk_policy_hash", "f" * 64),
+        ("risk_state_guard_hash", "f" * 64),
+        ("risk_state_version", 3),
+        ("captured_at", "2026-12-31T23:59:59.000000000Z"),
+        ("account_scope_sha256", "f" * 64),
+        ("evidence_identity_sha256", "f" * 64),
+        ("version", 2),
+    ),
+)
+def test_v310_cl6_37_risk_evidence_retained_hmac_mutation_matrix(
+    field: str,
+    replacement: object,
+) -> None:
+    evidence = _risk_evidence()
+    object.__setattr__(evidence, field, replacement)
+    with pytest.raises(cl6.CL6Error) as captured:
+        cl6._validated_risk_evidence(evidence, KEY)
+    assert captured.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "period_start",
+        "period_end",
+        "ledger_export_sha256",
+        "ledger_revision",
+        "ledger_head_sha256",
+        "ledger_projection_sha256",
+        "ledger_complete",
+        "ledger_incompleteness_kinds",
+        "valuation_set_sha256",
+        "cash_flow_summary",
+        "twr",
+        "xirr",
+        "report_status",
+        "generated_at",
+        "identity_key_id",
+        "report_identity_sha256",
+        "version",
+    ),
+)
+def test_v310_cl6_38_report_retained_hmac_mutation_matrix(
+    field: str,
+    vectors: dict[str, object],
+) -> None:
+    report = _report(vectors)
+    summary = dataclasses.replace(report.cash_flow_summary)
+    object.__setattr__(summary, "transaction_count", summary.transaction_count + 1)
+    twr = dataclasses.replace(report.twr)
+    object.__setattr__(twr, "rate_decimal", "0.237500000001")
+    xirr = dataclasses.replace(report.xirr)
+    object.__setattr__(xirr, "rate_decimal", "0.242497375455")
+    replacements = {
+        "period_start": "2026-01-02T00:00:00.000000000Z",
+        "period_end": "2026-12-31T00:00:00.000000000Z",
+        "ledger_export_sha256": "f" * 64,
+        "ledger_revision": report.ledger_revision + 1,
+        "ledger_head_sha256": "f" * 64,
+        "ledger_projection_sha256": "f" * 64,
+        "ledger_complete": False,
+        "ledger_incompleteness_kinds": ("TEST",),
+        "valuation_set_sha256": "f" * 64,
+        "cash_flow_summary": summary,
+        "twr": twr,
+        "xirr": xirr,
+        "report_status": cl6.ReportStatus.DEGRADED,
+        "generated_at": END_PLUS_10,
+        "identity_key_id": "CL6_MUTATION_KEY_V1",
+        "report_identity_sha256": "f" * 64,
+        "version": 2,
+    }
+    forged = dataclasses.replace(report)
+    object.__setattr__(forged, field, replacements[field])
+    recomputed = cl6._report_identity(forged, KEY)
+    if field == "report_identity_sha256":
+        assert recomputed != forged.report_identity_sha256
+    else:
+        assert recomputed != report.report_identity_sha256
+    assert forged.sha256 != report.sha256
