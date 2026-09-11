@@ -431,6 +431,135 @@ Every other transition:
 STATE_TRANSITION_INVALID
 ```
 
+### 13.1 Exact `transition_kind` and record-mutation table
+
+Version 1 `transition_kind` is the following closed set:
+
+```text
+BOOTSTRAP_LEGACY
+PREPARE_CUTOVER
+PREPARATION_EVIDENCE_BOUND
+CONFIRM_CUTOVER
+CANCEL_CUTOVER
+ACTIVATE_EXACT
+ARM_EXACT
+DISARM_EXACT
+SYNC_ADVANCED
+DISPATCH_ATTEMPT_RECORDED
+DISPATCH_REJECTED_REARMED
+DISPATCH_ACCOUNTED_REARMED
+RECOVERY_CLOSED_DISARMED
+ROLLBACK_TO_LEGACY
+```
+
+Exact mapping:
+
+```text
+no record -> LEGACY_ACTIVE
+    BOOTSTRAP_LEGACY
+
+LEGACY_ACTIVE -> CUTOVER_PREPARED
+    PREPARE_CUTOVER
+
+CUTOVER_PREPARED -> CUTOVER_PREPARED
+    PREPARATION_EVIDENCE_BOUND
+
+CUTOVER_PREPARED -> CUTOVER_CONFIRMED
+    CONFIRM_CUTOVER
+
+CUTOVER_PREPARED | CUTOVER_CONFIRMED -> LEGACY_ACTIVE
+    CANCEL_CUTOVER
+
+CUTOVER_CONFIRMED -> EXACT_CASH_DISARMED
+    ACTIVATE_EXACT
+
+EXACT_CASH_DISARMED -> EXACT_CASH_ARMED
+    ARM_EXACT
+
+EXACT_CASH_ARMED -> EXACT_CASH_DISARMED
+    DISARM_EXACT
+
+CUTOVER_PREPARED | EXACT_CASH_DISARMED | EXACT_CASH_ARMED
+-> same state
+    SYNC_ADVANCED
+
+EXACT_CASH_ARMED -> EXACT_CASH_DISPATCH_PENDING
+    DISPATCH_ATTEMPT_RECORDED
+
+EXACT_CASH_DISPATCH_PENDING -> EXACT_CASH_ARMED
+    DISPATCH_REJECTED_REARMED | DISPATCH_ACCOUNTED_REARMED
+    [same uninterrupted dispatch process only]
+
+EXACT_CASH_DISPATCH_PENDING -> EXACT_CASH_DISARMED
+    RECOVERY_CLOSED_DISARMED
+    [explicit recover command after a process/restart recovery boundary]
+
+EXACT_CASH_DISARMED -> LEGACY_ACTIVE
+    ROLLBACK_TO_LEGACY
+```
+
+Every row except bootstrap is one CAS update and MUST:
+
+```text
+record_revision = previous.record_revision + 1
+previous_record_sha256 = previous.sha256
+transition_at = injected operation time
+```
+
+All fields not explicitly changed by the selected row are preserved byte-for-value.
+
+`cutover_generation`:
+
+```text
+bootstrap = 0
+PREPARE_CUTOVER = previous.cutover_generation + 1
+every other row = preserve
+```
+
+Generation overflow fails before write with `STATE_TRANSITION_INVALID`.
+
+`PREPARE_CUTOVER` validates/sets account scope, environment and identity-key ID,
+clears the new-generation preparation evidence fields and sets:
+
+```text
+activation_context_sha256 = null
+ledger_head_sha256 = null
+ledger_revision = null
+opening_cutoff = null
+opening_record_sha256 = null
+operations_complete_through = null
+pending_dispatch_proof_sha256 = null
+```
+
+`PREPARATION_EVIDENCE_BOUND` atomically binds the complete opening,
+ledger-head/revision and contiguous watermark set. Partial binding is forbidden.
+
+`ACTIVATE_EXACT` sets:
+
+```text
+activation_context_sha256 = exact accepted CL6 context_sha256
+ever_exact_activated = true
+```
+
+and refreshes the bound ledger/head/watermark evidence from the activation run.
+`activation_context_sha256` is then preserved for that generation, including
+disarm and rollback; a later `PREPARE_CUTOVER` starts a new generation and clears it.
+
+`SYNC_ADVANCED` changes only the exact ledger revision/head and contiguous
+operations watermark selected by that completed sync. It is not written when
+the complete sync produces no custody change.
+
+`DISPATCH_ATTEMPT_RECORDED` is the only row that increments
+`post_attempt_count` and sets `pending_dispatch_proof_sha256`.
+
+The two uninterrupted-process rearm rows and `RECOVERY_CLOSED_DISARMED` clear
+`pending_dispatch_proof_sha256`; they never decrement `post_attempt_count`.
+Their exact eligibility is defined in sections 80 and 84.
+
+`CANCEL_CUTOVER` and `ROLLBACK_TO_LEGACY` never reset revisions,
+`cutover_generation`, `ever_exact_activated` or `post_attempt_count` and never
+delete CL2/CL4 evidence. No other same-state record rewrite is valid.
+
 ---
 
 ## 14. Transient non-persistent stages
@@ -526,6 +655,10 @@ runtime_cash_authority.json.lastgood
 cash_ledger_v3_10.sqlite3
 ```
 
+The lock file is coordination infrastructure, not authority custody. Its mere
+presence does not defeat this compatibility rule; an actually held/unavailable
+lock still blocks access normally.
+
 If any CL7/CL2 custody artifact exists but the active authority record is missing/invalid:
 
 ```text
@@ -610,7 +743,7 @@ are decimal strings without leading zero.
 
 ## 20. Record optionality
 
-`LEGACY_ACTIVE` initial bootstrap may have:
+`LEGACY_ACTIVE` initial bootstrap has:
 
 ```text
 account_scope_sha256 = null
@@ -624,21 +757,46 @@ operations_complete_through = null
 pending_dispatch_proof_sha256 = null
 ```
 
-From completed `CUTOVER_PREPARED` onward these MUST be non-null except:
+An exact `CUTOVER_PREPARED / PREPARE_CUTOVER` freeze record has non-null:
+
+```text
+account_scope_sha256
+identity_key_id
+```
+
+and null:
+
+```text
+activation_context_sha256
+ledger_head_sha256
+ledger_revision
+opening_cutoff
+opening_record_sha256
+operations_complete_through
+pending_dispatch_proof_sha256
+```
+
+An exact `CUTOVER_PREPARED` record whose `transition_kind` is
+`PREPARATION_EVIDENCE_BOUND` or `SYNC_ADVANCED`, and every `CUTOVER_CONFIRMED`
+record, require non-null account scope, key ID,
+ledger head/revision, opening cutoff/record and contiguous operations watermark;
+`activation_context_sha256` remains null.
+
+Every `EXACT_CASH_*` record requires all those preparation fields and:
 
 ```text
 activation_context_sha256
 ```
 
-which becomes required at `EXACT_CASH_DISARMED` and later;
+to be non-null.
 
-and:
+For every state `pending_dispatch_proof_sha256` MUST be non-null only in
+`EXACT_CASH_DISPATCH_PENDING`.
 
-```text
-pending_dispatch_proof_sha256
-```
-
-which MUST be non-null only in `EXACT_CASH_DISPATCH_PENDING`.
+A non-initial `LEGACY_ACTIVE` record reached through cancel/rollback may retain
+validated account/evidence/activation fields from the prior generation exactly
+as required by section 13.1. Its pending proof is always null. The tuple
+`ever_exact_activated`, `post_attempt_count`, `cutover_generation` is never reset.
 
 ---
 
@@ -715,23 +873,81 @@ and increments revision by exactly 1.
 
 No write may skip a revision.
 
+For revision 0:
+
+```text
+previous_record_sha256 = null
+lastgood may be absent
+```
+
+For every revision greater than 0, validated active custody requires:
+
+```text
+lastgood present
+SHA256(lastgood canonical bytes) == previous_record_sha256
+lastgood.record_revision == active.record_revision - 1
+```
+
+The lastgood record itself must pass exact keyset/domain/version, canonical-byte,
+scalar, optionality and state-derived validation. A format-only previous SHA
+check is insufficient.
+
 ---
 
 ## 24. Atomic persistence
 
-Authority persistence uses:
+Authority persistence is a bounded multi-artifact commit under the exclusive
+RuntimeCashAuthority lock. Exact order:
 
 ```text
-temp write
--> fsync/validated canonical round-trip
--> atomic replace
--> checksum update
--> lastgood preservation
+1. validate current active bytes + checksum + lastgood link;
+2. CAS expected current revision + active SHA;
+3. build canonical next bytes with previous_record_sha256 = current SHA;
+4. write/fsync/round-trip-validate unique next-record temp;
+5. write/fsync unique next-checksum temp containing next SHA + LF;
+6. write/fsync unique lastgood temp containing exact current canonical bytes;
+7. atomic-replace lastgood temp -> .lastgood;
+8. sync parent directory best effort;
+9. atomic-replace next-record temp -> active record;
+10. sync parent directory best effort;
+11. atomic-replace next-checksum temp -> active .sha256;
+12. sync parent directory best effort;
+13. re-read and validate active/checksum/previous->lastgood chain;
+14. only then return commit success and expose the new in-process state.
 ```
 
-or the accepted repository atomic state primitive with equivalent semantics.
+Initial bootstrap is the only no-current exception. Under the lock it writes
+revision 0 with null previous SHA, prepares active/checksum temps, replaces the
+active record, replaces its checksum, re-reads the pair and creates no lastgood.
+A crash before active replace leaves the all-custody-absent compatibility state;
+a mixed active/checksum bootstrap tuple is `RECOVERY_BLOCKED`; a complete exact
+pair is `LEGACY_ACTIVE` revision 0.
 
-A failed write must leave either the old valid record or the new valid record.
+The repository primitive may be reused only through a wrapper that produces
+these canonical bytes and the same observable crash outcomes. Its ordinary
+pretty-JSON/checksum behavior is not automatically equivalent.
+
+A process failure before step 9 leaves the old active record, but an interrupted
+lastgood replacement may make chain custody recovery-blocked. A failure between
+steps 9 and 11 may leave new active bytes with the old checksum. A failure after
+step 11 but before successful step 13 may leave new active/checksum with an
+invalid or missing previous->lastgood link.
+
+Therefore the exhaustive restart outcomes are:
+
+```text
+old active + old checksum + valid old chain -> old state is effective
+
+new active + new checksum + exact previous->lastgood link
+    -> new state is effective
+
+every mixed/missing/mismatched combination
+    -> RECOVERY_BLOCKED
+```
+
+No implementation may claim that a multi-file pair changed atomically.
+An operation returns success only for the second outcome. A returned failure or
+process crash never grants execution from a partly committed tuple.
 
 No partially parsed record grants execution.
 
@@ -740,6 +956,11 @@ No partially parsed record grants execution.
 ## 25. Last-good rule
 
 `.lastgood` is evidence/recovery input only.
+
+After every successful revision greater than 0 it contains the exact canonical
+bytes of the immediately previous committed active record. It is replaced
+before active bytes only as part of section 24 and is verified through the new
+record's `previous_record_sha256` after commit.
 
 CL7 MUST NOT automatically restore `.lastgood`.
 
@@ -1298,15 +1519,18 @@ There is no provider order mutation in activation.
 
 ## 47. Atomic owner switch
 
-The durable authority-record replace is the owner-switch linearization point.
+The owner switch becomes effective only when the section-24 active record,
+checksum and previous->lastgood chain have all committed and exact read-back has
+succeeded under the authority lock. The active-record replace is the candidate
+state write; it is not by itself a successful multi-artifact commit.
 
-Before successful replace:
+Before successful section-24 commit:
 
 ```text
 owner = LEGACY_CASH_AUTHORITY
 ```
 
-After successful replace:
+After successful section-24 commit:
 
 ```text
 owner = CL7_EXACT_CASH_AUTHORITY
@@ -1318,25 +1542,29 @@ No other file write, log write, provider read or in-memory flag changes owner.
 
 ## 48. Activation crash matrix
 
-### Before authority-record replace
+### Before successful section-24 commit
 
 Result:
 
 ```text
-CUTOVER_CONFIRMED
-legacy owner
-all new order POST frozen
-retry activation allowed
+previous active/checksum/chain exact
+    -> CUTOVER_CONFIRMED / legacy owner / all new order POST frozen
+    -> retry activation allowed after exact read-back
+
+any mixed/mismatched tuple
+    -> RECOVERY_BLOCKED / provider mutation zero
 ```
 
-### After authority-record replace but before command returns
+### After active-record replace but before command returns
 
 Result after restart:
 
 ```text
-EXACT_CASH_DISARMED
-exact owner
-execution disarmed
+full active/checksum/previous->lastgood tuple exact
+    -> EXACT_CASH_DISARMED / exact owner / execution disarmed
+
+mixed/mismatched tuple
+    -> RECOVERY_BLOCKED / provider mutation zero
 ```
 
 Never retry the owner switch blindly.
@@ -1853,6 +2081,8 @@ Raw intent ID remains only in private Central runtime state/provider request.
 ```text
 account_scope_sha256
 
+domain
+
 authority_record_revision
 authority_record_sha256
 
@@ -1906,6 +2136,71 @@ Identity HMAC domain:
 v3.10-cl7-locked-dispatch-proof-identity
 ```
 
+### 72.1 Exact keysets and scalar encoding
+
+The identity HMAC preimage contains exactly every section-72 field except
+`proof_identity_sha256`, with:
+
+```text
+domain = v3.10-cl7-locked-dispatch-proof-identity
+```
+
+The canonical proof contains exactly every section-72 field, including
+`proof_identity_sha256`, with:
+
+```text
+domain = v3.10-cl7-locked-dispatch-proof
+```
+
+There is no `environment`, raw Account ID, raw intent ID, provider order ID or
+additional extension field in either version-1 object.
+
+In-memory plain integers:
+
+```text
+authority_record_revision
+central_order_revision
+ledger_revision
+portfolio_revision
+current_lots
+target_lots
+version
+```
+
+`bool` is forbidden for each. Range is:
+
+```text
+0 <= value <= 9_223_372_036_854_775_807
+```
+
+Canonical JSON encoding:
+
+```text
+authority_record_revision  decimal string without leading zero
+central_order_revision     decimal string without leading zero
+ledger_revision            decimal string without leading zero
+portfolio_revision         decimal string without leading zero
+
+current_lots               JSON integer
+target_lots                JSON integer
+version                    JSON integer equal to 1
+```
+
+`free_investable_cash` and `reserved_cash` are their complete exact CL1 Money
+canonical objects. All SHA/HMAC fields are lowercase 64-hex strings.
+
+Construction order is normative:
+
+```text
+identity_preimage = exact identity keyset above
+proof_identity_sha256 = HMAC-SHA-256(identity_key, canonical(identity_preimage))
+canonical_proof = exact proof keyset above
+LockedDispatchProof.sha256 = SHA256(canonical(canonical_proof))
+```
+
+The KAT in section 115 freezes both complete preimages; deriving a schema from
+the expected digest alone is forbidden.
+
 ---
 
 ## 73. LockedDispatchProof exact Money
@@ -1943,6 +2238,69 @@ SELL
 The proof is valid only for the exact candidate/intent inspected under the Central lock.
 
 A proof cannot be reused for another intent, target or reservation.
+
+### 74.1 Durable Central proof/request correlation
+
+The same atomic Central state update that performs step U
+`QUEUED -> IN_FLIGHT` MUST persist on that exact intent:
+
+```text
+cl7_locked_dispatch_proof = complete canonical LockedDispatchProof object
+cl7_locked_dispatch_proof_sha256 = LockedDispatchProof.sha256
+```
+
+Both values are null before a CL7 exact-mode locked lease first selects the
+intent. They are written together with the `IN_FLIGHT` transition, remain
+immutable for that intent, and are retained after terminal/reconciled status as
+private audit/recovery evidence. Existing pre-CL7 intents may have both null;
+exact CL7 dispatch rejects either-one-null and non-exact read-back.
+
+For predecessor Central records, simultaneous absence of both fields is decoded
+as both null. This is the only accepted legacy-keyset projection. The next
+successful Central write materializes both keys in every serialized intent;
+one absent and one present, or any non-null value on an intent never selected by
+CL7, is invalid custody.
+
+The provider request identity is frozen as:
+
+```text
+PostSandboxOrder.orderId = CentralOrderIntent.intent_id
+GetSandboxOrderState.orderId = CentralOrderIntent.intent_id
+GetSandboxOrderState.orderIdType = ORDER_ID_TYPE_REQUEST
+```
+
+No second generated request ID is allowed.
+
+Before step V, CL7 exact-reads the just-persisted Central intent and requires:
+
+```text
+stored canonical proof bytes == proof built under the lease
+stored proof SHA == SHA256(stored canonical proof bytes)
+stored proof SHA == pending_dispatch_proof_sha256 to be written
+HMAC(account scope + raw Central intent_id) == stored intent_scope_sha256
+stored central_order_revision == exact pre-transition revision bound by proof
+post-transition Central state revision == stored central_order_revision + 1
+```
+
+The raw Central intent ID remains private. It is available after restart from
+the existing durable Central intent and is never copied into CL7 shareable
+evidence.
+
+Recovery locates exactly one Central blocking intent and validates every binding
+above against the authority pending SHA before broker lookup. Zero matches,
+multiple matches, malformed stored proof, SHA mismatch, intent-scope mismatch or
+request-ID mismatch yields:
+
+```text
+RECOVERY_BLOCKED
+provider lookup = zero when no exact raw request ID is established
+provider POST = zero
+```
+
+At D3 the Central intent contains the proof while authority has no pending
+marker. This exact combination proves pre-submit state; recovery may persist the
+Central pre-submit failure and retains the proof as audit evidence. It does not
+clear or rewrite any CL7 pending field because none exists.
 
 ---
 
@@ -2052,7 +2410,27 @@ Central pre-submit failed
 attempt marker absent
 ```
 
+Every deterministic request/schema/range/market validation MUST finish before
+step V. Once the attempt marker is committed, a local validation exception from
+inside or below the transport call is classified as uncertain; it cannot be
+used to clear the marker.
+
 ### Explicit provider rejection proving no acceptance
+
+This class exists iff every condition below is true:
+
+```text
+exactly one HTTP response belongs to the one physical PostSandboxOrder request
+TBankAPIError.service == SandboxService
+TBankAPIError.method == PostSandboxOrder
+status_code is a plain integer in [400, 499]
+status_code not in {408, 409, 425, 429}
+transient == false
+the error was constructed directly from that HTTP response
+no redirect was followed or replayed
+```
+
+No response body text or unknown provider code can widen this class.
 
 ```text
 Central FAILED/rejected
@@ -2060,12 +2438,29 @@ pending marker may be safely cleared
 post_attempt_count remains incremented
 ```
 
+The marker may be cleared only after the Central rejected/FAILED state is
+durably persisted under the same lease and exact proof/request binding remains
+valid.
+
 ### Provider accepted / correlated response
+
+The success response is accepted as correlated only when:
+
+```text
+response is a mapping
+orderRequestId is present and exactly equals raw Central intent_id
+orderId is a non-empty string of at most 128 characters
+the response came from the one physical PostSandboxOrder invocation
+```
 
 ```text
 Central SUBMITTED
 pending attempt remains recovery-relevant until safe post-submit classification
 ```
+
+Missing `orderRequestId` is not repaired from `orderId`. A response with only
+`orderId`, mismatched `orderRequestId`, malformed `orderId`, invalid JSON or a
+non-mapping body is uncertain.
 
 ### Timeout / connection loss / malformed correlation / persistence-after-accept failure
 
@@ -2074,6 +2469,27 @@ Central UNCERTAIN or existing IN_FLIGHT/SUBMITTED conservative blocker
 pending attempt remains
 no resubmit
 ```
+
+This uncertain class is the default after step V. It includes, without
+exception:
+
+```text
+status_code is null
+status_code < 400
+status_code >= 500
+status_code in {408, 409, 425, 429}
+transient == true
+TLS/socket/timeout/protocol exception
+redirect response or attempted redirect replay
+malformed success or error response
+missing/mismatched correlation
+unknown exception after entering the transport boundary
+Central outcome persistence failure
+```
+
+Only the exact explicit-rejection predicate above may prove non-acceptance after
+the physical request began. Every other post-marker outcome retains the marker
+and requires lookup/recovery without resubmit.
 
 ---
 
@@ -2214,12 +2630,46 @@ explicit provider rejection + Central terminal failed state
 
 Central RECONCILED + canonical Portfolio reconciliation complete
     + required Risk accounting complete
-
-explicit operator recovery disposition proving no provider submission
-    only for D3 no-attempt-marker case
 ```
 
 After an actual attempt marker, `post_attempt_count` never decreases.
+
+Exact clearing transitions:
+
+```text
+same uninterrupted dispatch process
+    explicit rejection predicate from section 80
+    + Central FAILED durably persisted under the same lease
+    + exact proof/request correlation
+    -> EXACT_CASH_ARMED / DISPATCH_REJECTED_REARMED
+
+same uninterrupted dispatch process
+    Central RECONCILED
+    + canonical Portfolio reconciliation complete
+    + required idempotent Risk accounting complete
+    + exact proof/request correlation
+    -> EXACT_CASH_ARMED / DISPATCH_ACCOUNTED_REARMED
+
+recover command after any process/restart boundary
+    either one of the two complete resolution predicates above
+    + exact proof/request correlation
+    -> EXACT_CASH_DISARMED / RECOVERY_CLOSED_DISARMED
+```
+
+Each transition is a section-24 CAS commit, clears only
+`pending_dispatch_proof_sha256`, preserves the Central proof evidence and keeps
+`post_attempt_count` unchanged.
+
+Recovery after a process/restart boundary never chooses an armed target. A later
+separate exact `arm` command is required.
+
+D3 has no CL7 attempt marker and therefore is not a pending-state clearing case.
+It performs only the Central pre-submit resolution specified in section 74.1;
+the authority record remains `EXACT_CASH_ARMED` unchanged.
+
+Any incomplete resolution, custody write failure, proof mismatch or unresolved
+account blocker remains `EXACT_CASH_DISPATCH_PENDING` or becomes effective
+`RECOVERY_BLOCKED`; it never clears optimistically.
 
 ---
 
@@ -2265,7 +2715,7 @@ legacy owner
 provider mutation frozen
 ```
 
-### C5 — exact activation record persisted, process exits before return
+### C5 — exact activation tuple fully committed, process exits before return
 
 ```text
 EXACT_CASH_DISARMED
@@ -2273,7 +2723,7 @@ exact owner
 provider mutation disarmed
 ```
 
-### C6 — exact arm record persisted, process exits before return
+### C6 — exact arm tuple fully committed, process exits before return
 
 ```text
 EXACT_CASH_ARMED
@@ -2550,11 +3000,27 @@ Y. leave locks
 Z. recovery/reconciliation continues from durable state
 ```
 
-Any failure before W:
+An ordinary returned failure at A through U, or a failed step-V commit for which
+the writer retains control and exact read-back proves the pending marker absent:
 
 ```text
 provider POST = zero
 ```
+
+A process crash, process kill, host loss or indeterminate write outcome after
+step V begins is not covered by that statement. If read-back finds the pending
+marker committed, even when the last observed program counter was before W, it
+is exactly D4:
+
+```text
+provider call boundary = not provable from durable evidence
+broker lookup required
+automatic resubmit forbidden
+```
+
+Once control enters W, every exception/result is classified only by section 80.
+Tests MUST separately cover an injected in-process failure before the transport
+call and a process-boundary D4 crash after the marker.
 
 ---
 
@@ -2776,7 +3242,8 @@ Exact order:
 5. state/field optionality;
 6. companion checksum;
 7. state-derived invariants;
-8. previous-record format.
+8. revision-0 null rule or exact previous-record -> canonical lastgood SHA/revision chain;
+9. closed `transition_kind` compatibility with current/lastgood state pair.
 
 ---
 
@@ -2967,14 +3434,30 @@ record_sha256 =
 Exact canonical object:
 
 ```json
-{"account_scope_sha256":"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3","activation_context_sha256":"fd4f5ecda228215f6ac2677d2ac1489a4d47b631258075d67b0fa91165e5d1d9","cutover_generation":"1","domain":"v3.10-cl7-runtime-cash-authority","environment":"SANDBOX","ever_exact_activated":true,"identity_key_id":"CL5_TEST_KEY_V1","ledger_head_sha256":"4444444444444444444444444444444444444444444444444444444444444444","ledger_revision":"5","opening_cutoff":"2026-09-11T10:00:00.000000000Z","opening_record_sha256":"7777777777777777777777777777777777777777777777777777777777777777","operations_complete_through":"2026-09-11T10:00:00.000000001Z","pending_dispatch_proof_sha256":null,"post_attempt_count":"0","previous_record_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","record_revision":"4","state":"EXACT_CASH_ARMED","transition_at":"2026-09-11T10:00:05.000000000Z","transition_kind":"ARM_EXACT","version":1}
+{"account_scope_sha256":"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3","activation_context_sha256":"fd4f5ecda228215f6ac2677d2ac1489a4d47b631258075d67b0fa91165e5d1d9","cutover_generation":"1","domain":"v3.10-cl7-runtime-cash-authority","environment":"SANDBOX","ever_exact_activated":true,"identity_key_id":"CL5_TEST_KEY_V1","ledger_head_sha256":"4444444444444444444444444444444444444444444444444444444444444444","ledger_revision":"5","opening_cutoff":"2026-09-11T10:00:00.000000000Z","opening_record_sha256":"7777777777777777777777777777777777777777777777777777777777777777","operations_complete_through":"2026-09-11T10:00:00.000000001Z","pending_dispatch_proof_sha256":null,"post_attempt_count":"0","previous_record_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","record_revision":"5","state":"EXACT_CASH_ARMED","transition_at":"2026-09-11T10:00:05.000000000Z","transition_kind":"ARM_EXACT","version":1}
 ```
+
+Revision 5 is the minimum reachable persisted sequence:
+
+```text
+0 bootstrap
+1 prepare freeze
+2 preparation evidence bound
+3 confirm
+4 activate exact/disarmed
+5 arm
+```
+
+The synthetic `cccc...` previous SHA freezes record-byte canonicalization only;
+the separate custody-chain tests MUST generate a real revision-4 lastgood whose
+SHA exactly supplies this field rather than attempt to use `cccc...` as a known
+preimage.
 
 Expected:
 
 ```text
 record_sha256 =
-93576e359a861c1b9e3cbd3e8e5bedd1bb48794d9b63ea3cd60a6aadf96cd8d4
+ed8146dd11385e70fb5a0c41b9c93006f8810ab1cf916b3429bf4beb5872f3bf
 ```
 
 ---
@@ -3017,10 +3500,10 @@ reserved_cash =
 Inputs:
 
 ```text
-authority_record_revision = 4
+authority_record_revision = 5
 
 authority_record_sha256 =
-93576e359a861c1b9e3cbd3e8e5bedd1bb48794d9b63ea3cd60a6aadf96cd8d4
+ed8146dd11385e70fb5a0c41b9c93006f8810ab1cf916b3429bf4beb5872f3bf
 
 availability_sha256 =
 cd375c47f6dc528ae8e64a13dfb7de9145f5964988893c7ef20561050411e238
@@ -3066,18 +3549,30 @@ risk_state_guard_hash =
 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 ```
 
+Exact HMAC preimage:
+
+```json
+{"account_scope_sha256":"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3","authority_record_revision":"5","authority_record_sha256":"ed8146dd11385e70fb5a0c41b9c93006f8810ab1cf916b3429bf4beb5872f3bf","availability_sha256":"cd375c47f6dc528ae8e64a13dfb7de9145f5964988893c7ef20561050411e238","central_order_revision":"7","central_reservation_projection_hash":"5555555555555555555555555555555555555555555555555555555555555555","cl6_context_identity_sha256":"05409978eaff9beafb68c9c4e2a0531c15995e8f337604dbbdc964e12a975bd6","cl6_context_sha256":"fd4f5ecda228215f6ac2677d2ac1489a4d47b631258075d67b0fa91165e5d1d9","current_lots":0,"direction":"BUY","domain":"v3.10-cl7-locked-dispatch-proof-identity","evaluated_at":"2026-09-11T10:00:06.000000000Z","free_investable_cash":{"amount":"50.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"50000000000","scale":9,"version":1},"identity_key_id":"CL5_TEST_KEY_V1","intent_scope_sha256":"b2b1ed88b2fa5b5eb29414fda5990ef241c97d53ff09d8f3a45680aedb999551","ledger_head_sha256":"4444444444444444444444444444444444444444444444444444444444444444","ledger_revision":"5","portfolio_decision_checksum":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","portfolio_document_checksum":"abababababababababababababababababababababababababababababababab","portfolio_revision":"9","reconciliation_sha256":"1111111111111111111111111111111111111111111111111111111111111111","reserved_cash":{"amount":"10.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"10000000000","scale":9,"version":1},"risk_policy_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","risk_state_guard_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","target_lots":1,"version":1}
+```
+
 Expected HMAC:
 
 ```text
 proof_identity_sha256 =
-89f7793b0646dce7d8e73580756511bf6a6e6442442655b0f5631271ab90aa0e
+82441ccd5fbc1f0f65e9a81715af753a2a008dc7ea142384a96a3684e64ada9c
+```
+
+Exact canonical proof object:
+
+```json
+{"account_scope_sha256":"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3","authority_record_revision":"5","authority_record_sha256":"ed8146dd11385e70fb5a0c41b9c93006f8810ab1cf916b3429bf4beb5872f3bf","availability_sha256":"cd375c47f6dc528ae8e64a13dfb7de9145f5964988893c7ef20561050411e238","central_order_revision":"7","central_reservation_projection_hash":"5555555555555555555555555555555555555555555555555555555555555555","cl6_context_identity_sha256":"05409978eaff9beafb68c9c4e2a0531c15995e8f337604dbbdc964e12a975bd6","cl6_context_sha256":"fd4f5ecda228215f6ac2677d2ac1489a4d47b631258075d67b0fa91165e5d1d9","current_lots":0,"direction":"BUY","domain":"v3.10-cl7-locked-dispatch-proof","evaluated_at":"2026-09-11T10:00:06.000000000Z","free_investable_cash":{"amount":"50.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"50000000000","scale":9,"version":1},"identity_key_id":"CL5_TEST_KEY_V1","intent_scope_sha256":"b2b1ed88b2fa5b5eb29414fda5990ef241c97d53ff09d8f3a45680aedb999551","ledger_head_sha256":"4444444444444444444444444444444444444444444444444444444444444444","ledger_revision":"5","portfolio_decision_checksum":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","portfolio_document_checksum":"abababababababababababababababababababababababababababababababab","portfolio_revision":"9","proof_identity_sha256":"82441ccd5fbc1f0f65e9a81715af753a2a008dc7ea142384a96a3684e64ada9c","reconciliation_sha256":"1111111111111111111111111111111111111111111111111111111111111111","reserved_cash":{"amount":"10.000000000","currency":"RUB","domain":"v3.10-money","minor_units":"10000000000","scale":9,"version":1},"risk_policy_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","risk_state_guard_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","target_lots":1,"version":1}
 ```
 
 Expected canonical proof SHA:
 
 ```text
 locked_dispatch_proof_sha256 =
-8f549742f3df8b5217cad98950505e8013b0001a257cdc03e66f20ce5695b7f1
+28277dfa964d864f9f0e1a1aa4fb61cae99536cb8f0690df20f37f32a32dc2a1
 ```
 
 ---
@@ -3091,16 +3586,16 @@ state =
 EXACT_CASH_DISPATCH_PENDING
 
 record_revision =
-5
+6
 
 post_attempt_count =
 1
 
 pending_dispatch_proof_sha256 =
-8f549742f3df8b5217cad98950505e8013b0001a257cdc03e66f20ce5695b7f1
+28277dfa964d864f9f0e1a1aa4fb61cae99536cb8f0690df20f37f32a32dc2a1
 
 previous_record_sha256 =
-93576e359a861c1b9e3cbd3e8e5bedd1bb48794d9b63ea3cd60a6aadf96cd8d4
+ed8146dd11385e70fb5a0c41b9c93006f8810ab1cf916b3429bf4beb5872f3bf
 
 transition_at =
 2026-09-11T10:00:06.500000000Z
@@ -3109,10 +3604,16 @@ transition_kind =
 DISPATCH_ATTEMPT_RECORDED
 ```
 
+Exact canonical pending record:
+
+```json
+{"account_scope_sha256":"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3","activation_context_sha256":"fd4f5ecda228215f6ac2677d2ac1489a4d47b631258075d67b0fa91165e5d1d9","cutover_generation":"1","domain":"v3.10-cl7-runtime-cash-authority","environment":"SANDBOX","ever_exact_activated":true,"identity_key_id":"CL5_TEST_KEY_V1","ledger_head_sha256":"4444444444444444444444444444444444444444444444444444444444444444","ledger_revision":"5","opening_cutoff":"2026-09-11T10:00:00.000000000Z","opening_record_sha256":"7777777777777777777777777777777777777777777777777777777777777777","operations_complete_through":"2026-09-11T10:00:00.000000001Z","pending_dispatch_proof_sha256":"28277dfa964d864f9f0e1a1aa4fb61cae99536cb8f0690df20f37f32a32dc2a1","post_attempt_count":"1","previous_record_sha256":"ed8146dd11385e70fb5a0c41b9c93006f8810ab1cf916b3429bf4beb5872f3bf","record_revision":"6","state":"EXACT_CASH_DISPATCH_PENDING","transition_at":"2026-09-11T10:00:06.500000000Z","transition_kind":"DISPATCH_ATTEMPT_RECORDED","version":1}
+```
+
 Expected record SHA:
 
 ```text
-64547cdb642b9a2946a32cca11918f2307f224073ddd0369b63bcf06245ce852
+a082ea89b08fd86172728b3aef627086a0d59349f699eddc11582c4fa6034829
 ```
 
 ---
@@ -3188,10 +3689,10 @@ V310-CL7-07
 corrupt current never auto-restores legacy lastgood
 
 V310-CL7-08
-CAS conflict / revision chain
+CAS conflict + exact previous-record/lastgood revision/SHA chain
 
 V310-CL7-09
-exact state transition matrix
+exact state/transition_kind/generation/field-mutation matrix
 
 V310-CL7-10
 state-derived single-owner mapping
@@ -3257,13 +3758,14 @@ V310-CL7-30
 activation exact phrase
 
 V310-CL7-31
-owner linearization only at authority record replace
+owner linearization only after full authority tuple commit/read-back
 
 V310-CL7-32
-activation crash before replace remains legacy owner
+activation crash before active replace: old owner or RECOVERY_BLOCKED
 
 V310-CL7-33
-activation crash after replace recovers exact/disarmed
+activation crash between active/checksum/lastgood boundaries -> RECOVERY_BLOCKED;
+fully committed tuple -> exact/disarmed
 
 V310-CL7-34
 legacy --execute rejected in exact/prepared state
@@ -3332,13 +3834,13 @@ V310-CL7-55
 intent-scope HMAC KAT
 
 V310-CL7-56
-LockedDispatchProof HMAC/SHA KAT
+LockedDispatchProof exact identity preimage/canonical object HMAC/SHA KAT
 
 V310-CL7-57
 every proof field mutation invalidates identity
 
 V310-CL7-58
-Central QUEUED->IN_FLIGHT before attempt marker
+Central QUEUED->IN_FLIGHT persists exact proof/request binding before marker
 
 V310-CL7-59
 attempt marker persisted before physical POST
@@ -3350,7 +3852,7 @@ V310-CL7-61
 one dispatch -> at most one physical POST
 
 V310-CL7-62
-provider explicit rejection classification
+provider explicit rejection exact finite predicate + all exclusions
 
 V310-CL7-63
 provider timeout -> no retry + recovery required
@@ -3365,7 +3867,8 @@ V310-CL7-66
 D3 crash pre-attempt marker proves no POST
 
 V310-CL7-67
-D4/D5/D6 recovery performs lookup only
+D4 process-boundary uncertainty distinguished from returned pre-W failure;
+D4/D5/D6 recovery performs exact correlated lookup only
 
 V310-CL7-68
 D8 reconcile-only
@@ -3468,6 +3971,11 @@ pending proof in non-pending state
 pending state without proof
 ever_exact false in exact state
 previous SHA malformed
+previous SHA well-formed but not equal to lastgood hash
+lastgood revision not active revision minus one
+crash before/after each section-24 replace/fsync boundary
+active new + checksum old
+active/checksum new + lastgood wrong
 current missing + lastgood present
 current missing + ledger present
 lastgood older LEGACY after exact activation
@@ -3511,6 +4019,10 @@ At minimum:
 queue-head change
 reservation amount change
 Central revision change
+stored Central proof missing/malformed/non-canonical
+stored Central proof SHA differs from authority pending SHA
+stored proof intent scope differs from raw Central intent HMAC
+provider request ID differs from raw Central intent ID
 Portfolio revision-only change
 Portfolio checksum-only change
 Risk policy change
@@ -3523,6 +4035,13 @@ CL6 context timestamp staleness
 authority disarm racing with dispatch
 rollback racing with dispatch
 second dispatch process racing with first
+HTTP 408/409/425/429 classified uncertain
+HTTP 5xx classified uncertain
+status-less TLS/socket/timeout exception classified uncertain
+non-transient direct HTTP 4xx outside the excluded set classified rejection
+success response missing/mismatched orderRequestId classified uncertain
+returned failure before W with marker absent proves zero POST
+D4 process crash with marker present never proves zero POST
 ```
 
 Exactly one authority lock winner may progress.
