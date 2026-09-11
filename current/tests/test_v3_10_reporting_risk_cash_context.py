@@ -396,12 +396,12 @@ def _assert_shallow_pull_request_custody(safe: str, head: str) -> None:
     expected_topology = {
         "agent/v3-10-clean-cl6-contract-freeze": (
             ACCEPTED_CONTRACT_HEAD,
-            3,
+            4,
             len(IMPLEMENTATION_PATHS),
         ),
         "program/v3-10-v4-stable-line": (
             STABLE_PREDECESSOR,
-            5,
+            7,
             len(IMPLEMENTATION_PATHS) + 1,
         ),
     }.get(pull_request["base"]["ref"])
