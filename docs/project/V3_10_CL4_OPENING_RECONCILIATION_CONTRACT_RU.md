@@ -103,6 +103,7 @@ CL4-I-R1-01 -> sections 10-11: direct detached-proof V2 binding
 CL4-I-R1-02 -> sections 12-14: exact baseline witness and graph predicates
 CL4-I-R1-03 -> section 20: literal public-boundary first-failure order
 CL4-I-R1-04 -> sections 21-22: frozen vectors and full adversarial matrix
+CL4-RS1-R1-01 -> sections 7, 13-14, 19-20, 22: pre-write capacity admission
 ```
 
 ## 5. Authority boundary и explicit non-goals
@@ -176,6 +177,9 @@ MAX_KEY_SCALARS = 128
 MAX_LEDGER_EXPORT_BYTES = 16777216
 MAX_BASELINE_WITNESS_BYTES = 16777216
 MAX_LEDGER_OBJECTS = 100000
+CL2_MAX_REVISION = 9223372036854775807
+OPENING_STORE_REVISION_RESERVE = 2
+OPENING_LEDGER_REVISION_RESERVE = 1
 RECONCILIATION_DELTA_MAX_ABS_MINOR_UNITS = 18446744073709551616999999998
 ```
 
@@ -583,6 +587,52 @@ identity содержит только stable hashes/values:
 }
 ```
 
+До возврата plan выполняется pure prospective-capacity admission. Она строит в
+memory exact CL2 canonical bytes двух ожидаемых successor states из validated
+baseline graph и уже построенных plan artifacts:
+
+```text
+prospective STAGED = baseline
+  + exact CL4 V2 descriptor, iff его нет в baseline registry
+  + exact observation wrapper with current_status = OBSERVED
+  + store_revision delta = 1
+
+prospective COMMITTED = baseline
+  + exact descriptor-if-absent
+  + exact observation wrapper with current_status = LEDGER_LINKED
+  + exact CL2 LEDGER_TRANSACTION_ACCEPTED status event
+  + exact transaction wrapper and provenance link
+  + exact TRANSACTION LedgerHead transition
+  + store_revision delta = 2
+  + ledger_revision delta = 1
+```
+
+Знаки `+ 1/+ 2` выше означают checked integer addition. Admission обязана до
+первого durable write доказать одновременно:
+
+1. `pre_store_revision <= CL2_MAX_REVISION - OPENING_STORE_REVISION_RESERVE`;
+2. `pre_ledger_revision <= CL2_MAX_REVISION - OPENING_LEDGER_REVISION_RESERVE`;
+3. каждая array в prospective STAGED и COMMITTED имеет length
+   `0..MAX_LEDGER_OBJECTS`;
+4. aggregate seven-array object count каждого prospective state не превышает
+   `MAX_LEDGER_OBJECTS`;
+5. exact canonical bytes каждого prospective export имеют length
+   `1..MAX_LEDGER_EXPORT_BYTES`;
+6. prospective head/revisions/wrappers round-trip через принятые CL1/CL2
+   canonical constructors и равны exact plan artifacts.
+
+Baseline может находиться на общем CL4 limit только если оба successor states
+также помещаются в limit. Inclusive maximum допустим для successor, maximum+1
+запрещён. Failure любого capacity predicate даёт
+`OPENING_CAPACITY_EXHAUSTED`; plan не возвращается и writes равны нулю.
+
+Эта assembly является только pure admission oracle для двух fixed CL4 deltas: она
+не открывает store, не меняет CL2 graph и не создаёт альтернативный persistence
+format. `accept_from_now_opening` независимо повторяет admission из plan witness
+до первого write, а оба read-back обязаны byte-for-byte совпасть с рассчитанным
+STAGED либо COMMITTED export. Любое отличие обрабатывается state/CAS rules section
+14, а не расширением preview.
+
 Opening transaction exact material:
 
 ```text
@@ -625,8 +675,9 @@ ledger_revision: int
 ledger_head_sha256: str
 ```
 
-До любого write функция валидирует полный plan, exact baseline witness и current
-`store.export_bytes()`. Разрешены только три состояния относительно witness:
+До любого write функция валидирует полный plan, exact baseline witness, получает
+current `store.export_bytes()` и классифицирует его по полному graph. Разрешены
+только три состояния относительно witness:
 
 1. **ABSENT** — current export byte-for-byte равен `baseline_export_bytes`;
    store/ledger revisions и head равны plan pre-fields; target opening отсутствует.
@@ -647,6 +698,12 @@ Structural comparison нормализует только deterministic CL2 arra
 revision store с иным graph, включая same ledger head с иным inbox/status graph,
 даёт `BASELINE_STALE` до нового write.
 
+После exact state classification, opening uniqueness/amount и baseline relation,
+но до первого нового write функция повторяет prospective-capacity admission
+section 13. Поэтому foreign current graph всегда даёт `BASELINE_STALE` раньше
+capacity reason; exact ABSENT/STAGED/COMMITTED с недостаточным headroom даёт
+`OPENING_CAPACITY_EXHAUSTED` и zero write этого вызова.
+
 В `COMMITTED_OPENING` exact replay возвращает `OPENING_ALREADY_PRESENT` без write
 и без current-age requirement, но V2 proof identity всё равно проверяется.
 `STAGED_OBSERVATION` может завершиться с тем же plan после proof expiration:
@@ -656,10 +713,13 @@ cutoff/content. Different proof/plan/opening graph даёт `OPENING_CONFLICT`.
 В `ABSENT` непосредственно перед первым append proof обязан быть fresh. Затем
 вызывается CL2 `append_observation` с `expected_store_revision =
 pre_store_revision`. CAS failure даёт `OPENING_PLAN_STALE` и zero CL4 write.
-Read-back обязан быть exact STAGED либо exact COMMITTED, если same-plan caller уже
-завершил second step. Из exact STAGED вызывается `append_transaction` с current
-store/ledger revisions. Second CAS failure оставляет только staged observation и
-zero opening economic effect. Automatic retry loop отсутствует.
+Read-back обязан byte-for-byte совпасть с prospective STAGED либо prospective
+COMMITTED, если same-plan caller уже завершил second step. Из exact STAGED
+вызывается `append_transaction` с current store/ledger revisions. Second CAS
+failure оставляет только staged observation и zero opening economic effect.
+Capacity failure не может впервые возникнуть после observation commit: оба
+prospective exports и обе revision additions уже проверены до него. Automatic
+retry loop отсутствует.
 
 После второго read-back требуется exact COMMITTED graph и byte-identical derived
 record, иначе `POSTCONDITION_FAILED`. Повтор exact acceptance сразу после success
@@ -971,6 +1031,7 @@ OPENING_AMOUNT_UNSUPPORTED
 OPENING_MISSING
 OPENING_CONFLICT
 BASELINE_STALE
+OPENING_CAPACITY_EXHAUSTED
 OPENING_PLAN_STALE
 CONFIRMATION_INVALID
 PERSISTENCE_FAILURE
@@ -1010,7 +1071,9 @@ Common detached-object order для всех public boundaries:
 7. response/export bounds;
 8. response/export exact schema/canonical graph;
 9. nested CL3 Money / CL1 / CL2 identity;
-10. opening/projection/reconciliation semantic construction.
+10. для `prepare_from_now_opening` и `accept_from_now_opening` — prospective
+    STAGED/COMMITTED revision, object и byte capacity;
+11. opening/projection/reconciliation semantic construction.
 
 Поэтому forged proof `version = 1` вместе с bad key всегда даёт
 `VERSION_UNSUPPORTED`. Freshness предшествует HMAC: stale proof с syntactically
@@ -1024,7 +1087,7 @@ Exact public-boundary refinements:
   V2 identity/proof construction;
 - `prepare_from_now_opening`: proof type/version -> scalar/nested structure ->
   timestamp/freshness -> key bytes/HMAC -> export bounds/schema/graph -> inbox and
-  opening pre-state -> plan;
+  opening pre-state -> prospective capacity admission -> plan;
 - `project_shadow_cash`: argument types/environment/account/timestamp/key grammar
   -> export bounds/schema/graph -> opening uniqueness -> arithmetic/completeness;
 - `reconcile_shadow_cash`: proof type/version/structure -> timestamp/freshness ->
@@ -1043,9 +1106,10 @@ Acceptance boundary:
 7. proof freshness only for ABSENT;
 8. identity key grammar and V2 proof/source/provenance HMAC;
 9. opening uniqueness/amount and exact baseline relation;
-10. CL2 observation CAS append/read-back;
-11. CL2 transaction CAS append/read-back;
-12. exact OpeningRecord/postcondition.
+10. repeated prospective capacity admission;
+11. CL2 observation CAS append/read-back;
+12. CL2 transaction CAS append/read-back;
+13. exact OpeningRecord/postcondition.
 
 При multi-invalid input возвращается только первая reason. Dependency error
 нормализуется без private context; unexpected error -> `INTERNAL_BOUNDARY_FAILED`.
@@ -1105,6 +1169,10 @@ incomplete reconciliation SHA-256 = 3812a53b15181b104849a5622596068aa73898577f30
 adoption candidate SHA-256 = 017a995a90ab719da91edb0f89fdeecd7350c485f51ac279216512c5ddac20a3
 ```
 
+Для этого vector pure admission получает exact staged/post-opening export hashes
+выше; обе revision additions, все array/aggregate counts и обе byte lengths
+находятся внутри inclusive bounds.
+
 Exact canonical response bytes:
 
 ```text
@@ -1163,7 +1231,15 @@ runtime output не является oracle.
 - `V310-CL4-23`: exact three-file implementation allowlist and byte-identical
   accepted CL1/CL2/CL3 source;
 - `V310-CL4-24`: accepted CL1/CL2/CL3 functional suites and full functional suite
-  pass excluding only the two documented historical current-HEAD custody nodes.
+  pass excluding only the two documented historical current-HEAD custody nodes;
+- `V310-CL4-25`: prospective-capacity matrix: store revision
+  `CL2_MAX_REVISION-2` accepted / `CL2_MAX_REVISION-1` rejected; ledger revision
+  `CL2_MAX_REVISION-1` accepted / `CL2_MAX_REVISION` rejected;
+  descriptor-present/absent;
+  each-array, aggregate-object and exact canonical STAGED/COMMITTED byte limit at
+  maximum accepted / maximum+1 rejected; every rejection occurs before first
+  write with exact `OPENING_CAPACITY_EXHAUSTED`; foreign current graph together
+  with exhausted plan capacity returns earlier `BASELINE_STALE` and zero write.
 
 Findings `CL4-I-R1-01..04` имеют отдельные regression tests, способные
 воспроизвести исходный defect до correction. Adversarial tests forge/rebuild
@@ -1223,6 +1299,8 @@ Reviewer обязан подтвердить:
   same-head/different-inbox transfer;
 - crash recovery и CAS branches finite, append-only и не создают partial economic
   opening; post-stage foreign mutation explicitly fails closed;
+- revision/object/byte headroom обоих prospective states доказан до первого write,
+  exact maximum/max+1 boundaries имеют zero-write regressions;
 - first-failure order даёт exact required multi-invalid reasons;
 - full adversarial matrix закрывает `CL4-I-R1-01..04`;
 - `MATCHED`/candidate не открывают CashAvailability/execution/adoption;
