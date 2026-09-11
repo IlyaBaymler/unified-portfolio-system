@@ -1,29 +1,41 @@
-# V3.10 CL4 — Opening proof + shadow reconciliation: bounded contract freeze
+# V3.10 CL4 — Opening proof + shadow reconciliation: bounded contract rescope R1
 
-Статус: `CONTRACT CANDIDATE / IMPLEMENTATION BLOCKED / NO RUNTIME AUTHORITY`.
+Статус: `RESCOPE CONTRACT CANDIDATE / IMPLEMENTATION BLOCKED / NO RUNTIME AUTHORITY`.
 
-Этот документ является единственным разрешённым изменением CL4 contract-freeze.
-Он не является acceptance, implementation, publication, migration, runtime
-adoption или разрешением provider/private-account access.
+Этот документ является единственным разрешённым изменением CL4-RS1. Original
+accepted contract `4dab154f...` не переписывается: этот successor заменяет его
+только для будущей implementation. Rejected candidate `b5d6912f...` остаётся
+evidence-only. Документ не является acceptance, implementation, publication,
+migration, runtime adoption или разрешением provider/private-account access.
 
 ## 1. Exact predecessor и lineage
 
-CL4 начинается только от принятого и интегрированного CL3:
+CL4-RS1 начинается только от original accepted CL4 contract:
 
 ```text
-branch = agent/v3-10-clean-cl4-contract-freeze
-predecessor commit = 4340c5d517dcece4f7db20b7cfc21e602c3efddc
-predecessor tree = bd40cd3b7237434ea2754f6f7c6eaaed2c02637f
-HEAD at branch creation = predecessor commit
-merge-base(HEAD, predecessor) = predecessor commit
+branch = agent/v3-10-clean-cl4-contract-rescope-r1
+rescope predecessor commit = 4dab154fb6ed096aa23dc3f0fa0987859b598559
+rescope predecessor tree = 7f0a73423a4580453f75ebeba979b173b2250e3c
+stable-line CL3 ancestor = 4340c5d517dcece4f7db20b7cfc21e602c3efddc
+stable-line CL3 tree = bd40cd3b7237434ea2754f6f7c6eaaed2c02637f
+HEAD at branch creation = rescope predecessor commit
+merge-base(HEAD, rescope predecessor) = rescope predecessor commit
 ahead = 0
 behind = 0
 worktree = clean
 ```
 
-`main`, исторические ветки и прежний Issue #52 не являются integration authority
-для CL4. Исторический #52 используется только как negative/lessons evidence;
-его schema migration, PortfolioRepository coupling и runtime wiring не переносятся.
+Governance disposition:
+
+```text
+4dab154f... = ACCEPTED CONTRACT / SUPERSEDED FOR IMPLEMENTATION BY CL4-RS1
+b5d6912f... = REJECTED / EVIDENCE-ONLY / NOT ACCEPTED
+stable line = unchanged at 4340c5d...
+fixed implementation finding set = CL4-I-R1-01..04
+```
+
+`main`, historical branches and Issue #52 are not integration authority for CL4.
+CL1–CL3 source and CL2 persistent schema remain immutable.
 
 ## 2. Contract allowlist
 
@@ -54,18 +66,20 @@ Central, Execution, build/release и других tests запрещены. Ра
 
 ## 4. Bounded mission
 
-CL4 version 1 обязан дать только:
+CL4 contract version 2 обязан дать только:
 
 1. pure snapshot adapter одного caller-supplied `GetPortfolio` response;
 2. exact `totalAmountCurrencies -> CL1 Money` через принятый CL3 codec;
-3. immutable privacy-safe `BrokerCashProof`;
+3. immutable privacy-safe `BrokerCashProof V2`, HMAC которого напрямую связывает
+   cash, `as_of` и все detached authoritative identity fields;
 4. единственный opening mode `FROM_NOW`;
 5. deterministic create-once opening observation/transaction/record graph;
-6. explicit, confirmation-gated append через существующий CL2 API;
-7. deterministic expected-cash reduction из validated CL2 export;
-8. exact zero-tolerance broker-vs-ledger shadow reconciliation;
-9. finite discrepancy taxonomy и completeness evidence;
-10. fail-closed immutable candidate только для отдельного adoption review.
+6. exact byte-equivalent baseline witness без нового CL2 store-id/schema;
+7. explicit, confirmation-gated append через существующий CL2 API;
+8. deterministic expected-cash reduction из validated CL2 export;
+9. exact zero-tolerance broker-vs-ledger shadow reconciliation;
+10. finite discrepancy taxonomy, completeness evidence и fail-closed candidate
+    только для отдельного adoption review.
 
 Нормативный поток:
 
@@ -73,13 +87,22 @@ CL4 version 1 обязан дать только:
 caller-supplied GetPortfolio response
 -> bounded immutable response snapshot
 -> exact CL3 Money codec
--> BrokerCashProof
--> FROM_NOW OpeningPlan
+-> BrokerCashProof V2
+-> FROM_NOW OpeningPlan V2 + exact baseline witness
 -> explicit shadow-ledger acceptance through CL2
--> derived OpeningRecord
--> LedgerCashProjection
--> CashReconciliation
--> AdoptionCandidate requiring a separate locked gate
+-> derived OpeningRecord V2
+-> LedgerCashProjection V2
+-> CashReconciliation V2
+-> AdoptionCandidate V2 requiring a separate locked gate
+```
+
+Fixed finding closure map:
+
+```text
+CL4-I-R1-01 -> sections 10-11: direct detached-proof V2 binding
+CL4-I-R1-02 -> sections 12-14: exact baseline witness and graph predicates
+CL4-I-R1-03 -> section 20: literal public-boundary first-failure order
+CL4-I-R1-04 -> sections 21-22: frozen vectors and full adversarial matrix
 ```
 
 ## 5. Authority boundary и explicit non-goals
@@ -132,15 +155,17 @@ handle передаются caller. Import модуля side-effect free.
 Frozen constants:
 
 ```text
-CL4_CONTRACT_VERSION = 1
-BROKER_CASH_PROOF_VERSION = 1
-OPENING_PLAN_VERSION = 1
-OPENING_RECORD_VERSION = 1
-LEDGER_CASH_PROJECTION_VERSION = 1
-CASH_RECONCILIATION_VERSION = 1
-ADOPTION_CANDIDATE_VERSION = 1
-CL4_OPENING_CODEC_VERSION = 1
-CL4_CROSS_LANGUAGE_FIXTURE_VERSION = 1
+CL4_CONTRACT_VERSION = 2
+BROKER_CASH_PROOF_VERSION = 2
+OPENING_PLAN_VERSION = 2
+OPENING_RECORD_VERSION = 2
+LEDGER_CASH_PROJECTION_VERSION = 2
+CASH_RECONCILIATION_VERSION = 2
+ADOPTION_CANDIDATE_VERSION = 2
+CL4_OPENING_CONTENT_VERSION = 2
+CL4_CROSS_LANGUAGE_FIXTURE_VERSION = 2
+CL2 codec descriptor codec_version = 1
+CL2 codec descriptor version = 1
 MAX_PROOF_AGE_NS = 120000000000
 MAX_RESPONSE_DEPTH = 16
 MAX_RESPONSE_NODES = 100000
@@ -149,9 +174,16 @@ MAX_MAPPING_KEYS = 4096
 MAX_STRING_SCALARS = 4096
 MAX_KEY_SCALARS = 128
 MAX_LEDGER_EXPORT_BYTES = 16777216
+MAX_BASELINE_WITNESS_BYTES = 16777216
 MAX_LEDGER_OBJECTS = 100000
 RECONCILIATION_DELTA_MAX_ABS_MINOR_UNITS = 18446744073709551616999999998
 ```
+
+CL4 V1 artifacts fail closed with `VERSION_UNSUPPORTED`; V1-to-V2 migration or
+compatibility parser does not exist. The CL2 codec descriptor remains version 1
+because that version is frozen by CL2; V2 separation is expressed by exact
+`codec_id = CL4_FROM_NOW_OPENING_V2`, content `contract_version = 2` and the CL4
+DTO versions above.
 
 Все CL4 canonical bytes используют exact CL1/CL2 rule:
 
@@ -328,23 +360,29 @@ Top-level должен содержать `totalAmountCurrencies`. Другие 
 `identity_key` — exact bytes длиной `32..64`, `identity_key_id` — token. Key не
 входит в result/error/repr и не хранится. CL4 не выводит/ротирует key.
 
-`response_canonical_sha256 = SHA256(exact bounded snapshot bytes)`. Response
-identity — HMAC exact preimage:
+`response_canonical_sha256 = SHA256(exact bounded snapshot bytes)`. Detached
+proof identity V2 — HMAC exact preimage:
 
 ```json
 {
   "account_scope_sha256": "<64 lowercase hex>",
-  "domain": "v3.10-cl4-getportfolio-response-identity",
+  "as_of": "YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ",
+  "cash": "<nested exact CL1 Money object>",
+  "domain": "v3.10-cl4-broker-cash-proof-identity",
   "environment": "SANDBOX",
   "identity_key_id": "<TOKEN>",
   "provider": "TBANK",
   "response_canonical_sha256": "<SHA-256 exact response snapshot bytes>",
   "rpc": "tinkoff.public.invest.api.contract.v1.OperationsService/GetPortfolio",
-  "version": 1
+  "version": 2
 }
 ```
 
-Version 1 поддерживает только `BrokerEnvironment.SANDBOX` и CL1 `RUB/scale=9`.
+HMAC напрямую связывает domain/version, environment, account scope, key ID,
+response SHA, full canonical Money и `as_of`. Изменение cash даже на один nano,
+`as_of` или любого другого поля preimage обязано менять HMAC.
+
+Version 2 поддерживает только `BrokerEnvironment.SANDBOX` и CL1 `RUB/scale=9`.
 `PRODUCTION`, другая currency/scale и non-positive opening не расширяются
 автоматически.
 
@@ -356,10 +394,10 @@ environment: BrokerEnvironment
 as_of: str
 cash: Money
 response_canonical_sha256: str
-response_identity_sha256: str
+proof_identity_sha256: str
 identity_key_id: str
 response_complete: bool = True
-version: int = 1
+version: int = 2
 ```
 
 Exact canonical keyset:
@@ -373,30 +411,28 @@ Exact canonical keyset:
   "domain": "v3.10-cl4-broker-cash-proof",
   "environment": "SANDBOX",
   "identity_key_id": "<TOKEN>",
+  "proof_identity_sha256": "<HMAC-SHA-256>",
   "provider": "TBANK",
-  "response_complete": true,
   "response_canonical_sha256": "<SHA-256>",
-  "response_identity_sha256": "<HMAC-SHA-256>",
+  "response_complete": true,
   "rpc": "tinkoff.public.invest.api.contract.v1.OperationsService/GetPortfolio",
-  "version": 1
+  "version": 2
 }
 ```
 
 `sha256` равен plain SHA-256 proof canonical bytes. Proof не содержит raw
-response/account/token. Наличие `response_canonical_sha256` позволяет всем
-принимающим proof boundaries заново проверить keyed response identity, не сохраняя
-response. `as_of` — caller-supplied observation-completion time; он не объявляется
-provider timestamp или cryptographic attestation. Build требует:
+response/account/token. `as_of` — caller-supplied observation-completion time; он
+не является provider timestamp или cryptographic attestation. Build требует:
 
 ```text
 as_of <= evaluated_at
 evaluated_at - as_of <= MAX_PROOF_AGE_NS
 ```
 
-Сравнение выполняется integer nanoseconds без wall clock read.
-`prepare_from_now_opening`, `accept_from_now_opening` и
-`reconcile_shadow_cash` обязаны воспроизвести response identity из proof и
-supplied key; mismatch даёт `RESPONSE_IDENTITY_INVALID` до ledger mutation.
+Сравнение выполняется integer nanoseconds без wall clock read. Все boundaries,
+принимающие proof и identity key, воспроизводят V2 HMAC из detached fields.
+Mismatch даёт `PROOF_IDENTITY_INVALID`; proof version 1 даёт
+`VERSION_UNSUPPORTED` до key/HMAC validation.
 
 ## 11. Opening mode, codec и SourceIdentity
 
@@ -405,24 +441,25 @@ supplied key; mismatch даёт `RESPONSE_IDENTITY_INVALID` до ledger mutation
 `CL4_OPENING_CODEC`:
 
 ```text
-codec_id = CL4_FROM_NOW_OPENING_V1
+codec_id = CL4_FROM_NOW_OPENING_V2
 codec_version = 1
 version = 1
-schema_sha256 = 917b0b3a98748c2279ed9efb1007fddec6375afd3da7003143690544b7336d78
-descriptor_sha256 = 159ebf8e748b104bf691a0da2cda4d6a94866417b1c0330124f406f35d17e6c2
+schema_sha256 = 1f15c6486dd348bdcf8f2b725111b01e583404efe5717ab5df0b7968d87bbfe3
+descriptor_sha256 = d80e3ccde02d469f5bd99d9884cd36524f1d11069d2ce8bab08e9c0b65b3659d
 ```
 
 Exact `schema_json_ascii`:
 
 ```json
-{"domain":"v3.10-operation-inbox-codec-schema","fields":[{"allowed_values":null,"key":"account_scope_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"broker_cash_proof_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"cutoff","kind":"STRING","max_scalars":"30","maximum":null,"minimum":null,"required":true},{"allowed_values":["SANDBOX"],"key":"environment","kind":"STRING","max_scalars":"16","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"generation","kind":"INTEGER","max_scalars":null,"maximum":"1","minimum":"1","required":true},{"allowed_values":null,"key":"identity_key_id","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"ledger_export_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"ledger_head_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"ledger_revision","kind":"STRING","max_scalars":"19","maximum":null,"minimum":null,"required":true},{"allowed_values":["FROM_NOW"],"key":"mode","kind":"STRING","max_scalars":"16","maximum":null,"minimum":null,"required":true},{"allowed_values":["RUB"],"key":"opening_currency","kind":"STRING","max_scalars":"3","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"opening_minor_units","kind":"STRING","max_scalars":"29","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"response_identity_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"store_revision","kind":"STRING","max_scalars":"19","maximum":null,"minimum":null,"required":true}],"version":1}
+{"domain":"v3.10-operation-inbox-codec-schema","fields":[{"allowed_values":null,"key":"account_scope_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"baseline_export_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"broker_cash_proof_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"contract_version","kind":"INTEGER","max_scalars":null,"maximum":"2","minimum":"2","required":true},{"allowed_values":null,"key":"cutoff","kind":"STRING","max_scalars":"30","maximum":null,"minimum":null,"required":true},{"allowed_values":["SANDBOX"],"key":"environment","kind":"STRING","max_scalars":"16","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"generation","kind":"INTEGER","max_scalars":null,"maximum":"1","minimum":"1","required":true},{"allowed_values":null,"key":"identity_key_id","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"ledger_head_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"ledger_revision","kind":"STRING","max_scalars":"19","maximum":null,"minimum":null,"required":true},{"allowed_values":["FROM_NOW"],"key":"mode","kind":"STRING","max_scalars":"16","maximum":null,"minimum":null,"required":true},{"allowed_values":["RUB"],"key":"opening_currency","kind":"STRING","max_scalars":"3","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"opening_minor_units","kind":"STRING","max_scalars":"29","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"proof_identity_sha256","kind":"STRING","max_scalars":"64","maximum":null,"minimum":null,"required":true},{"allowed_values":null,"key":"store_revision","kind":"STRING","max_scalars":"19","maximum":null,"minimum":null,"required":true}],"version":1}
 ```
 
 Opening sanitized content имеет exact поля schema и значения:
 
-- account/proof/response/export/head hashes — lowercase SHA-256;
+- `contract_version = 2`, `generation = 1`;
+- account/proof/proof-identity/baseline-export/head hashes — lowercase SHA-256;
 - `cutoff = proof.as_of`;
-- `environment = SANDBOX`, `mode = FROM_NOW`, `generation = 1`;
+- `environment = SANDBOX`, `mode = FROM_NOW`;
 - `identity_key_id` — exact proof key ID;
 - revisions — canonical decimal strings;
 - opening currency/minor units — exact CL1 values.
@@ -430,7 +467,7 @@ Opening sanitized content имеет exact поля schema и значения:
 Source scope HMAC preimage:
 
 ```json
-{"account_scope_sha256":"<hash>","currency":"RUB","domain":"v3.10-cl4-opening-source-scope","environment":"SANDBOX","generation":1,"identity_key_id":"<TOKEN>","mode":"FROM_NOW","version":1}
+{"account_scope_sha256":"<hash>","currency":"RUB","domain":"v3.10-cl4-opening-source-scope","environment":"SANDBOX","generation":1,"identity_key_id":"<TOKEN>","mode":"FROM_NOW","version":2}
 ```
 
 `SourceIdentity`:
@@ -445,15 +482,14 @@ source_content_sha256 = SHA256(exact sanitized content bytes)
 Provenance HMAC preimage:
 
 ```json
-{"account_scope_sha256":"<hash>","broker_cash_proof_sha256":"<hash>","domain":"v3.10-cl4-opening-provenance","identity_key_id":"<TOKEN>","ledger_export_sha256":"<hash>","response_identity_sha256":"<hash>","source_content_sha256":"<hash>","version":1}
+{"account_scope_sha256":"<hash>","baseline_export_sha256":"<hash>","broker_cash_proof_sha256":"<hash>","domain":"v3.10-cl4-opening-provenance","identity_key_id":"<TOKEN>","proof_identity_sha256":"<hash>","source_content_sha256":"<hash>","version":2}
 ```
 
 `InboxObservation.observed_at = proof.as_of`. Exact logical source включает key
 version и уникален per `account/environment/currency/mode/generation/key ID`;
 changed content при том же key становится CL2 `SOURCE_CONTENT_CONFLICT`. Key
-rotation меняет keyed identities и в CL4 v1 не поддерживается. Независимая
-cross-key create-once проверка всего ledger graph всё равно запрещает второй
-opening для account/environment/currency.
+rotation в CL4 V2 не поддерживается. Независимая cross-key create-once проверка
+всего ledger graph запрещает второй opening для account/environment/currency.
 
 ## 12. CL2 export validation и bounded ledger view
 
@@ -467,8 +503,7 @@ transactions как projection input. Перед любым opening/projection:
 4. каждая export array имеет длину `0..MAX_LEDGER_OBJECTS`; aggregate count —
    exact сумма длин `codec_registry`, `observations`, `inbox_status_events`,
    `transactions`, `provenance_links`, `correction_bundles` и
-   `ledger_transitions`, также не более `MAX_LEDGER_OBJECTS`; top-level object,
-   wrapper fields и nested JSON-in-JSON CL1/CL2 objects отдельно не считаются;
+   `ledger_transitions`, также не более `MAX_LEDGER_OBJECTS`;
 5. every nested CL1/CL2 canonical object parse/round-trip byte-identically;
 6. wrapper SHA/source/economic/logical fields equal derived values;
 7. unique hashes/logical sources/provenance links;
@@ -477,46 +512,62 @@ transactions как projection input. Перед любым opening/projection:
 10. every ordinary transition resolves one ordinary transaction;
 11. every correction transition resolves one valid `LedgerCorrectionBundle`;
 12. reversal/correction rows occur only through their exact bundle transition;
-13. для target account все CL4 source-scope/provenance HMAC воспроизводятся из
-    content и supplied key; их key ID обязан быть единым; non-target CL4 rows
-    проходят полный CL2/schema/hash graph validation, но не проверяются чужим key;
+13. для target account все V2 CL4 source-scope/provenance HMAC воспроизводятся
+    из content и supplied key; V1 codec/content/artifacts отвергаются;
 14. final revisions/head equal export top-level values;
 15. unreferenced, duplicated, dangling или unknown graph elements fail closed.
 
-CL4 revalidation не меняет CL2 bytes или semantics. It is defense-in-depth for a
-caller-supplied export, not a second persistence implementation.
+CL4 revalidation не меняет CL2 bytes или semantics. Это defense-in-depth для
+caller-supplied export, а не второй persistence implementation.
 
 `ledger_export_sha256 = SHA256(exact export bytes)`.
 
+Для acceptance `OpeningPlan V2` несёт exact immutable `baseline_export_bytes`.
+Witness обязан пройти все проверки выше, иметь length
+`1..MAX_BASELINE_WITNESS_BYTES`, а его SHA-256 обязан byte-for-byte совпасть с
+`plan.baseline_export_sha256`. Hash без этих bytes не считается доказательством
+baseline lineage. CL4 не добавляет CL2 store-id, table, column или schema version.
+
+Два stores с byte-identical validated export считаются одной semantic baseline;
+физическая instance identity намеренно не вводится. Перенос staged observation в
+store с любым отличающимся inbox/status/ledger/codec graph не проходит exact
+baseline-extension predicate section 14 даже при совпавших revision/head.
+
 ## 13. FROM_NOW OpeningPlan
 
-`prepare_from_now_opening` требует fresh positive proof, valid export и отсутствие
-любого accepted `OPENING_BALANCE` для target account/currency. Pre-existing
-non-opening ledger history допускается и входит в frozen cutover head, но не
-пересчитывается: это и есть `FROM_NOW`, не historical backfill.
+`prepare_from_now_opening` требует fresh positive BrokerCashProof V2, valid export
+и отсутствие любого accepted `OPENING_BALANCE` для target account/currency.
+Pre-existing non-opening ledger history допускается и входит в frozen cutover
+head, но не пересчитывается: это `FROM_NOW`, не historical backfill.
 
 До preparation все target-account observations с `observed_at <= proof.as_of`
 обязаны быть terminal `LEDGER_LINKED` или `REJECTED`. `OBSERVED`,
 `REVIEW_REQUIRED`, broken status/link или evidence после proof `as_of` дают
 `INBOX_INCOMPLETE`; никакой pending amount не добавляется к cash.
 
-`OpeningPlan` содержит immutable nested `proof`, `observation`, `transaction` и:
+`OpeningPlan` — frozen/slotted object с immutable nested `proof`, `observation`,
+`transaction` и:
 
 ```text
 mode: FROM_NOW
 generation: 1
-pre_store_revision
-pre_ledger_revision
-pre_ledger_head_sha256
-pre_ledger_export_sha256
-version: 1
+pre_store_revision: int
+pre_ledger_revision: int
+pre_ledger_head_sha256: str
+baseline_export_sha256: str
+baseline_export_bytes: bytes = field(repr=False)
+version: int = 2
 ```
 
-Его canonical identity содержит только stable hashes/values:
+`baseline_export_bytes` является bounded validation witness. Он участвует в
+dataclass equality, но не входит raw bytes в `repr`, error/evidence или canonical
+plan. Любая boundary заново проверяет exact witness bytes и их hash. Canonical
+identity содержит только stable hashes/values:
 
 ```json
 {
   "account_scope_sha256": "<hash>",
+  "baseline_export_sha256": "<hash>",
   "broker_cash_proof_sha256": "<hash>",
   "domain": "v3.10-cl4-opening-plan",
   "environment": "SANDBOX",
@@ -524,12 +575,11 @@ version: 1
   "mode": "FROM_NOW",
   "observation_sha256": "<hash>",
   "opening_money": "<nested CL1 Money>",
-  "pre_ledger_export_sha256": "<hash>",
   "pre_ledger_head_sha256": "<hash>",
   "pre_ledger_revision": "<decimal>",
   "pre_store_revision": "<decimal>",
   "transaction_sha256": "<hash>",
-  "version": 1
+  "version": 2
 }
 ```
 
@@ -557,13 +607,13 @@ negative cash дают `OPENING_AMOUNT_UNSUPPORTED`; CL1 zero-posting invariant 
 ACCEPT V3.10 CL4 FROM_NOW OPENING <opening_plan_sha256>
 ```
 
-Exact string сравнивается byte-for-byte; whitespace/case/другой hash запрещены.
-Это подтверждает только shadow-ledger opening, не runtime adoption.
+Exact string сравнивается byte-for-byte. Это подтверждает только shadow-ledger
+opening, не runtime adoption.
 
-Перед вызовом store должен быть создан/открыт с registry, который содержит exact
-`CL4_OPENING_CODEC` вместе со всеми уже persisted codecs. Отсутствующий или
-конфликтующий descriptor нормализуется в `PERSISTENCE_FAILURE` без direct schema
-write со стороны CL4.
+Перед вызовом store должен быть создан/открыт с registry, который разрешает exact
+`CL4_OPENING_CODEC` вместе со всеми persisted codecs. Отсутствующий или
+конфликтующий descriptor нормализуется в `PERSISTENCE_FAILURE`; direct schema
+write со стороны CL4 отсутствует.
 
 `OpeningAcceptance` содержит:
 
@@ -575,62 +625,61 @@ ledger_revision: int
 ledger_head_sha256: str
 ```
 
-Перед первым write функция получает `store.export_bytes()`, валидирует весь graph и
-допускает только:
+До любого write функция валидирует полный plan, exact baseline witness и current
+`store.export_bytes()`. Разрешены только три состояния относительно witness:
 
-1. **ABSENT** — exact pre-export/head/revisions из plan, opening отсутствует;
-2. **STAGED_OBSERVATION** — current export является valid append-only descendant
-   plan pre-state: ledger chain содержит exact `pre_ledger_head_sha256` на exact
-   `pre_ledger_revision`, exact plan observation существует в status `OBSERVED`,
-   plan transaction отсутствует и другого target opening нет;
-3. **COMMITTED_OPENING** — complete exact observation/link/transaction graph,
-   из которого выводится byte-identical expected `OpeningRecord`.
+1. **ABSENT** — current export byte-for-byte равен `baseline_export_bytes`;
+   store/ledger revisions и head равны plan pre-fields; target opening отсутствует.
+2. **STAGED_OBSERVATION** — current graph является exact baseline graph плюс:
+   exact V2 codec descriptor, только если его не было в baseline registry; exact
+   plan observation в status `OBSERVED`; `store_revision = pre + 1`. Ledger arrays,
+   revision/head и все прочие arrays byte-equivalent baseline. Plan transaction,
+   link и LEDGER_LINKED event отсутствуют.
+3. **COMMITTED_OPENING** — current graph является exact baseline graph плюс exact
+   descriptor-if-needed, plan observation, один CL2-generated LEDGER_LINKED event,
+   exact provenance link, exact plan transaction и exact ordinary transition;
+   `store_revision = pre + 2`, `ledger_revision = pre + 1`, head равен exact
+   transition head. Никакой иной delta не допускается.
 
-В `COMMITTED_OPENING` возвращается `OPENING_ALREADY_PRESENT` без write и без
-проверки старых pre-revisions или current proof age. Exact
-`STAGED_OBSERVATION` также можно завершить после expiration: первый write уже
-зафиксировал fresh-at-preparation exact plan, а recovery не меняет его cutoff или
-content. Для `ABSENT` proof всё ещё обязан быть fresh непосредственно перед
-первым write. Different proof/plan/graph даёт `OPENING_CONFLICT`.
+Structural comparison нормализует только deterministic CL2 array ordering; он не
+игнорирует ни один codec/inbox/status/transaction/link/bundle/transition object.
+Совпадения revisions/head без exact graph недостаточно. Любой lower/higher/equal
+revision store с иным graph, включая same ledger head с иным inbox/status graph,
+даёт `BASELINE_STALE` до нового write.
 
-Здесь append-only descendant означает: current `CashLedgerStore` прошёл полную
-CL2 export/schema/graph validation, frozen plan ledger head найден на exact
-revision его contiguous head chain, а все последующие ledger transitions являются
-valid suffix этой chain. CL2 не имеет delete/update/reset API; inbox-only suffix не
-имеет экономического эффекта и не обязан сохранять plan `pre_store_revision`.
-`pre_ledger_export_sha256` остаётся exact preparation evidence и требуется как
-current equality только в `ABSENT`, а не как equality predicate recovery branch.
+В `COMMITTED_OPENING` exact replay возвращает `OPENING_ALREADY_PRESENT` без write
+и без current-age requirement, но V2 proof identity всё равно проверяется.
+`STAGED_OBSERVATION` может завершиться с тем же plan после proof expiration:
+freshness была проверена перед первым append, а exact staged graph не меняет
+cutoff/content. Different proof/plan/opening graph даёт `OPENING_CONFLICT`.
 
-В `ABSENT` вызывается существующий CL2 `append_observation` с exact CAS revision.
-После read-back допускается exact `STAGED_OBSERVATION` либо exact
-`COMMITTED_OPENING`, если concurrent same-plan caller уже завершил second step.
-Во втором случае возвращается `OPENING_ALREADY_PRESENT`. Из staged state
-вызывается CL2 `append_transaction` с current store revision и неизменными plan
-transaction bytes. CL2 CAS получает current store revision и current ledger
-revision, прочитанные из validated descendant export. После второго read-back exact
-graph обязан быть complete, иначе `POSTCONDITION_FAILED`.
+В `ABSENT` непосредственно перед первым append proof обязан быть fresh. Затем
+вызывается CL2 `append_observation` с `expected_store_revision =
+pre_store_revision`. CAS failure даёт `OPENING_PLAN_STALE` и zero CL4 write.
+Read-back обязан быть exact STAGED либо exact COMMITTED, если same-plan caller уже
+завершил second step. Из exact STAGED вызывается `append_transaction` с current
+store/ledger revisions. Second CAS failure оставляет только staged observation и
+zero opening economic effect. Automatic retry loop отсутствует.
 
-В `STAGED_OBSERVATION` первая операция не повторяет write; выполняется только
-точно такой же second step. Automatic retry loop отсутствует.
+После второго read-back требуется exact COMMITTED graph и byte-identical derived
+record, иначе `POSTCONDITION_FAILED`. Повтор exact acceptance сразу после success
+идемпотентен и не пишет.
 
-Допустимые durable состояния:
+Допустимые durable states:
 
 ```text
-no opening graph
+exact baseline with no CL4 opening delta
 exact staged OBSERVED opening evidence with zero economic effect
-one complete LEDGER_LINKED opening graph
+exact committed LEDGER_LINKED opening graph
 ```
 
-Crash/fault до observation commit оставляет первый state; между двумя CL2 commits
-— второй; после transaction commit/lost response — третий. Staged observation не
-является opening record и не влияет на expected cash. Exact caller replay может
-завершить staged state даже после unrelated valid inbox или ledger appends. Такие
-appends не меняют frozen baseline plan; их target-account cash effects позже входят
-в projection относительно baseline. Concurrent mutation между read и append даёт
-CL2 CAS failure, нормализованный в `OPENING_PLAN_STALE`; caller может повторно
-вызвать функцию, internal retry loop отсутствует. Изменённый status exact plan
-observation, competing target opening, отсутствующий baseline head в exact chain
-или иная несовместимая lineage дают `OPENING_CONFLICT` и zero additional writes.
+Crash до observation commit оставляет baseline; между commits — exact staged;
+после transaction commit/lost response — exact committed. Если чужая mutation
+произошла до первого append, caller получает `BASELINE_STALE`/CAS stale, затем
+строит новый plan от нового baseline. Если чужая mutation сохранилась после exact
+CL4 staged append, append-only CL2 не позволяет безопасно удалить/rewrite stage:
+CL4 возвращает `BASELINE_STALE`, не пишет transaction и требует отдельного future
+remediation authority. Оно не маскируется словом restage.
 
 Edit/delete/reset/reopen/correct-opening API отсутствует. Correction bundle,
 reversal или второй `OPENING_BALANCE` target account/currency делает весь CL4
@@ -638,8 +687,8 @@ view `OPENING_CONFLICT`.
 
 ## 15. Derived OpeningRecord
 
-CL4 не добавляет table/schema. `OpeningRecord` всегда заново выводится из exact
-validated CL2 graph: one CL4 observation, one exact CL2 provenance link и one
+CL4 не добавляет table/schema. `OpeningRecord V2` всегда заново выводится из exact
+validated CL2 graph: one V2 CL4 observation, one exact CL2 provenance link и one
 ordinary `OPENING_BALANCE` transaction transition.
 
 Exact canonical keyset:
@@ -661,15 +710,15 @@ Exact canonical keyset:
   "observation_sha256": "<hash>",
   "opening_money": "<nested CL1 Money>",
   "transaction_sha256": "<hash>",
-  "version": 1
+  "version": 2
 }
 ```
 
-Record SHA-256 — hash этих bytes. Baseline fields берутся byte-for-byte из plan и
-обязаны совпасть с exact ancestor ledger head/revision; accepted revision — exact
-ordinary transition revision opening transaction. Observation content,
-SourceIdentity, transaction postings и transition revision обязаны взаимно
-воспроизводить все fields. Inference из missing/corrupt/legacy data запрещён.
+Record SHA-256 — hash этих bytes. Baseline fields берутся byte-for-byte из plan;
+`baseline_ledger_export_sha256 = plan.baseline_export_sha256`. Accepted revision
+— exact ordinary transition revision opening transaction. Observation content,
+SourceIdentity, proof V2, transaction postings и transition revision обязаны
+взаимно совпадать; любое broken/dangling/extra relation fail closed.
 
 ## 16. Deterministic shadow cash projection
 
@@ -724,7 +773,7 @@ expected_cash: Money
 complete: bool
 incompleteness_kinds: tuple[DiscrepancyKind, ...]
 unresolved_observation_sha256: tuple[str, ...]
-version: int = 1
+version: int = 2
 ```
 
 Exact canonical keyset:
@@ -744,7 +793,7 @@ Exact canonical keyset:
   "ledger_revision": "<decimal>",
   "opening_record_sha256": "<hash>",
   "unresolved_observation_sha256": ["<hash>", "..."],
-  "version": 1
+  "version": 2
 }
 ```
 
@@ -818,7 +867,7 @@ expected_cash: Money
 delta_minor_units: int
 status: ReconciliationStatus
 discrepancy_kind: DiscrepancyKind
-version: int = 1
+version: int = 2
 ```
 
 Exact canonical keyset:
@@ -838,7 +887,7 @@ Exact canonical keyset:
   "ledger_cash_projection_sha256": "<hash>",
   "status": "<ReconciliationStatus>",
   "tolerance_minor_units": "0",
-  "version": 1
+  "version": 2
 }
 ```
 
@@ -884,7 +933,7 @@ Canonical candidate обязательно содержит:
   "reconciliation_sha256": "<hash>",
   "requires_locked_revalidation": true,
   "runtime_cash_owner_changed": false,
-  "version": 1
+  "version": 2
 }
 ```
 
@@ -912,7 +961,7 @@ PROOF_INCOMPLETE
 RESPONSE_BOUNDS_EXCEEDED
 RESPONSE_SCHEMA_INVALID
 MONEY_INVALID
-RESPONSE_IDENTITY_INVALID
+PROOF_IDENTITY_INVALID
 LEDGER_EXPORT_INVALID
 LEDGER_GRAPH_INVALID
 LEDGER_REVISION_INVALID
@@ -921,6 +970,7 @@ INBOX_INCOMPLETE
 OPENING_AMOUNT_UNSUPPORTED
 OPENING_MISSING
 OPENING_CONFLICT
+BASELINE_STALE
 OPENING_PLAN_STALE
 CONFIRMATION_INVALID
 PERSISTENCE_FAILURE
@@ -939,43 +989,62 @@ Safe evidence keyset ограничен:
 ```text
 reason, cause_reason, stage, account_scope_sha256,
 broker_cash_proof_sha256, opening_plan_sha256,
-ledger_export_sha256, ledger_head_sha256, reconciliation_sha256
+baseline_export_sha256, ledger_export_sha256,
+ledger_head_sha256, reconciliation_sha256
 ```
 
 Absent fields опускаются. Raw response/account/token/key/path/SQL/provider text,
-object repr, arbitrary exception text и canonical raw response bytes запрещены во
-всех public objects/errors/evidence.
+object repr, arbitrary exception text, canonical raw response bytes и
+`baseline_export_bytes` запрещены во всех errors/evidence/repr.
 
 ## 20. Ordered failure priority
 
-Top-level public boundary:
+Common detached-object order для всех public boundaries:
 
-1. exact argument/container types;
-2. enum/version/mode/environment;
-3. account/hash/token/key grammar and bounds;
-4. timestamp grammar and ordering;
-5. completeness/freshness;
-6. response/export byte and graph bounds;
-7. response/export exact schema/canonical form;
-8. nested CL3 Money / CL1 / CL2 object validation;
-9. response/proof or ledger graph identities;
-10. opening uniqueness/amount/pre-state;
-11. arithmetic/window/completeness projection;
-12. reconciliation/adoption construction.
+1. exact outer/container argument types;
+2. exact CL4 DTO version, затем mode/environment enum;
+3. account/hash/token/scalar grammar и bounded nested canonical shape;
+4. timestamp grammar/order, completeness и freshness, когда branch требует age;
+5. identity-key bytes grammar;
+6. V2 proof/source/provenance HMAC identity;
+7. response/export bounds;
+8. response/export exact schema/canonical graph;
+9. nested CL3 Money / CL1 / CL2 identity;
+10. opening/projection/reconciliation semantic construction.
+
+Поэтому forged proof `version = 1` вместе с bad key всегда даёт
+`VERSION_UNSUPPORTED`. Freshness предшествует HMAC: stale proof с syntactically
+valid wrong key/HMAC всегда даёт `PROOF_STALE`. Invalid proof scalar grammar или
+invalid timestamp сохраняет более раннюю structural/timestamp reason.
+
+Exact public-boundary refinements:
+
+- `build_broker_cash_proof`: argument types -> environment/account/key-id grammar
+  -> timestamp/completeness -> key bytes -> response bounds/schema -> CL3 Money ->
+  V2 identity/proof construction;
+- `prepare_from_now_opening`: proof type/version -> scalar/nested structure ->
+  timestamp/freshness -> key bytes/HMAC -> export bounds/schema/graph -> inbox and
+  opening pre-state -> plan;
+- `project_shadow_cash`: argument types/environment/account/timestamp/key grammar
+  -> export bounds/schema/graph -> opening uniqueness -> arithmetic/completeness;
+- `reconcile_shadow_cash`: proof type/version/structure -> timestamp/freshness ->
+  key bytes/HMAC -> export/projection -> reconciliation;
+- `build_adoption_candidate`: reconciliation and nested DTO types/versions ->
+  recorded timestamp/freshness -> key/HMAC -> export/recomputed graph -> candidate.
 
 Acceptance boundary:
 
 1. confirmation exact string;
-2. plan/nested object byte-identical revalidation;
-3. identity key grammar, proof response identity и opening HMAC;
+2. plan exact type/version and nested DTO versions;
+3. plan canonical consistency, baseline witness type/bound/hash;
 4. evaluated timestamp grammar;
-5. store type/open state and sanitized export;
-6. committed exact replay либо exact staged append-only descendant branch;
-7. proof freshness for absent state;
-8. absent state plan revisions/head/export equality;
-9. CL2 observation append/read-back;
-10. staged baseline ancestry, competing-opening absence и current CAS revisions;
-11. CL2 transaction append/read-back;
+5. store type/open state и current sanitized export validation;
+6. exact ABSENT/STAGED/COMMITTED structural classification;
+7. proof freshness only for ABSENT;
+8. identity key grammar and V2 proof/source/provenance HMAC;
+9. opening uniqueness/amount and exact baseline relation;
+10. CL2 observation CAS append/read-back;
+11. CL2 transaction CAS append/read-back;
 12. exact OpeningRecord/postcondition.
 
 При multi-invalid input возвращается только первая reason. Dependency error
@@ -994,31 +1063,46 @@ as_of = 2026-01-02T03:04:05.123456789Z
 evaluated_at = 2026-01-02T03:04:06.123456789Z
 response_complete = true
 response = {"totalAmountCurrencies":{"currency":"RUB","nano":500000000,"units":"123"}}
-ledger export = exact empty CL2 genesis export
-post-opening export = genesis + exact opening observation + exact opening transaction
+baseline export = exact empty CL2 genesis export
+post-opening export = baseline + exact V2 opening observation + transaction
+```
+
+Exact proof-identity preimage bytes:
+
+```text
+{"account_scope_sha256":"1111111111111111111111111111111111111111111111111111111111111111","as_of":"2026-01-02T03:04:05.123456789Z","cash":{"amount":"123.500000000","currency":"RUB","domain":"v3.10-money","minor_units":"123500000000","scale":9,"version":1},"domain":"v3.10-cl4-broker-cash-proof-identity","environment":"SANDBOX","identity_key_id":"CL4_TEST_KEY","provider":"TBANK","response_canonical_sha256":"204dba39888167e2384d8188817a5ad4a01f132a405a9b7b06f75f76aceed3ce","rpc":"tinkoff.public.invest.api.contract.v1.OperationsService/GetPortfolio","version":2}
 ```
 
 Expected identities:
 
 ```text
 response canonical SHA-256 = 204dba39888167e2384d8188817a5ad4a01f132a405a9b7b06f75f76aceed3ce
-response identity HMAC-SHA-256 = 78fbeb0620bd7fd086fb4c39e3a205d16ecd85e366c3bd77f28cbe9f45ac2190
+proof identity HMAC-SHA-256 = d21e770a4268fafb4ec39b0cc9d21f3c2155801829cdd5e106f5588dc4e4efb1
 broker cash minor_units = 123500000000
-broker cash proof SHA-256 = 8c693dc23481c63acda38e51ad6e7efda549976ff76b8b79efc083dc2562860d
-genesis CL2 export SHA-256 = 9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7
-genesis ledger head SHA-256 = 6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37
-opening source scope HMAC-SHA-256 = d2b0be487681ab01e541fd8e594db29350da7401450efef7870a8217a28b9584
-opening content SHA-256 = 91ba372c45fe11317a39a1a474f3a9f4490d9fd664d2fc4add8cb0a648ceaf91
-opening provenance HMAC-SHA-256 = cb2313c95fb36f6beae746b5b4a449f0daa41b0b70e1a5538039ba442bf71507
-opening observation SHA-256 = d9467aa68811d79288aa44040df798770b57ae7080bd823b50469cf77ab616d5
-opening transaction SHA-256 = 4f824590773db04fe95f91852182b70ae4fb0dbc92bb6d397306963d277a1a3a
-opening plan SHA-256 = d5b351c9e7132ff60fd0d20e452996932a6df992bc4ecff73772e7e1c4f65df2
-post-opening CL2 export SHA-256 = 6c2e5d71a02d5ea07b8a18bcd6ac89d8f4b67ad2c6e73352f47d09c7f111942d
-post-opening ledger head SHA-256 = adcfaa4c9d4c0460b96ca1845882c748f4531b79c27cd807b03577576d23a892
-opening record SHA-256 = 9544462db024ed8d3a0eae9da5b0b037467565fb360925421821f8120e855cc1
-complete projection SHA-256 = 9a13af4d874d1f6f4adf4f3ee36cf2a368252a4dac2c040cdf49b98283f708e8
-matched reconciliation SHA-256 = 0abaaacfa0c8a607848b54a90f140ce8bb2a59eb02cecaaca87b17c21d24ebd7
-adoption candidate SHA-256 = 8de3f3e4cdbed751d7593dbcb96730f1a1ac5552a450f75869fe9f955a4f3304
+broker cash proof SHA-256 = 588abe0b9d3979c300d8f681adccdf2776bc20c8dd4997e66ff8edaaa1e8010f
+CL4 V2 codec schema SHA-256 = 1f15c6486dd348bdcf8f2b725111b01e583404efe5717ab5df0b7968d87bbfe3
+CL4 V2 codec descriptor SHA-256 = d80e3ccde02d469f5bd99d9884cd36524f1d11069d2ce8bab08e9c0b65b3659d
+baseline CL2 export SHA-256 = 9d00fefe18e104500df70063781b708c5ed90816dba8a9058dddc7ecaedf0eb7
+baseline ledger head SHA-256 = 6ee5e86309122771bcaca40bb57771c2378c30d79b079e5431b227300a673d37
+opening source scope HMAC-SHA-256 = c6c936312caa64f076007b86d13941067ccee1f9e2a2cee06b3db5d272818410
+opening content SHA-256 = 9673dea00bc76b4865ceff9424e63a097a0419f2afd29e4475b99e19e4471f3e
+opening provenance HMAC-SHA-256 = 9c212565e79474e62260d8da2276339c4509652cfff31d2614cf376beab0e6f7
+opening observation SHA-256 = a539c06c4ce0d2c0c1e3c3e29e92b0d322c0b253ed9e0c83d3fa18d4ea955ec3
+opening transaction SHA-256 = 7c49d302b3a0cc20e0114ba56529f94dae4fff61501b9f7ce45bb435e1058ee5
+opening plan SHA-256 = d0312594d9ca205bc2a1876d4e865e6dc3b020c22992bf220724d4c4b74d6793
+staged CL2 export SHA-256 = c5a6ee32a9406f6ddaec9fb2556bf4ad0615710c278bff159a04fdd1e3082550
+post-opening CL2 export SHA-256 = f7d0e10b4133ff989425fa276b1b3e18ef440668b5e68fcb0f2df67ad03484a2
+post-opening ledger head SHA-256 = 53dcc785fd962de251ce3745138866005584dd6ba179ae3e32a2d97b7fde6999
+opening record SHA-256 = 71109fceb92f5f3789e8e323e000fe1226266cb6733bf6072d6d33375a7747ce
+complete projection SHA-256 = 022c5f33817808e0dbb54b994d2483fba230e6dec74148cb157100999f6bc791
+matched reconciliation SHA-256 = bd8dd76c3525937d121b63f272d67301362446d6835dd64e06e4c1baf5ac77f8
++1 nano proof SHA-256 = 126e873505ee8c50e20ad2e822669938311e5ca392a94060dc776b5c3dd54425
++1 nano reconciliation SHA-256 = 89c795d1827d2b03831fcd96a1c8ac1e54175c3639000f7c2af8e41fe1e7a407
+unresolved observation SHA-256 = 19417b801266e83c5a793c128445033409bec5304b0c769536868d523a964d0a
+incomplete export SHA-256 = 18883152e238dc07c98dccb96f04a2ba5b853340a9c483a922b888176fc89152
+incomplete projection SHA-256 = a3093982a5ecda11bfb8cec1b5e02ee4844fafc5328fec4998025527a80112df
+incomplete reconciliation SHA-256 = 3812a53b15181b104849a5622596068aa73898577f300e1c34739f0e23366375
+adoption candidate SHA-256 = 017a995a90ab719da91edb0f89fdeecd7350c485f51ac279216512c5ddac20a3
 ```
 
 Exact canonical response bytes:
@@ -1027,56 +1111,65 @@ Exact canonical response bytes:
 {"totalAmountCurrencies":{"currency":"RUB","nano":500000000,"units":"123"}}
 ```
 
-Fixture обязана содержать exact canonical bytes/dicts/hashes для proof, codec,
-content, observation, transaction, plan, record, matched/discrepancy/incomplete
-reconciliation и adoption candidate. Independent implementation должен
-пересчитать их, а не копировать runtime output как oracle.
+Fixture version 2 обязана содержать exact canonical bytes/dicts/hashes для proof
+V2, codec/content, baseline witness hash, observation, transaction, plan, staged
+export, record, matched/discrepancy/incomplete projection/reconciliation и
+candidate. Independent fixture construction пересчитывает значения из contract;
+runtime output не является oracle.
 
 ## 22. Mandatory acceptance/adversarial matrix
 
-- `V310-CL4-01`: exact exports, versions, signatures, immutable/slotted DTOs и
-  import side-effect freedom;
+- `V310-CL4-01`: exact exports, V2 versions, signatures, immutable/slotted DTOs,
+  hidden bounded witness и import side-effect freedom;
 - `V310-CL4-02`: one-response snapshot, nested bounds/cycle/alias/custom types,
-  mutation-after-call, root/child depth, exact node/key counting boundaries и
-  canonical identity;
-- `V310-CL4-03`: exact totalAmountCurrencies Money happy/bounds/sign/currency и
-  rejection of every substitute/float/rounding path;
-- `V310-CL4-04`: account/response/proof HMAC known answers, response snapshot
-  hash, key/key-id changes, forged proof и privacy scans;
-- `V310-CL4-05`: timestamp 9-digit ordering, future/stale/boundary age;
-- `V310-CL4-06`: CL2 export canonical/schema/object/head/link/bundle adversarial
-  corruption, each-array и exact seven-array aggregate size/count bounds;
-- `V310-CL4-07`: deterministic FROM_NOW plan, codec/content/source/provenance,
-  positive amount and exact CL1 opening postings;
-- `V310-CL4-08`: wrong confirmation/stale head/revision/export -> zero writes;
-- `V310-CL4-09`: ABSENT -> STAGED -> COMMITTED, fault at both CL2 boundaries,
-  exact resume after proof expiry, unrelated inbox/ledger append между steps,
-  CAS race replay and lost-success replay;
-- `V310-CL4-10`: concurrent same/different plan, one opening, no second effect;
-- `V310-CL4-11`: derived record graph and missing/extra/dangling/wrong-source/
-  wrong-link/wrong-revision/key negatives;
-- `V310-CL4-12`: projection over every CL1 classification and account scope;
-- `V310-CL4-13`: correction bundle net effect once; opening reversal/correction
-  rejected;
-- `V310-CL4-14`: late pre-cutoff and proof-before-ledger effects/evidence;
-- `V310-CL4-15`: unresolved/rejected/linked inbox status semantics;
-- `V310-CL4-16`: exact zero, +1 and -1 minor-unit reconciliation taxonomy;
-- `V310-CL4-17`: adoption candidate booleans/dispositions and absence of any
-  apply/adopt/migrate callable; forged nested/outer-rehashed reconciliation,
-  mismatched export/head/key и stale-at-recorded-evaluation rejected;
-- `V310-CL4-18`: raw account/token/key/response/sentinels absent from every
+  mutation-after-call, exact root/child depth, node/key counting, canonical bytes;
+- `V310-CL4-03`: exact `totalAmountCurrencies` Money happy/bounds/sign/currency;
+- `V310-CL4-04`: V2 HMAC known answer и independent mutations cash `+1/-1 nano`,
+  `as_of`, response SHA, account scope, environment, key ID, HMAC and version;
+- `V310-CL4-05`: timestamp 9-digit ordering, future/stale/boundary age and exact
+  `stale proof + bad HMAC -> PROOF_STALE` precedence;
+- `V310-CL4-06`: CL2 export canonical/schema/object/head/link/bundle corruption,
+  each-array и aggregate object bounds, exact max/max+1 export bytes;
+- `V310-CL4-07`: deterministic V2 plan, witness/hash, codec/content/source/
+  provenance, positive amount and exact CL1 postings;
+- `V310-CL4-08`: baseline transfer matrix: lower/higher/equal revision with other
+  graph; same ledger head with different inbox/status; different export hash;
+  every case `BASELINE_STALE` and zero write;
+- `V310-CL4-09`: ABSENT -> STAGED -> COMMITTED, faults at both CL2 boundaries,
+  exact crash/lost-success replay and immediate repeated acceptance idempotency;
+- `V310-CL4-10`: mutation between validation and each CAS; CAS failure creates no
+  opening transaction/economic effect; no internal retry;
+- `V310-CL4-11`: concurrent same/different plan, create-once, exact staged-only
+  recovery and foreign-delta fail-closed behavior;
+- `V310-CL4-12`: opening record broken proof/source/observation/transaction/
+  revision/head links, extra and dangling graph elements;
+- `V310-CL4-13`: projection over every CL1 classification and account scope;
+- `V310-CL4-14`: correction bundle net effect once; canonical/bundle corruption;
+- `V310-CL4-15`: late pre-cutoff, proof-before-ledger effects/evidence and every
+  unresolved/rejected/linked inbox status branch;
+- `V310-CL4-16`: exact zero, `+1/-1` minor-unit reconciliation taxonomy;
+- `V310-CL4-17`: every authoritative nested DTO field mutated at least once with
+  outer hashes recomputed, including witness bytes/hash and proof fields;
+- `V310-CL4-18`: adoption booleans/dispositions; no apply/adopt/migrate callable;
+  mismatched export/head/key and stale-at-recorded-evaluation rejected;
+- `V310-CL4-19`: exact max accepted/max+1 rejected for response depth/nodes/bytes,
+  mapping keys, strings, baseline witness and ledger export/object bounds;
+- `V310-CL4-20`: representative multi-invalid vector for every public boundary;
+  includes `V1 + bad key -> VERSION_UNSUPPORTED` and frozen primary reason;
+- `V310-CL4-21`: raw account/token/key/response/witness/sentinels absent from every
   canonical object, error, repr and evidence;
-- `V310-CL4-19`: no provider/network/env/clock/random/SQLite/runtime imports or
-  calls; only two named CL2 mutators may write;
-- `V310-CL4-20`: implementation delta exact frozen three-file allowlist and
-  accepted CL1/CL2/CL3 sources byte-identical;
-- `V310-CL4-21`: accepted CL1/CL2/CL3 functional suites and full functional suite
-  pass excluding only two exact historical current-HEAD custody node IDs below;
-  predecessor file custody проверяется отдельными immutable Git comparisons.
+- `V310-CL4-22`: no provider/network/env/clock/random/SQLite/runtime imports;
+  only exact CL2 observation and transaction mutators may write;
+- `V310-CL4-23`: exact three-file implementation allowlist and byte-identical
+  accepted CL1/CL2/CL3 source;
+- `V310-CL4-24`: accepted CL1/CL2/CL3 functional suites and full functional suite
+  pass excluding only the two documented historical current-HEAD custody nodes.
 
-Adversarial tests обязаны forge/mutate frozen DTO nested values, recompute outer
-hashes, reorder arrays, duplicate logical sources, alter one nano/revision/head,
-inject multiple simultaneous faults и проверять exact first-failure priority.
+Findings `CL4-I-R1-01..04` имеют отдельные regression tests, способные
+воспроизвести исходный defect до correction. Adversarial tests forge/rebuild
+outer objects, reorder arrays, duplicate sources, corrupt bundle/canonical bytes,
+alter nano/revision/head и проверяют literal first-failure order. Happy-path count
+сам по себе не заменяет эту matrix.
 
 ## 23. Implementation verification commands
 
@@ -1112,30 +1205,33 @@ direct SQLite/runtime imports, отсутствие forbidden public methods и 
 
 ## 24. Independent/adversarial contract review protocol
 
-Final contract review выполняется read-only для exact range:
+Final CL4-RS1 contract review выполняется read-only для exact range:
 
 ```text
-4340c5d517dcece4f7db20b7cfc21e602c3efddc -> <candidate head>
+4dab154fb6ed096aa23dc3f0fa0987859b598559 -> <CL4-RS1 candidate head>
 ```
 
 Reviewer обязан подтвердить:
 
 - exact parent/head/tree, clean worktree и one-file contract delta;
-- consistency всех schemas/known-answer bytes/hashes;
-- GetPortfolio response не подменён CL3 operation output или GetPositions;
-- proof snapshot bounded, immutable, privacy-safe и не назван attestation;
-- create-once graph реально выражается существующими CL1/CL2 contracts без
-  schema change и partial economic state;
-- opening replay/concurrency/CAS branches finite и fail closed;
-- projection правильно обрабатывает CL2 bundle revision и cutover boundary;
-- unresolved/late/future evidence не может дать `MATCHED`;
+- `4dab154f...` не переписан, `b5d6912f...` не является ancestor implementation;
+- consistency V2 schema, canonical preimages и всех known-answer hashes;
+- proof HMAC directly binds cash, `as_of`, response/account/env/key/version;
+- V1 proof/plan/record/projection/reconciliation/candidate fail closed;
+- baseline witness bounded, canonical, hidden from repr/evidence and exact-hashed;
+- ABSENT/STAGED/COMMITTED predicates сравнивают весь CL2 graph и не принимают
+  same-head/different-inbox transfer;
+- crash recovery и CAS branches finite, append-only и не создают partial economic
+  opening; post-stage foreign mutation explicitly fails closed;
+- first-failure order даёт exact required multi-invalid reasons;
+- full adversarial matrix закрывает `CL4-I-R1-01..04`;
 - `MATCHED`/candidate не открывают CashAvailability/execution/adoption;
 - future implementation allowlist содержит ровно три frozen paths.
 
-Finding именуется `CL4-R1-NN`. Допустим максимум один bounded correction commit
-в этом же one-file allowlist, затем finding-scoped closure review exact successor.
-Новый unrelated material finding после closure требует `RESCOPE/ABORT/DEFER`, а
-не recursive correction loop.
+Finding именуется `CL4-RS1-R1-NN`. Допустим максимум один bounded correction
+commit в этом же one-file allowlist, затем finding-scoped closure review exact
+successor. Новый unrelated material finding требует `RESCOPE/ABORT/DEFER`, а не
+recursive correction loop.
 
 ## 25. Contract acceptance и exit state
 
@@ -1143,20 +1239,24 @@ Green validation или отсутствие review findings сами по се�
 Требуется отдельное явное решение:
 
 ```text
-CL4 CONTRACT ACCEPTED
+CL4 RESCOPE CONTRACT ACCEPTED
 commit = <exact 40-hex>
 tree = <exact 40-hex>
 material findings = 0
+supersedes for implementation = 4dab154fb6ed096aa23dc3f0fa0987859b598559
 ```
 
-Только после этого отдельным решением можно создать implementation branch прямо
-от exact accepted contract head и заморозить указанный three-file allowlist.
+Только после этого отдельным решением можно создать новую implementation branch
+прямо от exact accepted CL4-RS1 head, replay rejected three-file patch и сделать
+один bounded correction commit для fixed finding set `CL4-I-R1-01..04`.
 
 До acceptance:
 
 ```text
-CL4 CONTRACT = CANDIDATE
+CL4-RS1 CONTRACT = CANDIDATE
 CL4 IMPLEMENTATION = BLOCKED
+b5d6912f... = REJECTED / EVIDENCE-ONLY
+STABLE LINE = 4340c5d...
 PROVIDER ACCESS = NOT AUTHORIZED
 RUNTIME ADOPTION = NOT AUTHORIZED
 EXPERIMENT = NOT AUTHORIZED
