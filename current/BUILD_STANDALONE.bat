@@ -23,8 +23,16 @@ copy /y build_manifest.json "%OUT%\app\build_manifest.json" >nul
 "%PYTHON%" tools\verify_standalone_layout.py --root "%OUT%" --expected-version "0.3.10" --expected-channel "stable" --minimum-risk-state-schema 4
 if errorlevel 1 goto :fail
 
-"%PYTHON%" -c "import sys; from tools import release_cleanup as c; c.CURRENT_FILES.add('V3_10_0_STABLE_RECOVERY_RUNBOOK_RU.md'); from tools.build_release import main; sys.exit(main(['--root',r'%OUT%','--output',r'%CD%\dist\moex_trading_robot_standalone_v3_10_0.zip','--archive-root','MOEX_Research_Robot_v3_10_0']))"
+"%PYTHON%" -c "from pathlib import Path; from tools import release_cleanup as c; c.CURRENT_FILES.add('V3_10_0_STABLE_RECOVERY_RUNBOOK_RU.md'); from tools.build_release import build_zip; build_zip(Path(r'%OUT%'),Path(r'%CD%\dist\moex_trading_robot_standalone_v3_10_0.zip'),'MOEX_Research_Robot_v3_10_0',required_empty_directories=('runtime','backups','reports','logs','support'))"
 if errorlevel 1 goto :fail
+
+set "VERIFY_OUT=%CD%\dist\_verify_v3_10_0_standalone"
+if exist "%VERIFY_OUT%" rmdir /s /q "%VERIFY_OUT%"
+"%PYTHON%" -m zipfile -e "%CD%\dist\moex_trading_robot_standalone_v3_10_0.zip" "%VERIFY_OUT%"
+if errorlevel 1 goto :fail
+"%PYTHON%" tools\verify_standalone_layout.py --root "%VERIFY_OUT%\MOEX_Research_Robot_v3_10_0" --expected-version "0.3.10" --expected-channel "stable" --minimum-risk-state-schema 4
+if errorlevel 1 goto :fail
+rmdir /s /q "%VERIFY_OUT%"
 
 echo.
 echo Standalone package created:

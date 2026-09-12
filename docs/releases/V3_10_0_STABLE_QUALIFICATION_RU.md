@@ -3,16 +3,18 @@
 ## Candidate identity
 
 ```text
-candidate commit = PENDING RELEASE-CUT COMMIT
-candidate tree = PENDING RELEASE-CUT TREE
+candidate commit = BOUND IN EXTERNAL IMMUTABLE QUALIFICATION EVIDENCE
+candidate tree = BOUND IN EXTERNAL IMMUTABLE QUALIFICATION EVIDENCE
 release-cut predecessor = 7a569eadfb2a99c5314ae43d24da0dee47819d6c
 release-cut predecessor tree = d4f6bf5d1b00f4b944ac0aece669a00cd72b5847
 contract commit = 711508e369d23bd6670d5697403fb824b3ea293d
 contract tree = 49fa21dbf8fb228a7a0f8165e1a407cc7a07896f
 ```
 
-Candidate commit/tree placeholders may be replaced only after the bounded
-release-cut commit exists. They must then match every Q4/Q6/Q7/Q8 artifact and
+This committed source template never embeds its own commit/tree: changing the
+template would create a different candidate identity. After the bounded
+release-cut successor exists, its exact commit/tree must be frozen in the
+external immutable review record and must match every Q4/Q6/Q7/Q8 artifact and
 evidence binding.
 
 ## Current phase disposition

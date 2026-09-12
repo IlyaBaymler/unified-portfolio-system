@@ -33,7 +33,7 @@ def test_cleanup_removes_legacy_and_preserves_current_files(tmp_path: Path):
     previous_alpha.write_text("old", encoding="utf-8")
     previous_beta1 = tmp_path / "UPDATE_TO_V3_7_BETA1.md"
     previous_beta1.write_text("old", encoding="utf-8")
-    current = tmp_path / "UPDATE_TO_V3_9_0_STABLE.md"
+    current = tmp_path / "UPDATE_TO_V3_10_0_STABLE.md"
     current.write_text("current", encoding="utf-8")
 
     removed = clean(tmp_path)
@@ -61,11 +61,11 @@ def test_current_source_tree_has_no_legacy_release_files():
     root = Path(__file__).resolve().parents[1]
     remaining = [path.name for path in find_legacy_files(root)]
     assert remaining == [], remaining
-    assert "VERIFY_V3_9_0_STABLE.bat" in CURRENT_FILES
-    assert "install_and_verify_v3_9_0.bat" in CURRENT_FILES
-    assert "UPDATE_TO_V3_9_0_STABLE.md" in CURRENT_FILES
-    assert "V3_9_0_STABLE_ARCHITECTURE_RU.md" in CURRENT_FILES
-    assert "MASTER_UPDATE_2026-08-15_V3_9_0_STABLE_RU.md" in CURRENT_FILES
+    assert "VERIFY_V3_10_0_STABLE.bat" in CURRENT_FILES
+    assert "install_and_verify_v3_10_0.bat" in CURRENT_FILES
+    assert "UPDATE_TO_V3_10_0_STABLE.md" in CURRENT_FILES
+    assert "V3_10_0_STABLE_ARCHITECTURE_RU.md" in CURRENT_FILES
+    assert "V3_10_0_STABLE_RECOVERY_RUNBOOK_RU.md" in CURRENT_FILES
 
 
 def test_cleanup_removes_stale_python_bytecode(tmp_path: Path):

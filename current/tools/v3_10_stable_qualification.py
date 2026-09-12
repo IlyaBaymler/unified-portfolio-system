@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import zipfile
+import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -57,7 +58,7 @@ QUALIFICATION_IMPLEMENTATION_ALLOWLIST = frozenset(
     }
 )
 
-RELEASE_CUT_ALLOWLIST = frozenset(
+RELEASE_CUT_BASE_ALLOWLIST = frozenset(
     {
         "current/trading_robot/__init__.py",
         "current/trading_robot/tbank_sandbox.py",
@@ -94,6 +95,33 @@ RELEASE_CUT_ALLOWLIST = frozenset(
         "current/VERIFY_V3_9_0_STABLE.bat",
         "current/install_and_verify_v3_9_0.bat",
     }
+)
+
+RELEASE_REVIEW_RESCOPE_ADDITIONS = frozenset(
+    {
+        "docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md",
+        "current/tools/release_cleanup.py",
+        "current/tools/build_release.py",
+        "current/tools/v3_10_stable_qualification.py",
+        "current/tests/test_release_hygiene.py",
+        "current/tests/test_v3_10_stable_qualification.py",
+        "current/tests/test_v3_10_issue72_gui_runtime.py",
+    }
+)
+
+RELEASE_REVIEW_CORRECTION_ALLOWLIST = frozenset(
+    {
+        *RELEASE_REVIEW_RESCOPE_ADDITIONS,
+        "current/install_and_run_gui.bat",
+        "current/BUILD_STANDALONE.bat",
+        "current/build_manifest.json",
+        "current/VERIFY_V3_10_0_STABLE.bat",
+        "docs/releases/V3_10_0_STABLE_QUALIFICATION_RU.md",
+    }
+)
+
+RELEASE_CUT_ALLOWLIST = frozenset(
+    {*RELEASE_CUT_BASE_ALLOWLIST, *RELEASE_REVIEW_RESCOPE_ADDITIONS}
 )
 
 PHASE_KEYS = (
@@ -148,12 +176,8 @@ SUPERSEDED_RELEASE_METADATA_FAILURES = frozenset(
             "test_only_v3_9_root_release_documents_are_current"
         ),
         (
-            "tests/test_release_hygiene.py::"
-            "test_cleanup_removes_legacy_and_preserves_current_files"
-        ),
-        (
-            "tests/test_release_hygiene.py::"
-            "test_current_source_tree_has_no_legacy_release_files"
+            "tests/test_stable_release_v3_9.py::"
+            "test_release_candidate_does_not_claim_manual_m6_acceptance"
         ),
         (
             "tests/test_v3_9_source_artifact_qualification.py::"
@@ -787,6 +811,48 @@ class RegressionDisposition:
         result = asdict(self)
         result["stage"] = self.stage.value
         return result
+
+
+def pytest_junit_failure_node_ids(
+    report_path: str | Path,
+    *,
+    source_root: str | Path,
+) -> tuple[str, ...]:
+    """Read every failed/error pytest node from a JUnit report.
+
+    Text-summary parsing is intentionally avoided: a shared fixture setup error
+    may be rendered only as an ``ERROR at setup`` heading and disappear from
+    the short summary.  JUnit records the owning testcase for both outcomes.
+    """
+
+    report = Path(report_path)
+    root = Path(source_root).resolve()
+    try:
+        document = ET.parse(report)
+    except (OSError, ET.ParseError) as exc:
+        raise RuntimeError(f"Invalid pytest JUnit report: {exc}") from exc
+    nodes: set[str] = set()
+    for testcase in document.getroot().iter("testcase"):
+        if not any(child.tag in {"failure", "error"} for child in testcase):
+            continue
+        name = testcase.get("name", "").strip()
+        classname = testcase.get("classname", "").strip()
+        if not name or not classname:
+            raise RuntimeError("Pytest JUnit failure has no node identity.")
+        parts = classname.split(".")
+        source_path: Path | None = None
+        class_parts: list[str] = []
+        for index in range(len(parts), 0, -1):
+            candidate = root.joinpath(*parts[:index]).with_suffix(".py")
+            if candidate.is_file():
+                source_path = candidate
+                class_parts = parts[index:]
+                break
+        if source_path is None:
+            raise RuntimeError(f"Cannot resolve pytest JUnit classname: {classname}")
+        relative = source_path.relative_to(root).as_posix()
+        nodes.add("::".join([relative, *class_parts, name]))
+    return tuple(sorted(nodes))
 
 
 def compare_regression_failures(
@@ -1463,6 +1529,9 @@ __all__ = [
     "QUALIFICATION_IMPLEMENTATION_ALLOWLIST",
     "QUALIFICATION_KAT_SHA256",
     "RELEASE_CUT_ALLOWLIST",
+    "RELEASE_CUT_BASE_ALLOWLIST",
+    "RELEASE_REVIEW_CORRECTION_ALLOWLIST",
+    "RELEASE_REVIEW_RESCOPE_ADDITIONS",
     "RELEASE_MANIFEST_KAT_SHA256",
     "SUPERSEDED_RELEASE_METADATA_FAILURES",
     "V39_ORACLE_COMMIT",
@@ -1478,6 +1547,7 @@ __all__ = [
     "canonical_json_bytes",
     "commit_is_ancestor",
     "compare_regression_failures",
+    "pytest_junit_failure_node_ids",
     "derive_overall_status",
     "git_commit_tree",
     "parse_canonical_json",

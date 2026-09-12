@@ -31,7 +31,10 @@ from tools.v3_10_stable_qualification import (
     QUALIFICATION_IMPLEMENTATION_ALLOWLIST,
     QUALIFICATION_KAT_SHA256,
     RELEASE_CUT_ALLOWLIST,
+    RELEASE_CUT_BASE_ALLOWLIST,
     RELEASE_MANIFEST_KAT_SHA256,
+    RELEASE_REVIEW_CORRECTION_ALLOWLIST,
+    RELEASE_REVIEW_RESCOPE_ADDITIONS,
     SUPERSEDED_RELEASE_METADATA_FAILURES,
     ArtifactIdentity,
     QualificationError,
@@ -44,6 +47,7 @@ from tools.v3_10_stable_qualification import (
     main,
     parse_canonical_json,
     private_artifact_members,
+    pytest_junit_failure_node_ids,
     release_sha256_lines,
     scan_shareable_bytes,
     sha256_hex,
@@ -59,7 +63,7 @@ from tools.v3_10_stable_qualification import (
     verify_immutable_evidence,
     write_immutable_evidence,
 )
-from tools.verify_standalone_layout import FORBIDDEN_RUNTIME_NAMES
+from tools.verify_standalone_layout import FORBIDDEN_RUNTIME_NAMES, verify_layout
 from trading_robot.cash_ledger_persistence import CashLedgerStore, CodecDescriptor
 from trading_robot.readiness import ProductionReadinessEvaluator
 from trading_robot.runtime_backup import RuntimeBackupError, RuntimeBackupManager
@@ -105,6 +109,14 @@ CL8_ADOPTION_CORRECTION_PATHS = {
     CL8_ADOPTION_CONTRACT_PATH,
     "current/tests/test_v3_10_stable_qualification.py",
     CL8_ADOPTION_ISSUE72_TEST_PATH,
+}
+CL8_RELEASE_CUT_BRANCH = "agent/v3-10-clean-cl8-release-cut"
+CL8_RELEASE_CUT_PREDECESSOR = "7a569eadfb2a99c5314ae43d24da0dee47819d6c"
+CL8_RELEASE_CUT_PREDECESSOR_TREE = "d4f6bf5d1b00f4b944ac0aece669a00cd72b5847"
+CL8_RELEASE_REVIEW_PARENT = "58fc85f26d089da677d68bf3ded6a7cca05fb035"
+CL8_RELEASE_REVIEW_PARENT_TREE = "9036c7f8d943720a47cbec3c1b68e0444e721458"
+CL8_RELEASE_REVIEW_EXPECTED_PATHS = RELEASE_REVIEW_CORRECTION_ALLOWLIST - {
+    "current/install_and_run_gui.bat"
 }
 
 
@@ -269,8 +281,13 @@ def test_v310_cl8_001_exact_contract_and_allowlists() -> None:
         == ACCEPTED_CONTRACT_COMMIT
     )
     assert len(QUALIFICATION_IMPLEMENTATION_ALLOWLIST) == 14
-    assert len(RELEASE_CUT_ALLOWLIST) == 34
-    assert not (QUALIFICATION_IMPLEMENTATION_ALLOWLIST & RELEASE_CUT_ALLOWLIST)
+    assert len(RELEASE_CUT_BASE_ALLOWLIST) == 34
+    assert len(RELEASE_REVIEW_RESCOPE_ADDITIONS) == 7
+    assert len(RELEASE_REVIEW_CORRECTION_ALLOWLIST) == 12
+    assert len(RELEASE_CUT_ALLOWLIST) == 41
+    assert not (
+        QUALIFICATION_IMPLEMENTATION_ALLOWLIST & RELEASE_CUT_BASE_ALLOWLIST
+    )
     assert not CONTRACT.exists()
 
 
@@ -278,7 +295,7 @@ def test_v310_cl8_002_v39_and_cl7_oracles_are_exact() -> None:
     assert CL7_PREDECESSOR_COMMIT == "ef2eba758bbffb587dbe237a96372b2273fdee03"
     assert CL7_PREDECESSOR_TREE == "f55788ff362a24d368b0d01dc0d68e85d8183199"
     assert len(INHERITED_CUSTODY_FAILURES) == 6
-    assert len(SUPERSEDED_RELEASE_METADATA_FAILURES) == 9
+    assert len(SUPERSEDED_RELEASE_METADATA_FAILURES) == 8
     assert not (INHERITED_CUSTODY_FAILURES & SUPERSEDED_RELEASE_METADATA_FAILURES)
 
 
@@ -301,6 +318,30 @@ def test_v310_cl8_003_004_regression_failure_sets_are_exact() -> None:
     )
     assert not mismatch.passed
     assert len(mismatch.missing) == len(mismatch.unexpected) == 1
+
+
+def test_regression_junit_parser_includes_failures_and_setup_errors(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    tests = source / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_sample.py").write_text("", encoding="ascii")
+    report = tmp_path / "pytest.xml"
+    report.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<testsuites><testsuite tests="3" failures="1" errors="1">
+<testcase classname="tests.test_sample" name="test_failure"><failure /></testcase>
+<testcase classname="tests.test_sample.TestGroup" name="test_setup"><error /></testcase>
+<testcase classname="tests.test_sample" name="test_pass" />
+</testsuite></testsuites>
+""",
+        encoding="utf-8",
+    )
+    assert pytest_junit_failure_node_ids(report, source_root=source) == (
+        "tests/test_sample.py::TestGroup::test_setup",
+        "tests/test_sample.py::test_failure",
+    )
 
 
 def test_v310_cl8_005_038_qualification_and_release_path_gates() -> None:
@@ -611,6 +652,42 @@ def test_v310_cl8_024_027_release_artifacts_are_deterministic_and_private(
             archive.writestr(item, raw)
     with pytest.raises(RuntimeError, match="ZIP_CONTENTS"):
         zip_identity(invalid)
+
+
+def test_standalone_archive_preserves_required_empty_directories(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "standalone"
+    (source / "app").mkdir(parents=True)
+    manifest = json.loads((CURRENT / "build_manifest.json").read_text(encoding="utf-8"))
+    (source / "app" / "build_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    (source / "app" / "MOEXResearchRobot.exe").write_bytes(b"synthetic")
+    (source / "MOEX Research Robot.bat").write_text("@echo off\n", encoding="ascii")
+    required = ("runtime", "backups", "reports", "logs", "support")
+    for name in required:
+        (source / name).mkdir()
+    archive = tmp_path / "standalone.zip"
+    members = build_zip(
+        source,
+        archive,
+        "portable",
+        required_empty_directories=required,
+    )
+    assert [item for item in members if item.endswith("/")] == [
+        f"portable/{name}/" for name in sorted(required)
+    ]
+    extracted = tmp_path / "extracted"
+    with zipfile.ZipFile(archive) as completed:
+        completed.extractall(extracted)
+    assert verify_layout(
+        extracted / "portable",
+        expected_version="0.3.10",
+        expected_channel="stable",
+        minimum_risk_state_schema=4,
+    ) == []
+    assert zip_identity(archive)["members"] == members
 
 
 def test_v310_cl8_025_028_standalone_private_denylist_is_complete() -> None:
@@ -1098,6 +1175,69 @@ def test_v310_cl8_046_missing_failure_never_compensates_for_new_failure() -> Non
 
 
 def test_exact_qualification_delta_and_predecessor_immutability() -> None:
+    branch = _git("branch", "--show-current", text=True).stdout.strip()
+    if branch == CL8_RELEASE_CUT_BRANCH:
+        head = _git("rev-parse", "HEAD", text=True).stdout.strip()
+        assert _git(
+            "rev-parse", f"{CL8_RELEASE_CUT_PREDECESSOR}^{{tree}}", text=True
+        ).stdout.strip() == CL8_RELEASE_CUT_PREDECESSOR_TREE
+        assert _git(
+            "rev-parse", f"{CL8_RELEASE_REVIEW_PARENT}^{{tree}}", text=True
+        ).stdout.strip() == CL8_RELEASE_REVIEW_PARENT_TREE
+        assert _git(
+            "rev-parse", f"{CL8_RELEASE_REVIEW_PARENT}^", text=True
+        ).stdout.strip() == CL8_RELEASE_CUT_PREDECESSOR
+        assert _git(
+            "merge-base", CL8_RELEASE_CUT_PREDECESSOR, head, text=True
+        ).stdout.strip() == CL8_RELEASE_CUT_PREDECESSOR
+        if head != CL8_RELEASE_REVIEW_PARENT:
+            assert _git("rev-parse", f"{head}^", text=True).stdout.strip() == (
+                CL8_RELEASE_REVIEW_PARENT
+            )
+        correction_changed = set(
+            _git(
+                "diff",
+                "--name-only",
+                f"{CL8_RELEASE_REVIEW_PARENT}..{head}",
+                text=True,
+            ).stdout.splitlines()
+        )
+        correction_changed.update(
+            _git("diff", "--name-only", text=True).stdout.splitlines()
+        )
+        correction_changed.update(
+            _git(
+                "ls-files", "--others", "--exclude-standard", text=True
+            ).stdout.splitlines()
+        )
+        assert correction_changed == CL8_RELEASE_REVIEW_EXPECTED_PATHS
+        original_changed = set(
+            _git(
+                "diff",
+                "--name-only",
+                f"{CL8_RELEASE_CUT_PREDECESSOR}..{CL8_RELEASE_REVIEW_PARENT}",
+                text=True,
+            ).stdout.splitlines()
+        )
+        assert original_changed == RELEASE_CUT_BASE_ALLOWLIST - {
+            "current/desktop_gui.py"
+        }
+        cumulative_changed = set(
+            _git(
+                "diff",
+                "--name-only",
+                f"{CL8_RELEASE_CUT_PREDECESSOR}..{head}",
+                text=True,
+            ).stdout.splitlines()
+        )
+        cumulative_changed.update(
+            _git("diff", "--name-only", text=True).stdout.splitlines()
+        )
+        assert cumulative_changed == RELEASE_CUT_ALLOWLIST - {
+            "current/desktop_gui.py"
+        }
+        return
+
     head = _cl8_adoption_candidate_head()
     assert _git(
         "rev-parse", f"{CL8_ADOPTION_PREDECESSOR_COMMIT}^{{tree}}", text=True

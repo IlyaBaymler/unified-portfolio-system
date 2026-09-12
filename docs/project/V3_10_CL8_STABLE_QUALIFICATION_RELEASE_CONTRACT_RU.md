@@ -296,6 +296,28 @@ current/install_and_verify_v3_9_0.bat
 
 Count: `34 paths`.
 
+The bounded release-review rescope for fixed findings `CL8-REL-R1-01..05`
+adds exactly these seven paths to the cumulative release-cut allowlist:
+
+```text
+docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md
+current/tools/release_cleanup.py
+current/tools/build_release.py
+current/tools/v3_10_stable_qualification.py
+current/tests/test_release_hygiene.py
+current/tests/test_v3_10_stable_qualification.py
+current/tests/test_v3_10_issue72_gui_runtime.py
+```
+
+Effective cumulative release-cut allowlist: `41 paths`.
+
+These paths may change only to close the fixed five findings: align cleanup
+with the active v3.10 root, preserve and verify required empty standalone
+directories, make the regression comparator account for pytest setup errors,
+update the exact post-cut node oracle, and extend the two inherited custody
+oracles to the bounded release-cut successor. They grant no trading, cash,
+Risk, Central, provider, experiment or publication authority.
+
 The final nine v3.9 root-release paths may only be deleted or moved out of the active release root by the accepted release process; their historical Git content is not rewritten.
 
 ## 12. Release-cut code restrictions
@@ -344,13 +366,20 @@ INDETERMINATE / FAIL -> RESCOPE
 
 ## 14. Cumulative CL8 repository surface
 
-Before publication, the maximum authorized CL8 source delta is:
+Before publication, the phase allowlists are:
 
 ```text
 1 contract path
 + 14 qualification-infrastructure paths
-+ 34 release-cut paths
++ 34 base release-cut paths
++ 7 bounded release-review rescope paths
 ```
+
+The sets overlap: the rescope reuses the contract path and four qualification
+paths, while the qualification-adoption correction already owns the Issue #72
+custody test. The maximum unique CL8 repository surface is therefore exactly
+`51 paths`, with `current/tests/test_release_hygiene.py` as the only newly
+unique path introduced by this release-review rescope.
 
 The exact actual changed set may be smaller. An allowlisted path is permission, not a requirement.
 
@@ -671,8 +700,7 @@ After the v3.10 release-metadata cut, only the following closed set of exact pyt
 ```text
 tests/test_stable_release_v3_9.py::test_stable_candidate_version_manifest_and_exact_baseline_are_consistent
 tests/test_stable_release_v3_9.py::test_only_v3_9_root_release_documents_are_current
-tests/test_release_hygiene.py::test_cleanup_removes_legacy_and_preserves_current_files
-tests/test_release_hygiene.py::test_current_source_tree_has_no_legacy_release_files
+tests/test_stable_release_v3_9.py::test_release_candidate_does_not_claim_manual_m6_acceptance
 tests/test_v3_9_source_artifact_qualification.py::test_valid_source_artifacts_are_byte_identical_and_sandbox_only
 tests/test_v3_9_source_artifact_qualification.py::test_artifact_manifest_and_zip_contents_are_covered
 tests/test_v3_9_stable_preflight.py::test_repository_source_preflight_passes_without_claiming_manual_gates
@@ -680,7 +708,12 @@ tests/test_standalone_rc1.py::test_standalone_sources_are_present_and_use_portab
 tests/test_observability.py::test_cycle_has_timing_session_and_decision_is_not_an_order
 ```
 
-This set was obtained by a release-cut dry-run against the exact CL7 predecessor source: the selected version-bound baseline was `31 passed`; after applying the frozen v3.10 metadata/document replacement shape outside the repository worktree it was `9 failed / 22 passed`, with exactly the nine nodes above. There are no regexes, file-wide exemptions, wildcard node IDs or reviewer-added entries.
+The effective set contains exactly eight nodes. The bounded release-review
+rescope removes the two cleanup tests because cleanup itself is now a current
+v3.10 oracle and adds the exact v3.9 qualification-manifest-shape node that is
+superseded by a truthful v3.10 candidate. The path-traversal and secret-canary
+verifier tests remain mandatory and passing. There are no regexes, file-wide
+exemptions, wildcard node IDs or reviewer-added entries.
 
 Regression equality is evaluated in the terminal current-base PR CI synthetic-merge context used for integration readiness. The two exact gates are:
 
@@ -691,14 +724,14 @@ actual failing node IDs == the six exact inherited custody node IDs in section 2
 POST_RELEASE_CUT:
 actual failing node IDs ==
 the six exact inherited custody node IDs in section 28
-+ the nine exact SUPERSEDED_RELEASE_METADATA_ORACLE node IDs above
++ the eight exact SUPERSEDED_RELEASE_METADATA_ORACLE node IDs above
 ```
 
 Local/non-shallow supporting runs may cause a known shallow custody assertion to pass, but they never authorize an additional failure and do not redefine either CI equality set.
 
 Before release-candidate acceptance, CL8 MUST mechanically compare the actual failing node-ID set with the applicable exact gate above.
 
-Each of the nine frozen post-cut nodes is classified:
+Each of the eight frozen post-cut nodes is classified:
 
 ```text
 SUPERSEDED_RELEASE_METADATA_ORACLE
@@ -1926,6 +1959,43 @@ RESCOPE / DEFER
 ```
 
 A documentation-only clerical error may be corrected only if it is already inside the frozen release-cut allowlist and does not invalidate candidate/artifact/live evidence identity; otherwise new candidate qualification is required.
+
+## 89.1. Bounded release-review rescope `CL8-REL-R1-01..05`
+
+The independent release-cut review of exact candidate
+`58fc85f26d089da677d68bf3ded6a7cca05fb035` / tree
+`9036c7f8d943720a47cbec3c1b68e0444e721458` fixed one finite finding set:
+
+```text
+CL8-REL-R1-01 first-run cleanup deletes active v3.10 release files
+CL8-REL-R1-02 standalone ZIP loses mandatory empty mutable directories
+CL8-REL-R1-03 regression identity/parser does not cover exact outcome
+CL8-REL-R1-04 build manifest carries contradictory qualification claims
+CL8-REL-R1-05 source template requests a self-referential identity update
+```
+
+Exactly one successor commit may close those findings. Its parent is the exact
+candidate above and its changed paths must be a subset of:
+
+```text
+docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md
+docs/releases/V3_10_0_STABLE_QUALIFICATION_RU.md
+current/tools/release_cleanup.py
+current/tools/build_release.py
+current/tools/v3_10_stable_qualification.py
+current/tests/test_release_hygiene.py
+current/tests/test_v3_10_stable_qualification.py
+current/tests/test_v3_10_issue72_gui_runtime.py
+current/install_and_run_gui.bat
+current/BUILD_STANDALONE.bat
+current/build_manifest.json
+current/VERIFY_V3_10_0_STABLE.bat
+```
+
+No second correction round is implied. The successor receives only a
+finding-scoped read-only closure review of `CL8-REL-R1-01..05`. Any surviving
+material blocker is `DEFER / NEW RESCOPE`; test or review success grants no
+qualification, experiment, Stable acceptance, publication or GitHub authority.
 
 ---
 

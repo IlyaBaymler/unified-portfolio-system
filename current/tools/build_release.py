@@ -129,6 +129,7 @@ def build_zip(
     archive_root: str,
     *,
     secret_canaries: Iterable[str] = (),
+    required_empty_directories: Iterable[str] = (),
 ) -> list[str]:
     root = root.resolve()
     output = output.resolve()
@@ -145,15 +146,53 @@ def build_zip(
             info, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9
         )
 
+    def write_directory(archive: zipfile.ZipFile, member: str) -> None:
+        normalized = member.rstrip("/") + "/"
+        info = zipfile.ZipInfo(normalized, date_time=(2020, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = ((0o40755 & 0xFFFF) << 16) | 0x10
+        info.create_system = 3
+        archive.writestr(
+            info, b"", compress_type=zipfile.ZIP_DEFLATED, compresslevel=9
+        )
+
     prefix = archive_root.strip("/")
+    directory_members: list[str] = []
+    for value in required_empty_directories:
+        relative = Path(str(value).replace("\\", "/"))
+        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+            raise RuntimeError(f"Unsafe required empty directory: {value!r}")
+        selected = root.joinpath(*relative.parts)
+        if not selected.is_dir() or any(selected.iterdir()):
+            raise RuntimeError(
+                "Required release directory is missing or not empty: "
+                + relative.as_posix()
+            )
+        member = relative.as_posix().rstrip("/") + "/"
+        directory_members.append(f"{prefix}/{member}" if prefix else member)
+    if len(directory_members) != len(set(directory_members)):
+        raise RuntimeError("Required empty release directories are not unique.")
+
+    file_members = [
+        (
+            f"{prefix}/{path.relative_to(root).as_posix()}"
+            if prefix
+            else path.relative_to(root).as_posix()
+        )
+        for path in files
+    ]
+    payload_members = sorted([*directory_members, *file_members])
+    file_by_member = dict(zip(file_members, files, strict=True))
     temporary = output.with_name(f"{output.name}.{uuid4().hex}.tmp")
     temporary.unlink(missing_ok=True)
     try:
         with zipfile.ZipFile(temporary, mode="w") as archive:
-            for path in files:
-                relative = path.relative_to(root).as_posix()
-                member = f"{prefix}/{relative}" if prefix else relative
-                write_bytes(archive, member, path.read_bytes())
+            for member in payload_members:
+                path = file_by_member.get(member)
+                if path is None:
+                    write_directory(archive, member)
+                else:
+                    write_bytes(archive, member, path.read_bytes())
                 members.append(member)
             manifest_member = (
                 f"{prefix}/ZIP_CONTENTS.txt" if prefix else "ZIP_CONTENTS.txt"
@@ -194,12 +233,13 @@ def zip_identity(path: str | Path) -> dict[str, object]:
         if archive.read(manifest_member) != expected_contents:
             raise RuntimeError("ZIP_CONTENTS.txt does not match archive members.")
         for info in archive.infolist():
+            expected_mode = 0o755 if info.is_dir() else 0o644
             if (
-                info.is_dir()
-                or info.date_time != (2020, 1, 1, 0, 0, 0)
+                info.date_time != (2020, 1, 1, 0, 0, 0)
                 or info.compress_type != zipfile.ZIP_DEFLATED
                 or info.create_system != 3
-                or (info.external_attr >> 16) & 0o777 != 0o644
+                or (info.external_attr >> 16) & 0o777 != expected_mode
+                or (info.is_dir() and archive.read(info.filename) != b"")
             ):
                 raise RuntimeError("ZIP member metadata is not deterministic.")
         member_sha256 = {

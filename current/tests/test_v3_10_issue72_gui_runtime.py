@@ -11,6 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 import tools.v3_10_issue72_q0_evidence as q0
+from tools.v3_10_stable_qualification import (
+    RELEASE_CUT_ALLOWLIST,
+    RELEASE_REVIEW_CORRECTION_ALLOWLIST,
+)
 from desktop_gui import _privacy_safe_gui_value
 from trading_robot.bot import BotConfig
 from trading_robot.config_persistence import bot_config_to_profile
@@ -49,6 +53,11 @@ ACCEPTED_IMPLEMENTATION_TREE = "a38d38617dcfa7e15dd1b8ce1f838aeec72c35f1"
 CL8_ADOPTION_BRANCH = "agent/v3-10-clean-cl8-qualification-adoption"
 CL8_ADOPTION_MECHANICAL_COMMIT = "70589366d3c34ede0cb0aba2a43f988c9f91fbd9"
 CL8_ADOPTION_MECHANICAL_TREE = "cfb1f9ea602316da30152a6f6c89b5f2018cf015"
+CL8_RELEASE_CUT_BRANCH = "agent/v3-10-clean-cl8-release-cut"
+CL8_RELEASE_CUT_PREDECESSOR = "7a569eadfb2a99c5314ae43d24da0dee47819d6c"
+CL8_RELEASE_CUT_PREDECESSOR_TREE = "d4f6bf5d1b00f4b944ac0aece669a00cd72b5847"
+CL8_RELEASE_REVIEW_PARENT = "58fc85f26d089da677d68bf3ded6a7cca05fb035"
+CL8_RELEASE_REVIEW_PARENT_TREE = "9036c7f8d943720a47cbec3c1b68e0444e721458"
 IMPLEMENTATION_PATHS = {
     "ROADMAP.md",
     "current/README.md",
@@ -124,6 +133,49 @@ def test_exact_contract_branch_and_fourteen_path_custody():
                 _git("ls-files", "--others", "--exclude-standard").splitlines()
             )
         assert changed == IMPLEMENTATION_PATHS
+        return
+
+    if branch == CL8_RELEASE_CUT_BRANCH:
+        assert _git("rev-parse", f"{CL8_RELEASE_CUT_PREDECESSOR}^{{tree}}") == (
+            CL8_RELEASE_CUT_PREDECESSOR_TREE
+        )
+        assert _git("rev-parse", f"{CL8_RELEASE_REVIEW_PARENT}^{{tree}}") == (
+            CL8_RELEASE_REVIEW_PARENT_TREE
+        )
+        assert _git("rev-parse", f"{CL8_RELEASE_REVIEW_PARENT}^") == (
+            CL8_RELEASE_CUT_PREDECESSOR
+        )
+        assert _git("merge-base", ACCEPTED_IMPLEMENTATION, head) == (
+            ACCEPTED_IMPLEMENTATION
+        )
+        if head != CL8_RELEASE_REVIEW_PARENT:
+            assert _git("rev-parse", f"{head}^") == CL8_RELEASE_REVIEW_PARENT
+        correction_changed = set(
+            _git("diff", "--name-only", f"{CL8_RELEASE_REVIEW_PARENT}..{head}").splitlines()
+        )
+        correction_changed.update(_git("diff", "--name-only").splitlines())
+        correction_changed.update(
+            _git("ls-files", "--others", "--exclude-standard").splitlines()
+        )
+        assert correction_changed == RELEASE_REVIEW_CORRECTION_ALLOWLIST - {
+            "current/install_and_run_gui.bat"
+        }
+        cumulative_changed = set(
+            _git(
+                "diff", "--name-only", f"{CL8_RELEASE_CUT_PREDECESSOR}..{head}"
+            ).splitlines()
+        )
+        cumulative_changed.update(_git("diff", "--name-only").splitlines())
+        assert cumulative_changed == RELEASE_CUT_ALLOWLIST - {
+            "current/desktop_gui.py"
+        }
+        for path in IMPLEMENTATION_PATHS - {
+            "current/README.md",
+            "current/tests/test_v3_10_issue72_gui_runtime.py",
+        }:
+            assert _git("rev-parse", f"{ACCEPTED_IMPLEMENTATION}:{path}") == _git(
+                "rev-parse", f"{head}:{path}"
+            )
         return
 
     if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":

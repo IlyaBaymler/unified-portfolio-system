@@ -73,11 +73,12 @@
     "unresolved_pending_or_uncertain_execution": 0
   },
   "stable_qualification": {
+    "scope": "v3.10.0-release-cut-candidate",
     "status": "candidate",
-    "automated_source_preflight_complete": true,
-    "automated_source_preflight_tests": 780,
-    "automated_source_preflight_date": "2026-08-15",
-    "deterministic_source_artifacts_complete": true,
+    "automated_source_preflight_complete": false,
+    "automated_source_preflight_tests": null,
+    "automated_source_preflight_date": null,
+    "deterministic_source_artifacts_complete": false,
     "deterministic_source_artifact_protocol": "deterministic-source-pair-v1",
     "user_acceptance": false,
     "final_burn_in_complete": false,

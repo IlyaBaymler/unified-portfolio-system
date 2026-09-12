@@ -46,8 +46,8 @@ echo [6/9] Compileall...
 if errorlevel 1 set "RC=17" & goto :fail_run
 
 echo [7/9] Full regression with exact POST_RELEASE_CUT comparator...
-"%PYTHON%" -m pytest -q -rfE --basetemp verification_output\pytest-full -p no:cacheprovider > "verification_output\pytest-full.log" 2>&1
-"%PYTHON%" -c "from pathlib import Path; import json,re,sys; from tools.v3_10_stable_qualification import RegressionStage,compare_regression_failures; text=Path(r'verification_output\pytest-full.log').read_text(encoding='utf-8',errors='replace'); ids=re.findall(r'^(?:FAILED|ERROR)\s+([^\s]+)(?:\s+-.*)?$',text,re.M); d=compare_regression_failures(ids,stage=RegressionStage.POST_RELEASE_CUT); print(json.dumps(d.to_dict(),sort_keys=True)); raise SystemExit(0 if d.passed else 1)" >> "%LOG_FILE%" 2>&1
+"%PYTHON%" -m pytest -q -rfE --junitxml=verification_output\pytest-full.xml --basetemp verification_output\pytest-full -p no:cacheprovider > "verification_output\pytest-full.log" 2>&1
+"%PYTHON%" -c "import json; from tools.v3_10_stable_qualification import RegressionStage,compare_regression_failures,pytest_junit_failure_node_ids; ids=pytest_junit_failure_node_ids(r'verification_output\pytest-full.xml',source_root='.'); d=compare_regression_failures(ids,stage=RegressionStage.POST_RELEASE_CUT); print(json.dumps(d.to_dict(),sort_keys=True)); raise SystemExit(0 if d.passed else 1)" >> "%LOG_FILE%" 2>&1
 if errorlevel 1 set "RC=18" & goto :fail_run
 
 echo [8/9] Static release identity consistency...
