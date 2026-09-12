@@ -149,7 +149,10 @@ class _CoordinatingHooks:
             return None
         request = self.hooks.coordination_request(runtime, proposal, candle_time, now)
         if request is None:
-            return proposal
+            raise GuiRuntimeBlockedError(
+                "COORDINATION_REQUEST_REQUIRED",
+                "A non-null strategy proposal must be bound to one Central request.",
+            )
         outcome = self.controller.central_order_coordinator.coordinate(
             request.proposal,
             runtime,
@@ -212,7 +215,27 @@ class GuiRuntimeController:
         self.connected = True
         self.scheduler: GlobalScheduler | None = None
         self._configured_set: ConfiguredExecutionSet | None = None
+        self._composition_blocker: GuiRuntimeBlockedError | None = None
         self._validate_static_bindings()
+
+    @classmethod
+    def blocked(cls, reason: str, detail: str = "") -> GuiRuntimeController:
+        """Create the single fail-closed GUI controller before owner composition.
+
+        A normal process therefore never has an absent controller.  An accepted
+        composition root may instead pass a fully bound instance to ``main``;
+        this placeholder cannot restore, start, render owner data or dispatch.
+        """
+
+        instance = object.__new__(cls)
+        instance.cycle_source = None
+        instance.session_id = str(uuid4())
+        instance.market_state = "OPEN"
+        instance.connected = False
+        instance.scheduler = None
+        instance._configured_set = None
+        instance._composition_blocker = GuiRuntimeBlockedError(reason, detail)
+        return instance
 
     @classmethod
     def compose(
@@ -368,7 +391,7 @@ class GuiRuntimeController:
 
     @property
     def service_ready(self) -> bool:
-        return self.cycle_source is not None
+        return self._composition_blocker is None and self.cycle_source is not None
 
     def run_cycle(self) -> SchedulerTickResult:
         if self.cycle_source is None:
@@ -403,6 +426,7 @@ class GuiRuntimeController:
 
         from .dashboard_view import build_multi_instrument_dashboard
 
+        self._require_composed()
         configured = self._load_configured_set()
         portfolio = self.portfolio_repository.load(expected_account_id=self.account_id)
         central = self.central_order_coordinator.manager.state()
@@ -419,6 +443,11 @@ class GuiRuntimeController:
             "kill_switch_active": risk_state.kill_switch_active,
             "risk_resync_required": risk_state.risk_resync_required,
         }
+        if portfolio_risk_snapshot is None:
+            portfolio_risk_snapshot = self._portfolio_risk_statuses(configured)
+        authority = self._authority_record()
+        if cash_actionability_status is None:
+            cash_actionability_status = self._cash_actionability_status(authority)
         return build_multi_instrument_dashboard(
             (item.profile for item in configured.bindings),
             (item.runtime for item in configured.bindings),
@@ -427,7 +456,7 @@ class GuiRuntimeController:
             central_state=central,
             risk_snapshot=risk_snapshot,
             portfolio_risk_snapshot=portfolio_risk_snapshot,
-            authority_record=self._authority_record(),
+            authority_record=authority,
             cash_actionability_status=cash_actionability_status,
             account_scope_sha256=self.account_scope_sha256,
         )
@@ -472,7 +501,54 @@ class GuiRuntimeController:
         ):
             raise GuiRuntimeBlockedError("RISK_MODE_MISMATCH")
 
+    def _require_composed(self) -> None:
+        blocker = self._composition_blocker
+        if blocker is not None:
+            raise blocker
+
+    def _portfolio_risk_statuses(
+        self,
+        configured: ConfiguredExecutionSet,
+    ) -> dict[str, str]:
+        """Read the accepted Portfolio Risk owner without granting authority."""
+
+        try:
+            report = self.portfolio_risk_runtime.recalculate_current(
+                self.central_order_coordinator.manager,
+                self.portfolio_repository,
+            )
+            if str(getattr(report, "account_id", "")).strip() != self.account_id:
+                raise GuiRuntimeBlockedError("PORTFOLIO_RISK_ACCOUNT_MISMATCH")
+            status = str(getattr(report, "status", "") or "").strip().upper()
+            if not status:
+                raise GuiRuntimeBlockedError("PORTFOLIO_RISK_STATUS_MISSING")
+        except GuiRuntimeBlockedError:
+            raise
+        except Exception:  # noqa: BLE001 - presentation stays fail closed
+            status = "BLOCKED"
+        return {
+            item.runtime.config.instrument_id: status
+            for item in configured.bindings
+        }
+
+    @staticmethod
+    def _cash_actionability_status(
+        authority: RuntimeCashAuthorityRecord,
+    ) -> str:
+        if (
+            authority.state is RuntimeCashAuthorityState.EXACT_CASH_ARMED
+            and authority.pending_dispatch_proof_sha256 is None
+        ):
+            return "LOCKED_REVALIDATION_REQUIRED"
+        if (
+            authority.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+            or authority.pending_dispatch_proof_sha256 is not None
+        ):
+            return "RECOVERY_REQUIRED"
+        return "BLOCKED"
+
     def _load_configured_set(self) -> ConfiguredExecutionSet:
+        self._require_composed()
         profiles = self.profile_store.load_mode("SANDBOX_EXECUTION")
         runtimes = self.runtime_store.load(expected_account_id=self.account_id)
         return self._bind_profiles_to_runtimes(profiles, runtimes)

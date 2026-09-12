@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 import tools.v3_10_issue72_q0_evidence as q0
+from desktop_gui import _privacy_safe_gui_value
 from trading_robot.bot import BotConfig
 from trading_robot.config_persistence import bot_config_to_profile
 from trading_robot.dashboard_view import build_multi_instrument_dashboard
@@ -58,6 +59,17 @@ IMPLEMENTATION_PATHS = {
     "docs/project/V3_10_ISSUE72_GUI_RUNTIME_REVIEW_RU.md",
     "docs/project/V3_10_ISSUE72_RISK_POLICY_GUI_ADR_RU.md",
 }
+
+
+def _emit_behavior_counters(**values: int) -> None:
+    counters = {key: 0 for key in q0.COUNTER_KEYS}
+    counters.update(values)
+    assert frozenset(counters) == q0.COUNTER_KEYS
+    assert all(type(item) is int and item >= 0 for item in counters.values())
+    print(
+        "ISSUE72_COUNTERS="
+        + json.dumps(counters, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    )
 
 
 def _git(*args: str) -> str:
@@ -204,6 +216,16 @@ class _RiskRuntime:
         return "a" * 64
 
 
+class _PortfolioRiskRuntime:
+    account_id = ACCOUNT
+
+    @staticmethod
+    def recalculate_current(manager, portfolio_repository):
+        assert manager.account_id == ACCOUNT
+        assert portfolio_repository is not None
+        return SimpleNamespace(account_id=ACCOUNT, status="READY")
+
+
 @dataclass
 class _CentralState:
     account_id: str = ACCOUNT
@@ -263,7 +285,7 @@ def _controller(root: Path, state=RuntimeCashAuthorityState.EXACT_CASH_ARMED):
     profile_store, runtime_store, profiles, runtimes = _stores(root)
     portfolio = _Portfolio(profiles)
     manager = _Manager()
-    portfolio_risk = SimpleNamespace(account_id=ACCOUNT)
+    portfolio_risk = _PortfolioRiskRuntime()
     coordinator = _Coordinator(manager, portfolio, portfolio_risk)
     authority = _Authority(state)
     adapter = _Adapter(
@@ -335,6 +357,31 @@ def test_group_store_rejects_nonexact_committed_readback(tmp_path: Path, monkeyp
         )
 
 
+def test_group_store_maps_unreadable_committed_readback_to_postcondition(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _, store, _, before = _stores(tmp_path)
+    successor = tuple(item.start() for item in before)
+    reads = 0
+
+    def load(*, expected_account_id):
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return before
+        raise InstrumentRuntimeStateError("committed checksum invalid")
+
+    monkeypatch.setattr(store, "_load_unlocked", load)
+
+    with pytest.raises(InstrumentRuntimeStateError, match="GROUP_POSTCONDITION_FAILED"):
+        store.compare_and_swap_all(
+            expected=before,
+            successor=successor,
+            expected_account_id=ACCOUNT,
+        )
+
+
 def test_group_start_is_all_or_nothing_when_one_runtime_is_blocked(tmp_path: Path):
     _, store, _, before = _stores(tmp_path)
     blocked = (*before[:-1], before[-1].block())
@@ -347,8 +394,12 @@ def test_group_start_is_all_or_nothing_when_one_runtime_is_blocked(tmp_path: Pat
             expected_account_id=ACCOUNT,
         )
 
-    assert store.load(expected_account_id=ACCOUNT) == blocked
+    persisted = store.load(expected_account_id=ACCOUNT)
+    assert persisted == blocked
     assert scheduler.runtimes == tuple(sorted(blocked, key=lambda item: item.runtime_key))
+    _emit_behavior_counters(
+        active_runtimes=sum(item.status == "ACTIVE" for item in persisted)
+    )
 
 
 def test_controller_rejects_distinct_portfolio_risk_instances(tmp_path: Path):
@@ -388,10 +439,16 @@ def test_controller_rejects_distinct_portfolio_risk_instances(tmp_path: Path):
     ],
 )
 def test_controller_enforces_closed_cl7_start_matrix(tmp_path: Path, state, reason):
-    controller, *_ = _controller(tmp_path, state)
+    controller, store, *_ = _controller(tmp_path, state)
 
     with pytest.raises(GuiRuntimeBlockedError, match=reason):
         controller.start_configured_set()
+    _emit_behavior_counters(
+        active_runtimes=sum(
+            item.status == "ACTIVE"
+            for item in store.load(expected_account_id=ACCOUNT)
+        )
+    )
 
 
 def test_controller_starts_and_stops_exact_three_runtime_set(tmp_path: Path):
@@ -404,6 +461,9 @@ def test_controller_starts_and_stops_exact_three_runtime_set(tmp_path: Path):
     assert {item[1] for item in started.runtime_statuses} == {"ACTIVE"}
     assert stopped.status == "STOPPED"
     assert {item.status for item in store.load(expected_account_id=ACCOUNT)} == {"STOPPED"}
+    _emit_behavior_counters(
+        active_runtimes=sum(status == "ACTIVE" for _, status in started.runtime_statuses)
+    )
 
 
 def test_stop_preserves_unresolved_custody_and_is_idempotent(tmp_path: Path):
@@ -420,7 +480,11 @@ def test_stop_preserves_unresolved_custody_and_is_idempotent(tmp_path: Path):
     assert first.status == second.status == "STOPPED"
     assert first.recovery_required is second.recovery_required is True
     assert controller.central_order_coordinator.manager.state().intents == (pending,)
-    assert {item.status for item in store.load(expected_account_id=ACCOUNT)} == {"STOPPED"}
+    persisted = store.load(expected_account_id=ACCOUNT)
+    assert {item.status for item in persisted} == {"STOPPED"}
+    _emit_behavior_counters(
+        active_runtimes=sum(item.status == "ACTIVE" for item in persisted)
+    )
 
 
 def test_restart_with_pending_state_is_recovery_first(tmp_path: Path):
@@ -433,6 +497,7 @@ def test_restart_with_pending_state_is_recovery_first(tmp_path: Path):
         controller.start_configured_set()
 
     assert {item.status for item in store.load(expected_account_id=ACCOUNT)} == {"STOPPED"}
+    _emit_behavior_counters()
 
 
 def test_restart_restores_set_without_duplicate_proposal(tmp_path: Path):
@@ -456,6 +521,14 @@ def test_restart_restores_set_without_duplicate_proposal(tmp_path: Path):
     assert len(second.bindings) == len(profiles) == 3
     assert coordinator.calls == []
     assert adapter.dispatches == 0
+    _emit_behavior_counters(
+        active_runtimes=sum(
+            item.runtime.status == "ACTIVE" for item in second.bindings
+        ),
+        proposal=len(coordinator.calls),
+        central_intent=len(coordinator.calls),
+        adapter_dispatch=adapter.dispatches,
+    )
 
 
 @pytest.mark.parametrize(
@@ -489,9 +562,16 @@ def test_controller_prevalidation_blockers_create_no_proposal_or_dispatch(
     with pytest.raises(GuiRuntimeBlockedError):
         controller.start_configured_set()
 
-    assert {item.status for item in store.load(expected_account_id=ACCOUNT)} == {"STOPPED"}
+    persisted = store.load(expected_account_id=ACCOUNT)
+    assert {item.status for item in persisted} == {"STOPPED"}
     assert coordinator.calls == []
     assert adapter.dispatches == 0
+    _emit_behavior_counters(
+        active_runtimes=sum(item.status == "ACTIVE" for item in persisted),
+        proposal=len(coordinator.calls),
+        central_intent=len(coordinator.calls),
+        adapter_dispatch=adapter.dispatches,
+    )
 
 
 def test_controller_rejects_cross_account_scope(tmp_path: Path):
@@ -500,6 +580,7 @@ def test_controller_rejects_cross_account_scope(tmp_path: Path):
 
     with pytest.raises(GuiRuntimeBlockedError, match="CENTRAL_OWNER_MISMATCH|ACCOUNT_SCOPE_MISMATCH"):
         controller.start_configured_set()
+    _emit_behavior_counters()
 
 
 def test_account_disposition_validator_binds_closed_enum_and_trusted_hash(
@@ -535,7 +616,11 @@ def test_account_disposition_validator_binds_closed_enum_and_trusted_hash(
     path = tmp_path / "disposition.json"
     path.write_bytes(q0.canonical_bytes(value))
 
-    valid, summary, record = q0._validate_external(path, value["record_sha256"])
+    valid, summary, record = q0._validate_external(
+        path,
+        value["record_sha256"],
+        validated_at="2026-09-12T10:02:00+00:00",
+    )
     assert valid is True
     assert summary == {
         "disposition": "REDUNDANT_ACCOUNT_RETAINED_WITH_REASON",
@@ -545,7 +630,63 @@ def test_account_disposition_validator_binds_closed_enum_and_trusted_hash(
 
     value["disposition"] = "PREFILLED_PASS"
     path.write_bytes(q0.canonical_bytes(value))
-    assert q0._validate_external(path, value["record_sha256"])[0] is False
+    assert q0._validate_external(
+        path,
+        value["record_sha256"],
+        validated_at="2026-09-12T10:02:00+00:00",
+    )[0] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("open_positions_status", "OPEN"),
+        ("open_orders_status", "UNKNOWN"),
+        ("pending_uncertain_status", "PRESENT"),
+    ],
+)
+def test_account_disposition_rejects_unsafe_statuses(tmp_path: Path, field, invalid):
+    value = {
+        "version": 1,
+        "disposition": "REDUNDANT_ACCOUNT_RETAINED_WITH_REASON",
+        "experiment_id": "ISSUE72-SANDBOX-ACCOUNT-DISPOSITION-V1",
+        "preparation_record_sha256": "1" * 64,
+        "start_experiment_record_sha256": "2" * 64,
+        "observed_at": "2026-09-12T10:00:00+00:00",
+        "fresh_until": "2026-09-12T10:05:00+00:00",
+        "account_list_evidence_sha256": "3" * 64,
+        "active_account_scope_sha256": "4" * 64,
+        "redundant_account_scope_sha256": "5" * 64,
+        "runtime_reference_scan_sha256": "6" * 64,
+        "configuration_reference_scan_sha256": "7" * 64,
+        "backup_reference_scan_sha256": "8" * 64,
+        "acceptance_reference_scan_sha256": "9" * 64,
+        "open_positions_status": "CLEAR",
+        "open_orders_status": "CLEAR",
+        "pending_uncertain_status": "CLEAR",
+        "raw_identifiers_absent": True,
+        "variant": {
+            "reason_code": "ACCOUNT_RETAINED_FOR_AUDIT",
+            "reason_text_sha256": "a" * 64,
+            "review_record_sha256": "b" * 64,
+            "provider_mutation_performed": False,
+        },
+    }
+    value[field] = invalid
+    value["record_sha256"] = q0.digest(value)
+    path = tmp_path / "disposition.json"
+    path.write_bytes(q0.canonical_bytes(value))
+
+    assert q0._validate_external(
+        path,
+        value["record_sha256"],
+        validated_at="2026-09-12T10:02:00+00:00",
+    )[0] is False
+    assert q0._validate_external(
+        path,
+        value["record_sha256"],
+        validated_at="2026-09-12T10:06:00+00:00",
+    )[0] is False
 
 
 def test_q0_producer_table_and_verify_mode_are_closed_and_rerun_bound():
@@ -572,6 +713,7 @@ def test_q0_producer_table_and_verify_mode_are_closed_and_rerun_bound():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert "generate" in called_names
+    assert "def _behavior_counters(" not in source
     for required in (
         "--candidate",
         "--candidate-tree",
@@ -580,6 +722,17 @@ def test_q0_producer_table_and_verify_mode_are_closed_and_rerun_bound():
         "--account-disposition-sha256",
     ):
         assert required in source
+
+
+def test_q0_behavior_counters_are_parsed_only_from_producer_output():
+    rendered = {key: 0 for key in q0.COUNTER_KEYS}
+    rendered.update(proposal=1, central_intent=1, adapter_dispatch=1)
+    marker = "ISSUE72_COUNTERS=" + json.dumps(
+        rendered, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    )
+
+    assert q0._parse_behavior_counters(marker) == rendered
+    assert q0._parse_behavior_counters("1 passed") is None
 
 
 class _Hooks:
@@ -621,6 +774,35 @@ def test_proposal_routes_through_central_then_execution_adapter(tmp_path: Path):
     assert not result.failures
     assert coordinator.calls
     assert adapter.dispatches == 1
+    _emit_behavior_counters(
+        proposal=len(coordinator.calls),
+        central_intent=len(coordinator.calls),
+        adapter_dispatch=adapter.dispatches,
+    )
+
+
+def test_nonnull_proposal_without_central_request_fails_before_watermark(tmp_path: Path):
+    controller, store, profiles, _, coordinator, adapter = _controller(tmp_path)
+    controller.start_configured_set()
+    runtime = controller.scheduler.runtimes[0]
+
+    class MissingRequestHooks(_Hooks):
+        def coordination_request(self, runtime, proposal, candle_time, now):
+            return None
+
+    result = controller.service_tick(
+        now=T0,
+        latest_closed_candles={runtime.runtime_key: T0},
+        hooks=MissingRequestHooks(
+            next(item for item in profiles if item.instrument_id == runtime.config.instrument_id)
+        ),
+    )
+
+    assert result.failures
+    assert coordinator.calls == []
+    assert adapter.dispatches == 0
+    persisted = store.load(expected_account_id=ACCOUNT)
+    assert next(item for item in persisted if item.runtime_key == runtime.runtime_key).last_processed_candle is None
 
 
 def test_market_idle_and_disconnect_do_not_create_proposals(tmp_path: Path):
@@ -637,11 +819,16 @@ def test_market_idle_and_disconnect_do_not_create_proposals(tmp_path: Path):
         controller.service_tick(now=T0, latest_closed_candles={}, hooks=hooks)
     assert coordinator.calls == []
     assert adapter.dispatches == 0
+    _emit_behavior_counters(
+        proposal=len(coordinator.calls),
+        central_intent=len(coordinator.calls),
+        adapter_dispatch=adapter.dispatches,
+    )
 
 
 def test_open_market_idle_open_preserves_set_and_watermark(tmp_path: Path):
     controller, store, profiles, _, coordinator, adapter = _controller(tmp_path)
-    controller.start_configured_set()
+    started = controller.start_configured_set()
     runtime = controller.scheduler.runtimes[0]
     hooks = _Hooks(next(item for item in profiles if item.instrument_id == runtime.config.instrument_id))
     first = controller.service_tick(
@@ -666,6 +853,14 @@ def test_open_market_idle_open_preserves_set_and_watermark(tmp_path: Path):
     assert stopped.status == "STOPPED"
     persisted = store.load(expected_account_id=ACCOUNT)
     assert next(item for item in persisted if item.runtime_key == runtime.runtime_key).last_processed_candle == T0
+    _emit_behavior_counters(
+        active_runtimes=sum(
+            status == "ACTIVE" for _, status in started.runtime_statuses
+        ),
+        proposal=len(coordinator.calls),
+        central_intent=len(coordinator.calls),
+        adapter_dispatch=adapter.dispatches,
+    )
 
 
 def test_dashboard_binds_positions_central_risk_and_cl7_without_collapsing_rows(tmp_path: Path):
@@ -705,6 +900,7 @@ def test_dashboard_binds_positions_central_risk_and_cl7_without_collapsing_rows(
     assert selected.pending_status == "PRESENT"
     assert selected.reconciliation_status == "MATCHED"
     assert selected.cl7_authority_mode == "EXACT_CASH_ARMED"
+    _emit_behavior_counters()
 
 
 def test_dashboard_exposes_each_central_lifecycle_state(tmp_path: Path):
@@ -743,6 +939,7 @@ def test_dashboard_exposes_each_central_lifecycle_state(tmp_path: Path):
     assert row.submitted_status == "PRESENT"
     assert row.uncertain_status == "PRESENT"
     assert row.queued_reserved_cash == 100
+    _emit_behavior_counters()
 
 
 def test_dashboard_missing_owner_evidence_fails_closed(tmp_path: Path):
@@ -759,6 +956,20 @@ def test_dashboard_missing_owner_evidence_fails_closed(tmp_path: Path):
         assert row.actual_lots == "UNKNOWN"
         assert row.portfolio_risk_status == "UNKNOWN"
         assert row.cl7_authority_mode == "UNKNOWN"
+    _emit_behavior_counters()
+
+
+def test_controller_dashboard_reads_mandatory_owner_statuses(tmp_path: Path):
+    controller, *_ = _controller(tmp_path)
+
+    dashboard = controller.dashboard()
+
+    assert dashboard.state == "READY"
+    assert {row.portfolio_risk_status for row in dashboard.rows} == {"READY"}
+    assert {row.cash_actionability_status for row in dashboard.rows} == {
+        "LOCKED_REVALIDATION_REQUIRED"
+    }
+    assert {row.source_status for row in dashboard.rows} == {"READY"}
 
 
 def test_transient_failures_coalesce_to_one_status_surface():
@@ -779,6 +990,45 @@ def test_transient_failures_coalesce_to_one_status_surface():
     assert "showwarning" not in calls
     assert "showinfo" not in calls
     assert "put" in calls
+    _emit_behavior_counters(
+        popup_events=sum(
+            item in calls for item in ("showerror", "showwarning", "showinfo")
+        )
+    )
+
+
+def test_gui_process_always_receives_one_controller_and_raw_ids_are_sanitized():
+    source = (CURRENT / "desktop_gui.py").read_text(encoding="utf-8")
+    main_node = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    calls = [node for node in ast.walk(main_node) if isinstance(node, ast.Call)]
+    assert any(
+        isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "GuiRuntimeController"
+        and node.func.attr == "blocked"
+        for node in calls
+    )
+    gui_call = next(
+        node
+        for node in calls
+        if isinstance(node.func, ast.Name) and node.func.id == "TradingRobotGUI"
+    )
+    assert any(keyword.arg == "gui_runtime_controller" for keyword in gui_call.keywords)
+    blocked = GuiRuntimeController.blocked("GUI_RUNTIME_COMPOSITION_REQUIRED")
+    assert isinstance(blocked, GuiRuntimeController)
+    assert blocked.service_ready is False
+
+    rendered = _privacy_safe_gui_value(
+        {"accounts": [{"id": "RAW-ACCOUNT-ID", "status": "OPEN"}]}
+    )
+    assert "RAW-ACCOUNT-ID" not in json.dumps(rendered)
+    assert rendered["accounts"][0]["id_sha256"] == q0.digest(
+        b"RAW-ACCOUNT-ID"
+    )
 
 
 def test_active_gui_has_no_legacy_bot_provider_mutation_or_risk_write_callback():

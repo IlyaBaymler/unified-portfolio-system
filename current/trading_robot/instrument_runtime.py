@@ -530,7 +530,12 @@ class InstrumentRuntimeStore:
                     raise InstrumentRuntimeStateError(
                         f"GROUP_COMMIT_FAILED: {exc}"
                     ) from exc
-                committed = self._load_unlocked(expected_account_id=account_id)
+                try:
+                    committed = self._load_unlocked(expected_account_id=account_id)
+                except InstrumentRuntimeError as exc:
+                    raise InstrumentRuntimeStateError(
+                        f"GROUP_POSTCONDITION_FAILED: {exc}"
+                    ) from exc
                 if self._canonical_document_bytes(self._document(committed)) != (
                     self._canonical_document_bytes(successor_document)
                 ):

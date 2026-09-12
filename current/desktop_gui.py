@@ -155,9 +155,14 @@ def _privacy_safe_gui_value(value: Any) -> Any:
         for raw_key, item in value.items():
             key = str(raw_key)
             normalized = key.strip().lower()
-            if normalized in {"account_id", "raw_account_id"}:
+            if normalized in {"id", "account_id", "raw_account_id"}:
                 raw = str(item or "").strip()
-                result["account_scope_sha256"] = (
+                digest_key = (
+                    "account_scope_sha256"
+                    if normalized in {"account_id", "raw_account_id"}
+                    else "id_sha256"
+                )
+                result[digest_key] = (
                     sha256(raw.encode("utf-8")).hexdigest() if raw else "UNKNOWN"
                 )
             elif "token" in normalized or normalized == "authorization":
@@ -238,7 +243,7 @@ class TradingRobotGUI(tk.Tk):
         self,
         bootstrap_report: RuntimeSetupReport | None = None,
         *,
-        gui_runtime_controller: GuiRuntimeController | None = None,
+        gui_runtime_controller: GuiRuntimeController,
     ) -> None:
         super().__init__()
         self.title(f"MOEX Research Robot {DISPLAY_VERSION}")
@@ -6257,7 +6262,7 @@ OWNERSHIP И ВИРТУАЛЬНЫЙ ПОРТФЕЛЬ
         self.destroy()
 
 
-def main() -> None:
+def main(*, gui_runtime_controller: GuiRuntimeController | None = None) -> None:
     instance_lock = InterProcessFileLock(GUI_LOCK_PATH, timeout_seconds=0.0)
     try:
         instance_lock.acquire()
@@ -6275,7 +6280,14 @@ def main() -> None:
 
     try:
         bootstrap_report = bootstrap_runtime(RUNTIME_DIR)
-        app = TradingRobotGUI(bootstrap_report=bootstrap_report)
+        controller = gui_runtime_controller or GuiRuntimeController.blocked(
+            "GUI_RUNTIME_COMPOSITION_REQUIRED",
+            "Launch through an accepted owner composition root before account-level Start.",
+        )
+        app = TradingRobotGUI(
+            bootstrap_report=bootstrap_report,
+            gui_runtime_controller=controller,
+        )
         app.mainloop()
     finally:
         instance_lock.release()

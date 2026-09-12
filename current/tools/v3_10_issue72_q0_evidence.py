@@ -46,6 +46,18 @@ HASH = re.compile(r"[0-9a-f]{64}\Z")
 RESULT_KEYS = frozenset(
     {"assertions", "artifact_identities", "counters", "observations"}
 )
+COUNTER_KEYS = frozenset(
+    {
+        "active_runtimes",
+        "adapter_dispatch",
+        "central_intent",
+        "popup_events",
+        "portfolio_risk_admission",
+        "proposal",
+        "provider_mutation",
+        "risk_dispatch_validation",
+    }
+)
 RECORD_KEYS = frozenset(
     {
         "version",
@@ -319,18 +331,27 @@ def _payload(
     return result
 
 
-def _behavior_counters(case_id: str) -> dict[str, int]:
-    """Closed per-case counters asserted by the bound dedicated test node."""
+def _parse_behavior_counters(output: str) -> dict[str, int] | None:
+    """Bind counters emitted by the executed producer, never by case metadata."""
 
-    overrides = {
-        "I72-03": {"active_runtimes": 3},
-        "I72-05": {"active_runtimes": 0},
-        "I72-06": {"active_runtimes": 3},
-        "I72-15": {"proposal": 1, "central_intent": 1, "adapter_dispatch": 1},
-        "I72-19": {"active_runtimes": 0},
-        "I72-22": {"proposal": 1, "central_intent": 1, "adapter_dispatch": 1},
-    }
-    return dict(overrides.get(case_id, {}))
+    matches = re.findall(r"(?m)^ISSUE72_COUNTERS=(\{[^\r\n]+\})$", output)
+    if not matches:
+        return None
+    aggregate = {key: 0 for key in COUNTER_KEYS}
+    try:
+        for raw in matches:
+            value = json.loads(raw)
+            if (
+                not isinstance(value, dict)
+                or frozenset(value) != COUNTER_KEYS
+                or any(type(item) is not int or item < 0 for item in value.values())
+            ):
+                return None
+            for key, item in value.items():
+                aggregate[key] += item
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return aggregate
 
 
 def _ast_payload(tree: Path, case_id: str) -> dict[str, Any]:
@@ -437,6 +458,8 @@ def _document_payload(tree: Path, case_id: str) -> dict[str, Any]:
 def _validate_external(
     path: Path | None,
     trusted_hash: str | None,
+    *,
+    validated_at: str,
 ) -> tuple[bool, dict[str, Any], dict[str, Any] | None]:
     if path is None or trusted_hash is None:
         return (
@@ -447,8 +470,27 @@ def _validate_external(
             },
             None,
         )
-    raw = path.read_bytes()
-    value = json.loads(raw.decode("utf-8"))
+    try:
+        raw = path.read_bytes()
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        return (
+            False,
+            {
+                "disposition": "NOT_ESTABLISHED",
+                "disposition_evidence_sha256": None,
+            },
+            None,
+        )
+    if not isinstance(value, dict):
+        return (
+            False,
+            {
+                "disposition": "NOT_ESTABLISHED",
+                "disposition_evidence_sha256": None,
+            },
+            None,
+        )
     common_keys = {
         "version",
         "disposition",
@@ -509,10 +551,13 @@ def _validate_external(
     try:
         observed = datetime.fromisoformat(str(value["observed_at"]).replace("Z", "+00:00"))
         fresh = datetime.fromisoformat(str(value["fresh_until"]).replace("Z", "+00:00"))
+        validated = datetime.fromisoformat(validated_at.replace("Z", "+00:00"))
         fresh_valid = (
             observed.tzinfo is not None
             and fresh.tzinfo is not None
+            and validated.tzinfo is not None
             and 0 <= (fresh - observed).total_seconds() <= 300
+            and observed <= validated <= fresh
         )
     except (KeyError, TypeError, ValueError):
         fresh_valid = False
@@ -528,9 +573,20 @@ def _validate_external(
             and variant.get("provider_mutation_performed") is False
         )
     elif variant_valid:
+        try:
+            post_action = datetime.fromisoformat(
+                str(variant["post_action_observed_at"]).replace("Z", "+00:00")
+            )
+            post_action_valid = (
+                post_action.tzinfo is not None
+                and observed <= post_action <= validated
+            )
+        except (KeyError, TypeError, ValueError, UnboundLocalError):
+            post_action_valid = False
         variant_valid = (
             variant.get("active_account_unchanged") is True
             and variant.get("redundant_account_absent") is True
+            and post_action_valid
         )
     valid = (
         set(value) == common_keys
@@ -540,6 +596,9 @@ def _validate_external(
         and actual == trusted_hash
         and claimed == trusted_hash
         and value.get("raw_identifiers_absent") is True
+        and value.get("open_positions_status") == "CLEAR"
+        and value.get("open_orders_status") == "CLEAR"
+        and value.get("pending_uncertain_status") == "CLEAR"
         and disposition
         in {
             "REDUNDANT_ACCOUNT_RETAINED_WITH_REASON",
@@ -636,6 +695,7 @@ def generate(args: argparse.Namespace) -> dict[str, Any]:
     external_valid, account_disposition, external_record = _validate_external(
         args.account_disposition,
         args.account_disposition_sha256,
+        validated_at=timestamp,
     )
 
     with tempfile.TemporaryDirectory(prefix="issue72-q0-") as temp_name:
@@ -656,6 +716,7 @@ def generate(args: argparse.Namespace) -> dict[str, Any]:
                 "-m",
                 "pytest",
                 "-q",
+                "-s",
                 "-p",
                 "no:cacheprovider",
                 f"--basetemp=../../.q0/pytest-{node_token}",
@@ -748,21 +809,32 @@ def generate(args: argparse.Namespace) -> dict[str, Any]:
                 dedicated_exit, dedicated_output, dedicated_command = behavioral_runs[
                     spec.producer_id
                 ]
+                measured_counters = _parse_behavior_counters(dedicated_output)
                 payload = _payload(
-                    [_assertion("dedicated_suite_exit_code", dedicated_exit, 0)],
+                    [
+                        _assertion("dedicated_suite_exit_code", dedicated_exit, 0),
+                        _assertion(
+                            "behavior_counters_bound",
+                            measured_counters is not None,
+                            True,
+                        ),
+                    ],
                     artifacts=[
                         {
                             "name": spec.producer_id,
                             "sha256": digest(dedicated_output.encode()),
                         }
                     ],
-                    counters=_behavior_counters(case_id),
+                    counters=measured_counters,
                     observations={
                         "output_sha256": digest(dedicated_output.encode()),
                         "pytest_node_id": spec.producer_id,
                     },
                 )
-                exit_code, command = dedicated_exit, dedicated_command
+                exit_code = (
+                    dedicated_exit if measured_counters is not None else max(1, dedicated_exit)
+                )
+                command = dedicated_command
             record, evidence_sha = _record(
                 case_id=case_id,
                 spec=spec,
