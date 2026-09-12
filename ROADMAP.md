@@ -1,5 +1,16 @@
 # Roadmap
 
+## V3.10 Issue #72 — GUI/runtime prerequisite rescope
+
+Локальная implementation-кандидатура связывает account-level GUI Start/Stop с полным
+configured set, atomic runtime CAS, Central-only proposal admission, same-instance
+Portfolio Risk и CL7 exact-cash gate. GUI не получает RiskPolicy writer или прямой
+provider POST. Offline Q0 остаётся provider-free.
+
+Текущий gate: `IMPLEMENTED LOCALLY / REVIEW PENDING / ACCEPTANCE PENDING`.
+Sandbox account disposition, live qualification, `START EXPERIMENT`, GitHub publication
+и CL8 Q0 acceptance остаются отдельными решениями.
+
 Дата обновления: 2026-08-13.
 
 ## v3.6.0 — Stable Sandbox Core — завершено

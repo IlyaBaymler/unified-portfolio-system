@@ -1,5 +1,21 @@
 # MOEX Research Robot v3.9.0 Stable Candidate
 
+## V3.10 Issue #72 local implementation candidate
+
+Основной GUI Sandbox-path теперь проектируется как один account-level
+`ConfiguredExecutionSet`: Start/Stop проходят через `GuiRuntimeController` и одну
+full-registry CAS-транзакцию `GlobalScheduler`. Proposal допускается только после
+canonical Portfolio, Central, Risk, same-instance Portfolio Risk и pre-existing
+`EXACT_CASH_ARMED` CL7 validation; provider mutation остаётся только в
+`SandboxExecutionAdapter`.
+
+GUI Risk Policy является read-only. Диагностические submit/close callbacks удалены,
+dashboard показывает отдельные actual/target, reconciliation, Central statuses, Risk и
+CL7 fields. Account identifiers отображаются только как scope hashes.
+
+Статус: `LOCAL IMPLEMENTATION CANDIDATE / NOT REVIEWED / NOT ACCEPTED / NOT PUBLISHED`.
+Provider access и `START EXPERIMENT` не авторизованы.
+
 Исследовательский менеджер инвестиционного портфеля для **T-Invest Sandbox**.
 Версия `0.3.9` фиксирует реализацию Portfolio Risk Engine M1–M5.3 из exact
 baseline commit `cddd80f3caf7191ecf2f85df9e1ccfea97af6cc4` как кандидата M6.

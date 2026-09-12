@@ -195,6 +195,34 @@ class GlobalScheduler:
         self._emit_runtime_lifecycle("RUNTIME_STOPPED", runtime)
         return runtime
 
+    def start_configured_set(
+        self,
+        runtime_keys: Sequence[str],
+        *,
+        expected_account_id: str,
+    ) -> tuple[InstrumentRuntime, ...]:
+        """Start the complete configured set through one persistent CAS."""
+
+        return self._transition_configured_set(
+            runtime_keys,
+            expected_account_id=expected_account_id,
+            transition="START",
+        )
+
+    def stop_configured_set(
+        self,
+        runtime_keys: Sequence[str],
+        *,
+        expected_account_id: str,
+    ) -> tuple[InstrumentRuntime, ...]:
+        """Stop the complete configured set without altering economic custody."""
+
+        return self._transition_configured_set(
+            runtime_keys,
+            expected_account_id=expected_account_id,
+            transition="STOP",
+        )
+
     def update_execution_state(
         self,
         runtime_key: str,
@@ -478,6 +506,53 @@ class GlobalScheduler:
             self.store.save(updated.values())
         self._runtimes = updated
         return runtime
+
+    def _transition_configured_set(
+        self,
+        runtime_keys: Sequence[str],
+        *,
+        expected_account_id: str,
+        transition: str,
+    ) -> tuple[InstrumentRuntime, ...]:
+        if self.store is None:
+            raise InstrumentRuntimeConflictError(
+                "GROUP_STORE_REQUIRED: configured-set transitions must be durable."
+            )
+        account_id = str(expected_account_id or "").strip()
+        requested = tuple(str(item) for item in runtime_keys)
+        if not account_id or len(requested) != len(set(requested)):
+            raise InstrumentRuntimeConflictError("GROUP_SET_INVALID")
+        before = self.runtimes
+        if tuple(sorted(requested)) != tuple(item.runtime_key for item in before):
+            raise InstrumentRuntimeConflictError(
+                "GROUP_SET_MISMATCH: transition must cover the complete scheduler set."
+            )
+        if not 1 <= len(before) <= 3 or any(
+            item.config.account_id != account_id for item in before
+        ):
+            raise InstrumentRuntimeConflictError("GROUP_ACCOUNT_SCOPE_MISMATCH")
+        if transition == "START":
+            successor = tuple(item.start() for item in before)
+            event_type = "RUNTIME_STARTED"
+        elif transition == "STOP":
+            successor = tuple(item.stop() for item in before)
+            event_type = "RUNTIME_STOPPED"
+        else:  # pragma: no cover - private closed call set
+            raise InstrumentRuntimeConflictError("GROUP_TRANSITION_INVALID")
+
+        committed = self.store.compare_and_swap_all(
+            expected=before,
+            successor=successor,
+            expected_account_id=account_id,
+        )
+        committed_by_key = {item.runtime_key: item for item in committed}
+        if tuple(sorted(committed_by_key)) != tuple(item.runtime_key for item in before):
+            raise InstrumentRuntimeConflictError("GROUP_POSTCONDITION_FAILED")
+        self._runtimes = committed_by_key
+        for old, new in zip(before, committed, strict=True):
+            if old.to_dict() != new.to_dict():
+                self._emit_runtime_lifecycle(event_type, new)
+        return committed
 
     def _persist_all(self) -> None:
         if self.store is not None:

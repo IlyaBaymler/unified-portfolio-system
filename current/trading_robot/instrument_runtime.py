@@ -476,25 +476,74 @@ class InstrumentRuntimeStore:
 
     def save(self, runtimes: Iterable[InstrumentRuntime]) -> StateSaveResult:
         normalized = self._validate_collection(tuple(runtimes))
-        account_id = normalized[0].config.account_id if normalized else None
-        document = {
-            "version": self.SCHEMA_VERSION,
-            "account_id": account_id,
-            "runtimes": [runtime.to_dict() for runtime in normalized],
-        }
+        document = self._document(normalized)
         try:
             with InterProcessFileLock(
                 self.lock_path, timeout_seconds=self.lock_timeout_seconds
             ):
-                return atomic_write_json(
-                    self.path,
-                    document,
-                    write_checksum=True,
-                    keep_last_good=True,
-                    validate_roundtrip=True,
-                )
+                return self._write_unlocked(document)
         except (LockUnavailableError, StatePersistenceError) as exc:
             raise InstrumentRuntimeStateError(str(exc)) from exc
+
+    def compare_and_swap_all(
+        self,
+        *,
+        expected: Iterable[InstrumentRuntime],
+        successor: Iterable[InstrumentRuntime],
+        expected_account_id: str,
+    ) -> tuple[InstrumentRuntime, ...]:
+        """Atomically replace the complete registry when its exact value matches.
+
+        One file lock covers verified load, full-document comparison, write and
+        verified read-back.  This is the account-level lifecycle boundary used
+        by the v3.10 GUI; it never attempts a partial runtime transition.
+        """
+
+        account_id = _required_text(expected_account_id, "expected_account_id")
+        normalized_expected = self._validate_collection(tuple(expected))
+        normalized_successor = self._validate_collection(tuple(successor))
+        for label, values in (
+            ("expected", normalized_expected),
+            ("successor", normalized_successor),
+        ):
+            actual_account = values[0].config.account_id if values else None
+            if actual_account != account_id:
+                raise InstrumentRuntimeConflictError(
+                    f"GROUP_ACCOUNT_SCOPE_MISMATCH: {label} registry"
+                )
+
+        expected_document = self._document(normalized_expected)
+        successor_document = self._document(normalized_successor)
+        try:
+            with InterProcessFileLock(
+                self.lock_path, timeout_seconds=self.lock_timeout_seconds
+            ):
+                current = self._load_unlocked(expected_account_id=account_id)
+                current_document = self._document(current)
+                if self._canonical_document_bytes(current_document) != (
+                    self._canonical_document_bytes(expected_document)
+                ):
+                    raise InstrumentRuntimeConflictError("GROUP_CAS_MISMATCH")
+                try:
+                    self._write_unlocked(successor_document)
+                except StatePersistenceError as exc:
+                    raise InstrumentRuntimeStateError(
+                        f"GROUP_COMMIT_FAILED: {exc}"
+                    ) from exc
+                committed = self._load_unlocked(expected_account_id=account_id)
+                if self._canonical_document_bytes(self._document(committed)) != (
+                    self._canonical_document_bytes(successor_document)
+                ):
+                    raise InstrumentRuntimeStateError(
+                        "GROUP_POSTCONDITION_FAILED"
+                    )
+                return committed
+        except InstrumentRuntimeError:
+            raise
+        except LockUnavailableError as exc:
+            raise InstrumentRuntimeStateError(
+                f"GROUP_COMMIT_FAILED: {exc}"
+            ) from exc
 
     def load(
         self,
@@ -505,17 +554,7 @@ class InstrumentRuntimeStore:
             raise InstrumentRuntimeStateError(
                 f"Instrument runtime state is missing: {self.path}"
             )
-        try:
-            document = read_json_verified(
-                self.path,
-                supported_versions={self.SCHEMA_VERSION},
-            )
-        except StatePersistenceError as exc:
-            raise InstrumentRuntimeStateError(str(exc)) from exc
-        return self._load_document(
-            document,
-            expected_account_id=expected_account_id,
-        )
+        return self._load_unlocked(expected_account_id=expected_account_id)
 
     def load_optional(
         self,
@@ -567,6 +606,53 @@ class InstrumentRuntimeStore:
                 "Instrument runtime state belongs to a different account."
             )
         return normalized
+
+    def _load_unlocked(
+        self,
+        *,
+        expected_account_id: str | None,
+    ) -> tuple[InstrumentRuntime, ...]:
+        try:
+            document = read_json_verified(
+                self.path,
+                supported_versions={self.SCHEMA_VERSION},
+            )
+        except StatePersistenceError as exc:
+            raise InstrumentRuntimeStateError(str(exc)) from exc
+        return self._load_document(
+            document,
+            expected_account_id=expected_account_id,
+        )
+
+    def _document(
+        self,
+        runtimes: tuple[InstrumentRuntime, ...],
+    ) -> dict[str, Any]:
+        account_id = runtimes[0].config.account_id if runtimes else None
+        return {
+            "version": self.SCHEMA_VERSION,
+            "account_id": account_id,
+            "runtimes": [runtime.to_dict() for runtime in runtimes],
+        }
+
+    @staticmethod
+    def _canonical_document_bytes(document: Mapping[str, Any]) -> bytes:
+        return json.dumps(
+            document,
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    def _write_unlocked(self, document: Mapping[str, Any]) -> StateSaveResult:
+        return atomic_write_json(
+            self.path,
+            document,
+            write_checksum=True,
+            keep_last_good=True,
+            validate_roundtrip=True,
+        )
 
     @staticmethod
     def _validate_collection(

@@ -40,6 +40,30 @@ class InstrumentRuntimeView:
     runtime_key: str
     runtime_config_hash: str
     detail: str
+    account_scope_sha256: str = "UNKNOWN"
+    runtime_revision: int | str = "UNKNOWN"
+    actual_lots: int | str = "UNKNOWN"
+    target_lots: int | str = "UNKNOWN"
+    portfolio_revision: int | str = "UNKNOWN"
+    reconciliation_status: str = "UNKNOWN"
+    ownership_status: str = "UNKNOWN"
+    central_revision: int | str = "UNKNOWN"
+    queued_reserved_cash: int | str = "UNKNOWN"
+    central_blocking_status: str = "UNKNOWN"
+    pending_status: str = "UNKNOWN"
+    in_flight_status: str = "UNKNOWN"
+    submitted_status: str = "UNKNOWN"
+    uncertain_status: str = "UNKNOWN"
+    risk_policy_hash: str = "UNKNOWN"
+    risk_state_revision: int | str = "UNKNOWN"
+    risk_readiness: str = "UNKNOWN"
+    portfolio_risk_status: str = "UNKNOWN"
+    kill_switch_status: str = "UNKNOWN"
+    resync_status: str = "UNKNOWN"
+    cl7_authority_revision: int | str = "UNKNOWN"
+    cl7_authority_mode: str = "UNKNOWN"
+    cash_actionability_status: str = "UNKNOWN"
+    source_status: str = "UNKNOWN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +112,13 @@ def build_multi_instrument_dashboard(
     runtimes: Iterable[InstrumentRuntime],
     *,
     mode: ProfileMode,
+    portfolio_state: Any | None = None,
+    central_state: Any | None = None,
+    risk_snapshot: Mapping[str, Any] | None = None,
+    portfolio_risk_snapshot: Mapping[str, Any] | None = None,
+    authority_record: Any | None = None,
+    cash_actionability_status: str | None = None,
+    account_scope_sha256: str | None = None,
 ) -> MultiInstrumentDashboard:
     """Join stored profiles and runtimes without mutating either collection."""
 
@@ -99,6 +130,18 @@ def build_multi_instrument_dashboard(
     }
     rows: list[InstrumentRuntimeView] = []
     attention = False
+    owner_evidence_requested = any(
+        value is not None
+        for value in (
+            portfolio_state,
+            central_state,
+            risk_snapshot,
+            portfolio_risk_snapshot,
+            authority_record,
+            cash_actionability_status,
+            account_scope_sha256,
+        )
+    )
 
     for profile in sorted(
         selected_profiles,
@@ -128,6 +171,22 @@ def build_multi_instrument_dashboard(
         identity_status = "MATCHED" if not mismatches else "MISMATCH"
         if mismatches:
             attention = True
+        owner_fields = _owner_fields(
+            profile.instrument_id,
+            expected_account_id=runtime.config.account_id,
+            portfolio_state=portfolio_state,
+            central_state=central_state,
+            risk_snapshot=risk_snapshot,
+            portfolio_risk_snapshot=portfolio_risk_snapshot,
+            authority_record=authority_record,
+            cash_actionability_status=cash_actionability_status,
+            account_scope_sha256=account_scope_sha256,
+        )
+        if (
+            owner_evidence_requested
+            and owner_fields.get("source_status") != "READY"
+        ):
+            attention = True
         rows.append(
             InstrumentRuntimeView(
                 instrument_id=profile.instrument_id,
@@ -145,11 +204,20 @@ def build_multi_instrument_dashboard(
                 ),
                 runtime_key=runtime.runtime_key,
                 runtime_config_hash=runtime.config.runtime_config_hash,
-                detail=(
-                    ""
-                    if not mismatches
-                    else "Profile/runtime mismatch: " + ", ".join(mismatches)
+                runtime_revision=runtime.revision,
+                detail="; ".join(
+                    item
+                    for item in (
+                        (
+                            ""
+                            if not mismatches
+                            else "Profile/runtime mismatch: " + ", ".join(mismatches)
+                        ),
+                        owner_fields.pop("detail", ""),
+                    )
+                    if item
                 ),
+                **owner_fields,
             )
         )
 
@@ -201,6 +269,142 @@ def build_multi_instrument_dashboard(
         detail=detail,
         rows=tuple(rows),
     )
+
+
+def _status_text(value: Any, default: str = "UNKNOWN") -> str:
+    if value is None:
+        return default
+    raw = getattr(value, "value", value)
+    normalized = str(raw or "").strip().upper()
+    return normalized or default
+
+
+def _owner_fields(
+    instrument_id: str,
+    *,
+    expected_account_id: str,
+    portfolio_state: Any | None,
+    central_state: Any | None,
+    risk_snapshot: Mapping[str, Any] | None,
+    portfolio_risk_snapshot: Mapping[str, Any] | None,
+    authority_record: Any | None,
+    cash_actionability_status: str | None,
+    account_scope_sha256: str | None,
+) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "account_scope_sha256": str(account_scope_sha256 or "UNKNOWN"),
+        "cash_actionability_status": _status_text(cash_actionability_status),
+        "source_status": "READY",
+    }
+    missing: list[str] = []
+    mismatched: list[str] = []
+    if not account_scope_sha256:
+        missing.append("ACCOUNT_SCOPE")
+    if cash_actionability_status is None:
+        missing.append("CASH_ACTIONABILITY")
+
+    position = None
+    if portfolio_state is not None:
+        if str(getattr(portfolio_state, "account_id", expected_account_id)) != (
+            expected_account_id
+        ):
+            mismatched.append("PORTFOLIO_ACCOUNT")
+        finder = getattr(portfolio_state, "position", None)
+        position = finder(instrument_id) if callable(finder) else None
+    if position is None:
+        missing.append("PORTFOLIO")
+    else:
+        reconciliation = getattr(position, "reconciliation", None)
+        values.update(
+            actual_lots=int(position.actual_lots),
+            target_lots=(
+                int(position.target_lots)
+                if position.target_lots is not None
+                else "UNKNOWN"
+            ),
+            portfolio_revision=int(getattr(portfolio_state, "revision", 0)),
+            reconciliation_status=_status_text(
+                getattr(reconciliation, "status", None)
+            ),
+            ownership_status=_status_text(position.ownership_status),
+        )
+
+    if central_state is None:
+        missing.append("CENTRAL")
+    else:
+        if str(getattr(central_state, "account_id", expected_account_id)) != (
+            expected_account_id
+        ):
+            mismatched.append("CENTRAL_ACCOUNT")
+        intents = tuple(
+            item
+            for item in central_state.intents
+            if str(getattr(getattr(item, "candidate", None), "instrument_id", ""))
+            == instrument_id
+        )
+        statuses = {_status_text(getattr(item, "status", None)) for item in intents}
+        queued = tuple(item for item in intents if _status_text(item.status) == "QUEUED")
+        values.update(
+            central_revision=int(central_state.revision),
+            queued_reserved_cash=(
+                int(queued[0].reserved_cash_kopecks)
+                if len(queued) == 1
+                else (0 if not queued else "BLOCKED")
+            ),
+            central_blocking_status=(
+                _status_text(central_state.blocking_intent.status)
+                if central_state.blocking_intent is not None
+                else "CLEAR"
+            ),
+            pending_status="PRESENT" if intents else "CLEAR",
+            in_flight_status="PRESENT" if "IN_FLIGHT" in statuses else "CLEAR",
+            submitted_status="PRESENT" if "SUBMITTED" in statuses else "CLEAR",
+            uncertain_status="PRESENT" if "UNCERTAIN" in statuses else "CLEAR",
+        )
+
+    risk = risk_snapshot or {}
+    if not risk:
+        missing.append("RISK")
+    else:
+        values.update(
+            risk_policy_hash=str(risk.get("risk_policy_hash") or "UNKNOWN"),
+            risk_state_revision=risk.get("risk_state_revision", "UNKNOWN"),
+            risk_readiness=_status_text(risk.get("risk_readiness")),
+            kill_switch_status=(
+                "ON" if bool(risk.get("kill_switch_active")) else "OFF"
+            ),
+            resync_status=(
+                "REQUIRED" if bool(risk.get("risk_resync_required")) else "CLEAR"
+            ),
+        )
+    portfolio_risk_value = (
+        portfolio_risk_snapshot.get(instrument_id)
+        if portfolio_risk_snapshot is not None
+        else None
+    )
+    values["portfolio_risk_status"] = _status_text(portfolio_risk_value)
+    if portfolio_risk_value is None:
+        missing.append("PORTFOLIO_RISK")
+
+    if authority_record is None:
+        missing.append("CL7")
+    else:
+        values.update(
+            cl7_authority_revision=int(authority_record.record_revision),
+            cl7_authority_mode=_status_text(authority_record.state),
+        )
+        authority_scope = str(
+            getattr(authority_record, "account_scope_sha256", "") or ""
+        )
+        if authority_scope != str(account_scope_sha256 or ""):
+            mismatched.append("CL7_ACCOUNT_SCOPE")
+    if mismatched:
+        values["source_status"] = "MISMATCH"
+        values["detail"] = "Mismatched owner evidence: " + ", ".join(mismatched)
+    elif missing:
+        values["source_status"] = "UNKNOWN"
+        values["detail"] = "Missing owner evidence: " + ", ".join(missing)
+    return values
 
 
 def load_multi_instrument_dashboard(

@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "account_scope_sha256": "15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3",
+  "configured_instruments": [
+    {
+      "instrument_id": "uid-lkoh",
+      "ticker": "LKOH",
+      "candle_interval": "CANDLE_INTERVAL_30_MIN",
+      "actual_lots": 2,
+      "target_lots": 3,
+      "reconciliation_status": "MATCHED"
+    },
+    {
+      "instrument_id": "uid-sber",
+      "ticker": "SBER",
+      "candle_interval": "CANDLE_INTERVAL_HOUR",
+      "actual_lots": 4,
+      "target_lots": 5,
+      "reconciliation_status": "MATCHED"
+    },
+    {
+      "instrument_id": "uid-ydex",
+      "ticker": "YDEX",
+      "candle_interval": "CANDLE_INTERVAL_15_MIN",
+      "actual_lots": 0,
+      "target_lots": 1,
+      "reconciliation_status": "MATCHED"
+    }
+  ],
+  "cl7_start_matrix": {
+    "EXACT_CASH_ARMED": "MAY_CONTINUE",
+    "LEGACY_ACTIVE": "CL7_EXACT_AUTHORITY_REQUIRED",
+    "CUTOVER_PREPARED": "CL7_CUTOVER_INCOMPLETE",
+    "CUTOVER_CONFIRMED": "CL7_CUTOVER_INCOMPLETE",
+    "EXACT_CASH_DISARMED": "CL7_EXACT_AUTHORITY_DISARMED",
+    "EXACT_CASH_DISPATCH_PENDING": "CL7_RECOVERY_REQUIRED"
+  },
+  "terminal_account_dispositions": [
+    "REDUNDANT_ACCOUNT_RETAINED_WITH_REASON",
+    "REDUNDANT_ACCOUNT_CLEANUP_COMPLETED"
+  ],
+  "provider_calls_per_offline_case": 0,
+  "provider_mutations_per_offline_case": 0
+}

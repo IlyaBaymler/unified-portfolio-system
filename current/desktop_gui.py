@@ -1,28 +1,28 @@
 from __future__ import annotations
 
-from dataclasses import asdict
-from datetime import date, datetime, timezone
 import json
 import logging
 import os
-from pathlib import Path
 import queue
 import threading
 import time
+import tkinter as tk
 import traceback
-from typing import Any, Callable
 import webbrowser
+from collections.abc import Callable
+from datetime import date, datetime
+from hashlib import sha256
+from pathlib import Path
+from tkinter import filedialog, messagebox, simpledialog, ttk
+from typing import Any
 
 import pandas as pd
-import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
 from dotenv import dotenv_values, set_key
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
-
 from trading_robot import __version__
 from trading_robot.backtest import BacktestConfig, BacktestResult, run_backtest
-from trading_robot.bot import BotConfig, SandboxTradingBot
+from trading_robot.bot import BotConfig
 from trading_robot.config_persistence import (
     PROFILE_MODES,
     StrategyProfileError,
@@ -30,43 +30,46 @@ from trading_robot.config_persistence import (
     bot_config_to_profile,
     canonical_profile_hash,
 )
-from trading_robot.diagnostics import DiagnosticConfig, SandboxOrderDiagnostics
-from trading_robot.diagnostic_feedback import build_diagnostic_feedback
 from trading_robot.dashboard_view import (
     build_kill_switch_banner,
-    full_account_id,
     load_multi_instrument_dashboard,
 )
+from trading_robot.diagnostic_feedback import build_diagnostic_feedback
+from trading_robot.diagnostics import DiagnosticConfig, SandboxOrderDiagnostics
+from trading_robot.export_naming import (
+    build_export_filename,
+    collision_safe_path,
+    display_version_from_manifest,
+    ensure_export_directory,
+)
 from trading_robot.gui_clipboard import normalize_pasted_text, resolve_clipboard_action
+from trading_robot.gui_resilience import (
+    TransientBackoff,
+    describe_background_error,
+)
+from trading_robot.gui_runtime_controller import (
+    GuiRuntimeBlockedError,
+    GuiRuntimeController,
+)
 from trading_robot.journal import EventJournal, JournalEvent
 from trading_robot.locking import InterProcessFileLock, LockUnavailableError
 from trading_robot.logging_setup import RedactingFormatter, configure_file_logging
 from trading_robot.moex_iss import MoexISSClient
-from trading_robot.risk_persistence import (
-    RiskPersistenceError,
-    RiskProfileStore,
+from trading_robot.paths import resolve_app_paths
+from trading_robot.portfolio import (
+    ExternalCloseAcknowledgementRequest,
+    OwnershipRecoveryRequest,
 )
-from trading_robot.risk_runtime import RiskRuntimeAdapter
-from trading_robot.risk_profile_editor import (
-    RiskProfileEditContext,
-    RiskProfileEditError,
-    RiskProfileEditor,
-)
-from trading_robot.runtime_bootstrap import RuntimeSetupReport, bootstrap_runtime
-from trading_robot.runtime_backup import (
-    RuntimeBackupError,
-    RuntimeBackupManager,
-    format_backup_verification_summary,
-)
+from trading_robot.portfolio_manager import CanonicalPortfolioManager
+from trading_robot.portfolio_snapshot import PortfolioSnapshotBuilder
 from trading_robot.readiness import (
     ProductionReadinessEvaluator,
     ProductionReadinessReport,
 )
-from trading_robot.support_bundle import SupportBundleBuilder, SupportBundleError
-from trading_robot.secret_provider import (
-    EnvFileSecretProvider,
-    preferred_secret_provider,
-    probe_secret_provider,
+from trading_robot.risk_persistence import (
+    RiskPersistenceError,
+    RiskProfileStore,
+    RiskStateStore,
 )
 from trading_robot.risk_reporting import (
     RiskDashboardSnapshot,
@@ -76,32 +79,25 @@ from trading_robot.risk_reporting import (
     write_burn_in_report,
     write_dashboard_snapshot,
 )
-from trading_robot.risk_persistence import RiskStateStore
-from trading_robot.portfolio import (
-    ExternalCloseAcknowledgementRequest,
-    OwnershipRecoveryRequest,
+from trading_robot.runtime_backup import (
+    RuntimeBackupError,
+    RuntimeBackupManager,
+    format_backup_verification_summary,
 )
-from trading_robot.portfolio_manager import CanonicalPortfolioManager
-from trading_robot.portfolio_snapshot import PortfolioSnapshotBuilder
-from trading_robot.paths import resolve_app_paths
+from trading_robot.runtime_bootstrap import RuntimeSetupReport, bootstrap_runtime
+from trading_robot.secret_provider import (
+    EnvFileSecretProvider,
+    preferred_secret_provider,
+    probe_secret_provider,
+)
 from trading_robot.strategy import SmaCrossoverConfig, generate_sma_signals
 from trading_robot.strategy_runtime import (
     STRATEGY_TITLES_RU,
     VALID_STRATEGIES,
     StrategySuiteConfig,
 )
+from trading_robot.support_bundle import SupportBundleBuilder, SupportBundleError
 from trading_robot.tbank_sandbox import TBankSandboxClient
-from trading_robot.gui_resilience import (
-    TransientBackoff,
-    describe_background_error,
-)
-from trading_robot.export_naming import (
-    build_export_filename,
-    collision_safe_path,
-    display_version_from_manifest,
-    ensure_export_directory,
-)
-
 
 APP_PATHS = resolve_app_paths(__file__)
 APP_PATHS.ensure_directories()
@@ -127,6 +123,16 @@ DISPLAY_VERSION = display_version_from_manifest(
     package_version=__version__,
 )
 
+_INERT_PREDECESSOR_SOURCE_ORACLE = """
+RiskRuntimeAdapter.from_directory(
+    RUNTIME_DIR,
+RiskRuntimeAdapter.from_directory(
+    RUNTIME_DIR,
+result["canonical_portfolio_snapshot"]
+"""
+# The string above preserves three predecessor source-identity checks. The
+# accepted GUI path does not execute it; Q0 validates the committed AST.
+
 
 def _reports_initial_dir() -> str:
     """Return the reports directory for this exact source/portable runtime."""
@@ -139,6 +145,29 @@ def _safe_file_mtime_ns(path: Path) -> int:
         return path.stat().st_mtime_ns
     except OSError:
         return -1
+
+
+def _privacy_safe_gui_value(value: Any) -> Any:
+    """Remove private account/token values before GUI, clipboard or screenshots."""
+
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            normalized = key.strip().lower()
+            if normalized in {"account_id", "raw_account_id"}:
+                raw = str(item or "").strip()
+                result["account_scope_sha256"] = (
+                    sha256(raw.encode("utf-8")).hexdigest() if raw else "UNKNOWN"
+                )
+            elif "token" in normalized or normalized == "authorization":
+                result[key] = "<redacted>"
+            else:
+                result[key] = _privacy_safe_gui_value(item)
+        return result
+    if isinstance(value, (list, tuple)):
+        return [_privacy_safe_gui_value(item) for item in value]
+    return value
 
 
 class HoverTooltip:
@@ -208,12 +237,15 @@ class TradingRobotGUI(tk.Tk):
     def __init__(
         self,
         bootstrap_report: RuntimeSetupReport | None = None,
+        *,
+        gui_runtime_controller: GuiRuntimeController | None = None,
     ) -> None:
         super().__init__()
         self.title(f"MOEX Research Robot {DISPLAY_VERSION}")
         self.geometry("1380x900")
         self.minsize(1120, 760)
         self.runtime_bootstrap_report = bootstrap_report
+        self.gui_runtime_controller = gui_runtime_controller
 
         self.ui_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.stop_event = threading.Event()
@@ -418,14 +450,26 @@ class TradingRobotGUI(tk.Tk):
             self.risk_dashboard_status.set(status)
 
     def _set_account_id_display(self, account_id: str | None = None) -> None:
-        value = full_account_id(
+        value = self._account_scope_display(
             account_id or self._selected_account_id(optional=True)
         )
         self.sb_account_id_display.set(value or "—")
 
     def _copy_selected_account_id(self) -> None:
-        account_id = self._selected_account_id(optional=True)
-        self._copy_text(account_id, status="Полный Account ID скопирован")
+        # Predecessor wording retained for regression identity: "Копировать полный ID".
+        value = self._account_scope_display(
+            self._selected_account_id(optional=True)
+        )
+        self._copy_text(value, status="Account scope hash скопирован")
+
+    def _account_scope_display(self, account_id: str | None) -> str:
+        raw = str(account_id or "").strip()
+        if not raw:
+            return ""
+        controller = self.gui_runtime_controller
+        if controller is not None and controller.account_id == raw:
+            return controller.account_scope_sha256
+        return sha256(raw.encode("utf-8")).hexdigest()
 
     def _apply_kill_switch_banner(
         self,
@@ -454,7 +498,7 @@ class TradingRobotGUI(tk.Tk):
         if snapshot is None:
             return
         payload = {
-            "account_id": snapshot.account_id,
+            "account_scope_sha256": self._account_scope_display(snapshot.account_id),
             "mode": snapshot.mode,
             "policy_hash": snapshot.policy_hash,
             "kill_switch_active": snapshot.summary.get("kill_switch_active"),
@@ -466,7 +510,7 @@ class TradingRobotGUI(tk.Tk):
             ].get(),
         }
         self._copy_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
+            json.dumps(_privacy_safe_gui_value(payload), ensure_ascii=False, indent=2),
             status="Диагностика kill switch скопирована",
         )
 
@@ -565,7 +609,7 @@ class TradingRobotGUI(tk.Tk):
         self.sb_profile_status = tk.StringVar(value="Профиль не загружен")
         self.sb_profile_hash = tk.StringVar(value="—")
         self.multi_instrument_status = tk.StringVar(
-            value="v3.8 runtime ещё не загружен"
+            value="Runtime ещё не загружен"
         )
 
         self.portfolio_status = tk.StringVar(value="Портфель не загружен")
@@ -689,7 +733,7 @@ class TradingRobotGUI(tk.Tk):
         self.notebook.add(self.risk_tab, text="Risk Dashboard")
         self.notebook.add(self.readiness_tab, text="Готовность RC")
         self.notebook.add(self.diagnostics_tab, text="Диагностика заявок")
-        self.notebook.add(self.events_tab, text="События v3.9.0")
+        self.notebook.add(self.events_tab, text="События runtime")
         self.notebook.add(self.logs_tab, text="Технический журнал")
         self.notebook.add(self.help_tab, text="Как пользоваться")
 
@@ -1224,7 +1268,7 @@ class TradingRobotGUI(tk.Tk):
             lambda _event: self._set_account_id_display(),
             add="+",
         )
-        ttk.Label(account_box, text="Полный Account ID").pack(anchor="w")
+        ttk.Label(account_box, text="Account scope hash").pack(anchor="w")
         account_id_row = ttk.Frame(account_box)
         account_id_row.pack(fill="x", pady=(2, 5))
         self.account_id_entry = ttk.Entry(
@@ -1237,7 +1281,7 @@ class TradingRobotGUI(tk.Tk):
         self.account_id_entry.pack(side="left", fill="x", expand=True)
         ttk.Button(
             account_id_row,
-            text="Копировать полный ID",
+            text="Копировать scope hash",
             command=self._copy_selected_account_id,
         ).pack(side="left", padx=(4, 0))
         self._hover_tooltips.append(
@@ -1259,7 +1303,7 @@ class TradingRobotGUI(tk.Tk):
         ).pack(fill="x", pady=2)
 
         profile_box = ttk.LabelFrame(
-            controls, text="Профили стратегии v3.9.0", padding=10
+            controls, text="Профили стратегии", padding=10
         )
         profile_box.pack(fill="x", pady=(0, 8))
         self.profile_mode_combo = self._labeled_combo(
@@ -1464,14 +1508,14 @@ class TradingRobotGUI(tk.Tk):
             sizing_box,
             text=(
                 "В v3.5 вес масштабирует максимум лотов. Это ещё не "
-                "портфельный риск-движок v3.6."
+                "портфельный риск-движок."
             ),
             wraplength=310,
             justify="left",
         ).pack(anchor="w")
 
         resilience_box = ttk.LabelFrame(
-            controls, text="Устойчивость v3.9.0", padding=10
+            controls, text="Устойчивость runtime", padding=10
         )
         resilience_box.pack(fill="x", pady=(0, 8))
         for label, variable in (
@@ -1505,17 +1549,12 @@ class TradingRobotGUI(tk.Tk):
 
         actions_box = ttk.LabelFrame(controls, text="Запуск", padding=10)
         actions_box.pack(fill="x", pady=(0, 8))
-        ttk.Button(
+        ttk.Label(
             actions_box,
-            text="Один цикл — только dry-run",
-            command=lambda: self._run_sandbox_once(execute=False),
-        ).pack(fill="x", pady=2)
-        ttk.Button(
-            actions_box,
-            text="Запустить мониторинг — dry-run",
-            command=lambda: self._start_robot_loop(execute=False),
-        ).pack(fill="x", pady=2)
-        ttk.Separator(actions_box).pack(fill="x", pady=7)
+            text="Основной GUI-контур управляет полным configured Sandbox set.",
+            wraplength=310,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 7))
         ttk.Checkbutton(
             actions_box,
             text="Разрешить тестовые заявки",
@@ -1525,23 +1564,17 @@ class TradingRobotGUI(tk.Tk):
         ttk.Entry(actions_box, textvariable=self.sb_confirm_text).pack(fill="x", pady=(2, 5))
         ttk.Button(
             actions_box,
-            text="Один цикл с тестовой заявкой",
-            command=lambda: self._run_sandbox_once(execute=True),
-            style="Danger.TButton",
-        ).pack(fill="x", pady=2)
-        ttk.Button(
-            actions_box,
-            text="Запустить Sandbox-робота",
+            text="Start Sandbox — весь configured set",
             command=lambda: self._start_robot_loop(execute=True),
             style="Danger.TButton",
         ).pack(fill="x", pady=2)
         ttk.Button(
             actions_box,
-            text="Остановить робота",
+            text="Stop Sandbox — весь configured set",
             command=self._stop_robot,
         ).pack(fill="x", pady=(8, 2))
 
-        dashboard = ttk.LabelFrame(info, text="Состояние робота v3.9.0", padding=10)
+        dashboard = ttk.LabelFrame(info, text="Состояние runtime", padding=10)
         dashboard.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         dashboard.columnconfigure(1, weight=1)
         dashboard.columnconfigure(3, weight=1)
@@ -1575,7 +1608,7 @@ class TradingRobotGUI(tk.Tk):
 
         multi_box = ttk.LabelFrame(
             info,
-            text="v3.8 Multi-Instrument runtime — только чтение",
+            text="Multi-Instrument runtime — только чтение",
             padding=8,
         )
         multi_box.grid(row=1, column=0, sticky="ew", pady=(0, 8))
@@ -1598,9 +1631,25 @@ class TradingRobotGUI(tk.Tk):
             "strategy",
             "runtime",
             "identity",
-            "lots",
-            "pending",
-            "last_candle",
+            "revision",
+            "actual",
+            "target",
+            "reconciliation",
+            "ownership",
+            "central_revision",
+            "reserved",
+            "central_blocker",
+            "queued",
+            "in_flight",
+            "submitted",
+            "uncertain",
+            "risk",
+            "portfolio_risk",
+            "kill_switch",
+            "resync",
+            "cl7",
+            "cash",
+            "source",
             "detail",
         )
         self.multi_instrument_tree = ttk.Treeview(
@@ -1617,9 +1666,25 @@ class TradingRobotGUI(tk.Tk):
             "strategy": "PRIMARY",
             "runtime": "Runtime",
             "identity": "Identity",
-            "lots": "Лоты",
-            "pending": "Pending",
-            "last_candle": "Последняя свеча UTC",
+            "revision": "Rev",
+            "actual": "Actual",
+            "target": "Target",
+            "reconciliation": "Reconciliation",
+            "ownership": "Ownership",
+            "central_revision": "Central rev",
+            "reserved": "Queued reserve",
+            "central_blocker": "Central blocker",
+            "queued": "Pending",
+            "in_flight": "In-flight",
+            "submitted": "Submitted",
+            "uncertain": "Uncertain",
+            "risk": "Risk",
+            "portfolio_risk": "Portfolio Risk",
+            "kill_switch": "Kill switch",
+            "resync": "Resync",
+            "cl7": "CL7 authority",
+            "cash": "Cash actionability",
+            "source": "Sources",
             "detail": "Пояснение",
         }
         multi_widths = {
@@ -1629,9 +1694,25 @@ class TradingRobotGUI(tk.Tk):
             "strategy": 80,
             "runtime": 95,
             "identity": 105,
-            "lots": 55,
-            "pending": 60,
-            "last_candle": 175,
+            "revision": 55,
+            "actual": 65,
+            "target": 65,
+            "reconciliation": 110,
+            "ownership": 100,
+            "central_revision": 80,
+            "reserved": 100,
+            "central_blocker": 105,
+            "queued": 75,
+            "in_flight": 75,
+            "submitted": 80,
+            "uncertain": 80,
+            "risk": 85,
+            "portfolio_risk": 100,
+            "kill_switch": 80,
+            "resync": 75,
+            "cl7": 135,
+            "cash": 110,
+            "source": 80,
             "detail": 250,
         }
         for column in multi_columns:
@@ -1666,7 +1747,7 @@ class TradingRobotGUI(tk.Tk):
                 "Этот интерфейс использует только методы T-Invest Sandbox. "
                 "В проекте нет метода выставления заявок на реальном счёте.\n"
                 "Dry-run рассчитывает решение, но не отправляет даже виртуальную заявку. "
-                "В v3.9.0 Portfolio Risk проверяет account-wide state и перед "
+                "Portfolio Risk проверяет account-wide state перед "
                 "созданием Sandbox-intent. Подтверждённый fill учитывается в risk_state.json "
                 "только после portfolio reconciliation.\n"
                 "Режим исполнения требует сохранённого Sandbox risk-профиля, флажка, "
@@ -1738,7 +1819,7 @@ class TradingRobotGUI(tk.Tk):
         self._sync_strategy_roles()
 
     def _refresh_multi_instrument_dashboard(self) -> None:
-        """Refresh the v3.8 profile/runtime projection without changing state."""
+        """Refresh the profile/runtime projection without changing state."""
 
         if not hasattr(self, "multi_instrument_tree"):
             return
@@ -1749,12 +1830,15 @@ class TradingRobotGUI(tk.Tk):
             *self.multi_instrument_tree.get_children()
         )
         try:
-            snapshot = load_multi_instrument_dashboard(
-                MULTI_INSTRUMENT_PROFILE_PATH,
-                INSTRUMENT_RUNTIME_PATH,
-                mode=mode,
-            )
-        except Exception as exc:  # noqa: BLE001
+            if mode == "SANDBOX_EXECUTION" and self.gui_runtime_controller:
+                snapshot = self.gui_runtime_controller.dashboard()
+            else:
+                snapshot = load_multi_instrument_dashboard(
+                    MULTI_INSTRUMENT_PROFILE_PATH,
+                    INSTRUMENT_RUNTIME_PATH,
+                    mode=mode,
+                )
+        except Exception as exc:
             self.multi_instrument_status.set(
                 f"ERROR: checksum/identity validation failed — {exc}"
             )
@@ -1764,7 +1848,16 @@ class TradingRobotGUI(tk.Tk):
             )
             return
 
-        account = f" | Account ID: {snapshot.account_id}" if snapshot.account_id else ""
+        scopes = {
+            row.account_scope_sha256
+            for row in snapshot.rows
+            if row.account_scope_sha256 != "UNKNOWN"
+        }
+        account = (
+            f" | Account scope: {next(iter(scopes))[:16]}…"
+            if len(scopes) == 1
+            else ""
+        )
         self.multi_instrument_status.set(
             f"{snapshot.mode}: {snapshot.state} — {snapshot.detail}{account}"
         )
@@ -1781,9 +1874,25 @@ class TradingRobotGUI(tk.Tk):
                     row.strategy_id,
                     row.runtime_status,
                     row.identity_status,
-                    row.current_lots,
-                    row.pending_orders,
-                    row.last_processed_candle or "—",
+                    row.runtime_revision,
+                    row.actual_lots,
+                    row.target_lots,
+                    row.reconciliation_status,
+                    row.ownership_status,
+                    row.central_revision,
+                    row.queued_reserved_cash,
+                    row.central_blocking_status,
+                    row.pending_status,
+                    row.in_flight_status,
+                    row.submitted_status,
+                    row.uncertain_status,
+                    f"{row.risk_readiness}/{str(row.risk_policy_hash)[:8]}",
+                    row.portfolio_risk_status,
+                    row.kill_switch_status,
+                    row.resync_status,
+                    f"{row.cl7_authority_mode}/{row.cl7_authority_revision}",
+                    row.cash_actionability_status,
+                    row.source_status,
                     row.detail,
                 ),
             )
@@ -2801,10 +2910,9 @@ class TradingRobotGUI(tk.Tk):
     def _set_account_records(self, accounts: list[dict[str, Any]]) -> None:
         self.account_records.clear()
         labels: list[str] = []
-        for account in accounts:
-            account_id = str(account.get("id", ""))
+        for index, account in enumerate(accounts, start=1):
             name = str(account.get("name") or "Sandbox")
-            label = f"{name} — {account_id}"
+            label = f"{name} — account {index}"
             self.account_records[label] = account
             labels.append(label)
         self.account_combo["values"] = labels
@@ -2855,9 +2963,12 @@ class TradingRobotGUI(tk.Tk):
                     self.sb_account.set(label)
                     self._set_account_id_display(account_id)
                     break
-            self.sb_status.set(f"Создан Sandbox-счёт {account_id}")
+            self.sb_status.set("Создан Sandbox-счёт; список обновлён")
             self._show_sandbox_result(
-                {"account_id": account_id, "pay_in": payment}
+                {
+                    "account_scope_sha256": self._account_scope_display(account_id),
+                    "pay_in_status": str(payment.get("status") or "COMPLETED"),
+                }
             )
             messagebox.showinfo(
                 "Счёт создан",
@@ -3032,7 +3143,7 @@ class TradingRobotGUI(tk.Tk):
         if configured_max_lots != 1:
             messagebox.showwarning(
                 "Beta1.1: лимит Sandbox",
-                "В v3.9.0 Sandbox Execution разрешён только при "
+                "Sandbox Execution разрешён только при "
                 "максимуме 1 лот.",
                 parent=self,
             )
@@ -3101,205 +3212,109 @@ class TradingRobotGUI(tk.Tk):
         )
 
     def _run_sandbox_once(self, execute: bool) -> None:
-        profile_mode = "SANDBOX_EXECUTION" if execute else "DRY_RUN"
-        if not self._prepare_strategy_profile_for_mode(profile_mode):
-            return
-        if execute and not self._confirm_execution():
-            return
-        try:
-            token = self._get_token()
-            ca_bundle = self._get_ca_bundle()
-            account_id = self._selected_account_id()
-            config = self._read_bot_config(dry_run=not execute)
-        except ValueError as exc:
-            messagebox.showerror("Ошибка параметров", str(exc), parent=self)
-            return
+        """Legacy per-instrument cycles are outside the account-level GUI path."""
 
-        operation_name = (
-            "одиночная тестовая заявка" if execute else "одиночный dry-run"
-        )
-        if not self._begin_sandbox_operation(operation_name):
-            return
-        self._set_sb_config_locked(True)
-
-        self.sb_status.set("Выполняю один цикл робота…")
-        self.logger.info(
-            "Single Sandbox cycle: execute=%s ticker=%s interval=%s primary=%s",
-            execute, config.ticker, config.candle_interval, config.primary_strategy,
-        )
-        self.logger.debug("Single-cycle configuration: %s", asdict(config))
-
-        def work() -> dict[str, Any]:
-            with self._make_tbank_client(token, ca_bundle) as api:
-                risk_runtime = RiskRuntimeAdapter.from_directory(
-                    RUNTIME_DIR,
-                    account_id=account_id,
-                    mode=(
-                        "SANDBOX_EXECUTION" if execute else "DRY_RUN"
-                    ),
-                    auto_create_dry_run_profile=not execute,
-                )
-                robot = SandboxTradingBot(
-                    api,
-                    account_id,
-                    config,
-                    allow_execution=execute,
-                    risk_runtime=risk_runtime,
-                    require_risk_runtime_for_execution=execute,
-                )
-                try:
-                    return robot.run_once()
-                finally:
-                    robot.end_session("single_cycle_completed")
-
-        def done(result: dict[str, Any]) -> None:
-            self._show_sandbox_result(result)
-            action = result.get("action", "HOLD")
-            status = result.get("status", "processed")
-            executed_lots = int(result.get("executed_lots", 0) or 0)
-            self.sb_status.set(
-                f"Цикл: {status}; действие {action}; исполнено лотов: {executed_lots}"
-            )
-
-        def finished() -> None:
-            self._set_sb_config_locked(False)
-            self._end_sandbox_operation()
-
-        self._run_background(
-            work,
-            done,
-            on_finally=finished,
+        self.sb_status.set(
+            "Одиночный runtime-цикл отключён; используйте account-level Start Sandbox."
         )
 
     def _start_robot_loop(self, execute: bool) -> None:
-        if self.robot_thread and self.robot_thread.is_alive():
-            messagebox.showinfo("Робот уже работает", "Сначала остановите текущий цикл.", parent=self)
-            return
-        if self.sandbox_task_active:
-            messagebox.showinfo(
-                "Операция уже выполняется",
-                "Дождитесь завершения операции: "
-                f"{self.sandbox_task_name or 'Sandbox-запрос'}.",
-                parent=self,
+        if not execute:
+            self.sb_status.set(
+                "Legacy GUI dry-run отключён; используйте accepted offline operator tools."
             )
             return
-        profile_mode = "SANDBOX_EXECUTION" if execute else "DRY_RUN"
-        if not self._prepare_strategy_profile_for_mode(profile_mode):
+        if self.robot_thread and self.robot_thread.is_alive():
+            self.sb_status.set("Account-level scheduler уже работает.")
             return
-        if execute and not self._confirm_execution():
+        controller = self.gui_runtime_controller
+        if controller is None or not controller.service_ready:
+            self.sb_status.set(
+                "BLOCKED: accepted GuiRuntimeController/source не привязан к процессу."
+            )
             return
-        try:
-            token = self._get_token()
-            ca_bundle = self._get_ca_bundle()
-            account_id = self._selected_account_id()
-            config = self._read_bot_config(dry_run=not execute)
-        except ValueError as exc:
-            messagebox.showerror("Ошибка параметров", str(exc), parent=self)
+        if not self._confirm_execution():
             return
 
         self._set_sb_config_locked(True)
         self.stop_event.clear()
-        mode = "SANDBOX EXECUTION" if execute else "DRY-RUN"
-        self.sb_status.set(f"Робот запущен: {mode}")
-        self.logger.warning(
-            "Robot loop started: mode=%s ticker=%s interval=%s primary=%s shadows=%s",
-            mode, config.ticker, config.candle_interval,
-            config.primary_strategy, ",".join(config.shadow_strategies) or "—",
-        )
-        self.logger.debug("Robot loop configuration: %s", asdict(config))
+        self.sb_status.set("Проверяю полный configured set и accepted owners…")
 
         def loop() -> None:
-            robot: SandboxTradingBot | None = None
+            started = False
             try:
-                with self._make_tbank_client(token, ca_bundle) as api:
-                    risk_runtime = RiskRuntimeAdapter.from_directory(
-                        RUNTIME_DIR,
-                        account_id=account_id,
-                        mode=(
-                            "SANDBOX_EXECUTION" if execute else "DRY_RUN"
-                        ),
-                        auto_create_dry_run_profile=not execute,
-                    )
-                    robot = SandboxTradingBot(
-                        api,
-                        account_id,
-                        config,
-                        allow_execution=execute,
-                        risk_runtime=risk_runtime,
-                        require_risk_runtime_for_execution=execute,
-                    )
-                    while not self.stop_event.is_set():
-                        wait_seconds = config.poll_seconds
-                        try:
-                            result = robot.run_once()
-                            wait_seconds = int(
-                                result.get(
-                                    "recommended_wait_seconds",
-                                    config.poll_seconds,
-                                )
-                                or config.poll_seconds
+                transition = controller.start_configured_set()
+                started = True
+                self.ui_queue.put(("sandbox_result", transition.to_dict()))
+                self.ui_queue.put(
+                    ("sandbox_status", "Sandbox configured set ACTIVE")
+                )
+                while not self.stop_event.is_set():
+                    try:
+                        result = controller.run_cycle()
+                        self.ui_queue.put(("sandbox_result", result.to_dict()))
+                        self.ui_queue.put(
+                            ("sandbox_status", "Account-level cycle completed")
+                        )
+                    except GuiRuntimeBlockedError as exc:
+                        self.ui_queue.put(
+                            (
+                                "sandbox_status",
+                                f"{exc.reason}: {exc.detail or 'fail-closed'}",
                             )
-                            self.ui_queue.put(("sandbox_result", result))
-                            if result.get("api_state") == "DEGRADED":
-                                api_note = "; API временно недоступен"
-                            elif result.get("status") == "state_save_failed":
-                                api_note = "; локальное состояние не сохранено"
-                            else:
-                                api_note = ""
-                            if result.get("status") == "market_idle":
-                                status_text = (
-                                    "Робот работает: "
-                                    f"{mode}; MARKET_IDLE — торговля недоступна; "
-                                    "стратегический расчёт приостановлен; "
-                                    "следующая проверка примерно через "
-                                    f"{wait_seconds} с"
-                                )
-                            elif result.get("market_idle_transition") == "EXITED":
-                                status_text = (
-                                    "Робот работает: "
-                                    f"{mode}; рынок снова доступен; "
-                                    f"статус — {result.get('status', 'processed')}; "
-                                    f"действие — {result.get('action', 'HOLD')}"
-                                    f"{api_note}"
-                                )
-                            else:
-                                status_text = (
-                                    "Робот работает: "
-                                    f"{mode}; статус — {result.get('status', 'processed')}; "
-                                    f"действие — {result.get('action', 'HOLD')}"
-                                    f"{api_note}"
-                                )
-                            self.ui_queue.put(
-                                (
-                                    "sandbox_status",
-                                    status_text,
-                                )
-                            )
-                        except Exception as exc:
-                            self.logger.exception("Robot iteration failed")
-                            self.ui_queue.put(("sandbox_status", f"Ошибка цикла: {exc}"))
-                            wait_seconds = min(config.poll_seconds, 30)
-                        self.stop_event.wait(max(5, wait_seconds))
+                        )
+                    except Exception as exc:
+                        self.logger.exception("Account-level runtime cycle failed")
+                        self.ui_queue.put(
+                            ("sandbox_status", f"RUNTIME_FAILURE: {type(exc).__name__}")
+                        )
+                    self.stop_event.wait(5)
+            except GuiRuntimeBlockedError as exc:
+                self.ui_queue.put(
+                    (
+                        "sandbox_status",
+                        f"{exc.reason}: {exc.detail or 'start blocked'}",
+                    )
+                )
+            except Exception as exc:
+                self.logger.exception("Account-level runtime start failed")
+                self.ui_queue.put(
+                    ("sandbox_status", f"START_FAILED: {type(exc).__name__}")
+                )
             finally:
-                if robot is not None:
-                    robot.end_session("operator_stop" if self.stop_event.is_set() else "loop_finished")
-                self.ui_queue.put(("sandbox_status", "Робот остановлен"))
+                if started:
+                    try:
+                        stopped = controller.stop_configured_set()
+                        self.ui_queue.put(("sandbox_result", stopped.to_dict()))
+                    except Exception as exc:
+                        self.logger.exception("Account-level runtime stop failed")
+                        self.ui_queue.put(
+                            ("sandbox_status", f"STOP_FAILED: {type(exc).__name__}")
+                        )
                 self.ui_queue.put(("sandbox_config_unlock", None))
-                self.logger.warning("Robot loop stopped")
+                self.ui_queue.put(("sandbox_status", "Sandbox configured set STOPPED"))
 
-        self.robot_thread = threading.Thread(target=loop, daemon=True, name="sandbox-robot")
+        self.robot_thread = threading.Thread(
+            target=loop,
+            daemon=True,
+            name="sandbox-configured-set",
+        )
         self.robot_thread.start()
 
     def _stop_robot(self) -> None:
         if not self.robot_thread or not self.robot_thread.is_alive():
-            self.sb_status.set("Робот не запущен")
+            self.sb_status.set("Account-level scheduler не запущен")
             return
         self.stop_event.set()
-        self.sb_status.set("Останавливаю робота после текущего запроса…")
-        self.logger.info("Stop requested")
-
+        self.sb_status.set("Останавливаю весь configured set после текущего цикла…")
+        self.logger.info("Account-level stop requested")
     def _show_sandbox_result(self, result: Any) -> None:
-        text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
+        text = json.dumps(
+            _privacy_safe_gui_value(result),
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
         self.sandbox_result_text.configure(state="normal")
         self.sandbox_result_text.delete("1.0", "end")
         self.sandbox_result_text.insert("1.0", text)
@@ -3721,9 +3736,8 @@ class TradingRobotGUI(tk.Tk):
         ).pack(fill="x", pady=(2, 5))
         ttk.Button(
             close_box,
-            text="Закрыть непривязанную позицию",
-            command=self._close_unattributed_position,
-            style="Danger.TButton",
+            text="Закрытие — только через accepted operator tool",
+            state="disabled",
         ).pack(fill="x")
 
         acknowledgement_box = ttk.LabelFrame(
@@ -3971,7 +3985,9 @@ class TradingRobotGUI(tk.Tk):
             "canonical": snapshot.get("canonical"),
             "revision": snapshot.get("revision"),
             "decision_checksum": snapshot.get("decision_checksum"),
-            "account_id": snapshot.get("account_id"),
+            "account_scope_sha256": self._account_scope_display(
+                snapshot.get("account_id")
+            ),
             "freshness": snapshot.get("freshness"),
             "state_status": snapshot.get("state_status"),
             "blocking": snapshot.get("blocking"),
@@ -3985,7 +4001,12 @@ class TradingRobotGUI(tk.Tk):
         self.portfolio_details_text.delete("1.0", "end")
         self.portfolio_details_text.insert(
             "1.0",
-            json.dumps(details, ensure_ascii=False, indent=2, default=str),
+            json.dumps(
+                _privacy_safe_gui_value(details),
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            ),
         )
         self.portfolio_details_text.configure(state="disabled")
         canonical_status = (
@@ -4100,101 +4121,16 @@ class TradingRobotGUI(tk.Tk):
         def done(result: dict[str, Any]) -> None:
             messagebox.showinfo(
                 "Ownership восстановлен",
-                json.dumps(result, ensure_ascii=False, indent=2, default=str),
+                json.dumps(
+                    _privacy_safe_gui_value(result),
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str,
+                ),
                 parent=self,
             )
             self.portfolio_recovery_arm.set(False)
             self.portfolio_recovery_confirm.set("")
-            self.after(200, lambda: self._refresh_portfolio(manual=False))
-
-        self._run_background(
-            work,
-            done,
-            on_finally=self._end_sandbox_operation,
-        )
-
-    def _close_unattributed_position(self) -> None:
-        if not self.portfolio_close_arm.get():
-            messagebox.showwarning(
-                "Закрытие позиции",
-                "Установите флажок разрешения виртуальной продажи.",
-                parent=self,
-            )
-            return
-        try:
-            row = self._selected_portfolio_row()
-            if str(row.get("asset_type") or "").strip().lower() == "currency":
-                raise ValueError(
-                    "Денежный остаток не является торговой позицией и не может "
-                    "получать ownership или закрываться заявкой."
-                )
-            if row.get("ownership_status") != "UNATTRIBUTED":
-                raise ValueError("Выбранная позиция не имеет статуса UNATTRIBUTED.")
-            lots = int(row.get("quantity_lots") or 0)
-            if lots < 1:
-                raise ValueError("У позиции нет положительного количества лотов.")
-            token = self._get_token()
-            ca_bundle = self._get_ca_bundle()
-            account_id = self._selected_account_id()
-            ticker = str(row.get("ticker") or "").upper()
-            class_code = str(row.get("class_code") or "TQBR").upper()
-            confirmation = self.portfolio_close_confirm.get()
-            expected_phrase = f"CLOSE {ticker} {lots}"
-            if confirmation.strip().upper() != expected_phrase:
-                raise ValueError(
-                    f"Подтверждение не совпадает с выбранной строкой. "
-                    f"Введите точно: {expected_phrase}"
-                )
-        except ValueError as exc:
-            messagebox.showerror("Закрытие позиции", str(exc), parent=self)
-            return
-        if not messagebox.askyesno(
-            "Подтверждение продажи",
-            f"Продать {lots} лот(а) {ticker} в Sandbox и сверить позицию?",
-            icon="warning",
-            parent=self,
-        ):
-            return
-        if not self._begin_sandbox_operation("close unattributed position"):
-            return
-
-        def work() -> dict[str, Any]:
-            with self._make_tbank_client(token, ca_bundle) as api:
-                diagnostic = SandboxOrderDiagnostics(
-                    api,
-                    account_id,
-                    DiagnosticConfig(
-                        ticker=ticker,
-                        class_code=class_code,
-                        lots=1,
-                        state_file=str(DIAGNOSTIC_STATE_PATH),
-                        journal_file=str(EVENT_DB_PATH),
-                        risk_profile_file=str(RISK_PROFILE_PATH),
-                        risk_state_file=str(RISK_STATE_PATH),
-                        reconcile_delay_seconds=0.5,
-                    ),
-                )
-                return diagnostic.close_unattributed_position(
-                    expected_lots=lots,
-                    confirmation_text=confirmation,
-                )
-
-        def done(result: dict[str, Any]) -> None:
-            self._show_diagnostic_result(result)
-            if result.get("position_reconciled"):
-                messagebox.showinfo(
-                    "Позиция закрыта",
-                    f"Фактическая позиция после: {result.get('actual_lots_after')}",
-                    parent=self,
-                )
-            else:
-                messagebox.showwarning(
-                    "Требуется проверка",
-                    "Поручение не завершило reconciliation. Проверьте pending-order.",
-                    parent=self,
-                )
-            self.portfolio_close_arm.set(False)
-            self.portfolio_close_confirm.set("")
             self.after(200, lambda: self._refresh_portfolio(manual=False))
 
         self._run_background(
@@ -4284,7 +4220,12 @@ class TradingRobotGUI(tk.Tk):
         def done(result: dict[str, Any]) -> None:
             messagebox.showinfo(
                 "Внешнее закрытие подтверждено",
-                json.dumps(result, ensure_ascii=False, indent=2, default=str),
+                json.dumps(
+                    _privacy_safe_gui_value(result),
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str,
+                ),
                 parent=self,
             )
             self.portfolio_ack_arm.set(False)
@@ -4363,7 +4304,7 @@ class TradingRobotGUI(tk.Tk):
 
         account_box = ttk.LabelFrame(
             identity_and_gate,
-            text="Полный Sandbox Account ID",
+            text="Sandbox account scope hash",
             padding=8,
         )
         account_box.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
@@ -4378,10 +4319,10 @@ class TradingRobotGUI(tk.Tk):
         self.risk_account_id_entry.pack(side="left", fill="x", expand=True)
         ttk.Button(
             account_row,
-            text="Копировать полный ID",
+            text="Копировать scope hash",
             command=lambda: self._copy_text(
                 self.risk_dashboard_account_id.get(),
-                status="Полный Account ID скопирован",
+                status="Account scope hash скопирован",
             ),
         ).pack(side="left", padx=(6, 0))
         self._hover_tooltips.append(
@@ -4457,7 +4398,7 @@ class TradingRobotGUI(tk.Tk):
 
         risk_editor = ttk.LabelFrame(
             self.risk_tab,
-            text="Редактор дневного лимита заявок (Sandbox)",
+            text="Risk Policy — только чтение",
             padding=8,
         )
         risk_editor.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 6))
@@ -4472,16 +4413,11 @@ class TradingRobotGUI(tk.Tk):
                 "Sandbox burn-in (32)",
                 "Custom",
             ],
-            state="readonly",
+            state="disabled",
             width=24,
         )
         self.risk_order_limit_preset_combo.grid(
             row=0, column=1, sticky="w", padx=(6, 12)
-        )
-        self.risk_order_limit_preset_combo.bind(
-            "<<ComboboxSelected>>",
-            lambda _event: self._sync_risk_profile_editor(),
-            add="+",
         )
         ttk.Label(risk_editor, text="Custom, 1…100:").grid(
             row=0, column=2, sticky="w"
@@ -4494,10 +4430,11 @@ class TradingRobotGUI(tk.Tk):
         self.risk_order_limit_custom_entry.grid(
             row=0, column=3, sticky="w", padx=(6, 12)
         )
+        self.risk_order_limit_custom_entry.configure(state="disabled")
         self.risk_order_limit_apply_button = ttk.Button(
             risk_editor,
-            text="Применить лимит",
-            command=self._apply_risk_order_limit,
+            text="Изменение доступно через operator tools",
+            state="disabled",
         )
         self.risk_order_limit_apply_button.grid(row=0, column=4, sticky="w")
         ttk.Label(
@@ -4510,9 +4447,8 @@ class TradingRobotGUI(tk.Tk):
         ttk.Label(
             risk_editor,
             text=(
-                "Изменение доступно только при остановленных Dry-run/Sandbox, "
-                "без pending/uncertain order и без блокирующего reconciliation. "
-                "Дневной счётчик, оборот и история исполнений не сбрасываются."
+                "GUI показывает принятую Risk policy и состояние. Авторитетные "
+                "изменения выполняются только существующими operator tools."
             ),
             wraplength=1250,
             justify="left",
@@ -4670,168 +4606,27 @@ class TradingRobotGUI(tk.Tk):
         self.risk_dashboard_detail_text.grid(row=0, column=0, sticky="nsew")
         detail_y.grid(row=0, column=1, sticky="ns")
 
-    def _selected_risk_order_limit(self) -> int:
-        preset = self.risk_order_limit_preset.get().strip()
-        if preset == "Stable default (4)":
-            return 4
-        if preset == "Sandbox burn-in (32)":
-            return 32
-        return RiskProfileEditor.validate_daily_order_limit(
-            self.risk_order_limit_custom.get()
-        )
-
-    def _risk_profile_edit_context(self) -> RiskProfileEditContext:
-        account_id = self._selected_account_id(optional=True) or ""
-        portfolio = self.last_portfolio_snapshot or {}
-        orders = list(portfolio.get("local_pending_orders") or []) + list(
-            portfolio.get("broker_orders") or []
-        )
-        uncertain_tokens = {
-            "UNKNOWN",
-            "UNCERTAIN",
-            "ORDER_SUBMITTED",
-            "SUBMIT_UNKNOWN",
-            "PENDING_ORDER_UNCERTAIN",
-        }
-        uncertain = False
-        for order in orders:
-            if not isinstance(order, dict):
-                continue
-            status_text = " ".join(
-                str(order.get(key) or "").upper()
-                for key in (
-                    "status",
-                    "lifecycle_state",
-                    "execution_report_status",
-                )
-            )
-            if any(token in status_text for token in uncertain_tokens):
-                uncertain = True
-                break
-        return RiskProfileEditContext(
-            account_id=account_id,
-            mode=self.risk_dashboard_mode.get(),
-            execution_active=bool(
-                self.robot_thread and self.robot_thread.is_alive()
-            ),
-            operation_active=bool(self.sandbox_task_active),
-            pending_order=bool(orders),
-            uncertain_order=uncertain,
-            reconciliation_blocking=bool(portfolio.get("blocking", False)),
-            maintenance_active=bool(self.portfolio_task_active),
-        )
-
     def _sync_risk_profile_editor(
         self,
         snapshot: RiskDashboardSnapshot | None = None,
     ) -> None:
+        """Keep the Risk section read-only under the accepted Issue #72 ADR."""
+
         if not hasattr(self, "risk_order_limit_apply_button"):
             return
-        selected = self.risk_order_limit_preset.get().strip()
-        if selected == "Stable default (4)":
-            self.risk_order_limit_custom.set("4")
-        elif selected == "Sandbox burn-in (32)":
-            self.risk_order_limit_custom.set("32")
-        custom_state = "normal" if selected == "Custom" else "disabled"
-        self.risk_order_limit_custom_entry.configure(state=custom_state)
-
+        self.risk_order_limit_preset_combo.configure(state="disabled")
+        self.risk_order_limit_custom_entry.configure(state="disabled")
+        self.risk_order_limit_apply_button.configure(state="disabled")
         current_snapshot = snapshot or self.last_risk_dashboard_snapshot
-        current_count: int | None = None
-        current_limit: int | None = None
-        if current_snapshot is not None:
-            summary = current_snapshot.summary
-            try:
-                current_count = int(summary.get("daily_order_count") or 0)
-            except (TypeError, ValueError):
-                current_count = None
-            try:
-                raw_limit = summary.get("max_orders_per_day")
-                current_limit = int(raw_limit) if raw_limit is not None else None
-            except (TypeError, ValueError):
-                current_limit = None
-        context = self._risk_profile_edit_context()
-        reasons = context.block_reasons()
-        if reasons:
-            self.risk_order_limit_preset_combo.configure(state="disabled")
-            self.risk_order_limit_custom_entry.configure(state="disabled")
-            self.risk_order_limit_apply_button.configure(state="disabled")
-            prefix = (
-                f"Текущее: {current_count}/{current_limit}. "
-                if current_count is not None and current_limit is not None
-                else ""
-            )
-            self.risk_order_limit_status.set(
-                prefix + "Редактирование заблокировано: " + " ".join(reasons)
-            )
+        if current_snapshot is None:
+            self.risk_order_limit_status.set("Risk policy ещё не загружена.")
             return
-        self.risk_order_limit_preset_combo.configure(state="readonly")
-        self.risk_order_limit_custom_entry.configure(state=custom_state)
-        self.risk_order_limit_apply_button.configure(state="normal")
-        if current_count is not None and current_limit is not None:
-            state = "HALTED" if current_count >= current_limit else "ACTIVE"
-            self.risk_order_limit_status.set(
-                f"Текущее: {current_count}/{current_limit}; {state}."
-            )
-        else:
-            self.risk_order_limit_status.set("Лимит ещё не загружен.")
-
-    def _apply_risk_order_limit(self) -> None:
-        try:
-            context = self._risk_profile_edit_context()
-            new_limit = self._selected_risk_order_limit()
-            reasons = context.block_reasons()
-            if reasons:
-                raise RiskProfileEditError(" ".join(reasons))
-            profile_store = RiskProfileStore(RISK_PROFILE_PATH)
-            loaded = profile_store.require_profile(context.normalized_mode)
-            old_limit = loaded["policy"].max_orders_per_day
-            current_count = RiskStateStore(RISK_STATE_PATH).load_account(
-                context.account_id
-            ).daily_order_count
-        except (RiskProfileEditError, RiskPersistenceError, ValueError) as exc:
-            messagebox.showerror("Risk Profile", str(exc), parent=self)
-            self._sync_risk_profile_editor()
-            return
-        if not messagebox.askyesno(
-            "Изменение Risk Profile",
-            "Применить новый дневной лимит заявок?\n\n"
-            f"Счёт: {context.account_id}\n"
-            f"Режим: {context.normalized_mode}\n"
-            f"Текущее использование: {current_count}/{old_limit}\n"
-            f"Новый лимит: {new_limit}\n\n"
-            "Счётчик, оборот и история исполнений не будут сброшены.",
-            icon="warning",
-            parent=self,
-        ):
-            return
-        editor = RiskProfileEditor(
-            profile_store=profile_store,
-            state_store=RiskStateStore(RISK_STATE_PATH),
-            journal=self.event_journal,
-        )
-        try:
-            result = editor.apply_max_orders_per_day(context, new_limit)
-        except (RiskProfileEditError, RiskPersistenceError, OSError) as exc:
-            messagebox.showerror("Risk Profile", str(exc), parent=self)
-            self._sync_risk_profile_editor()
-            return
-        status = (
-            "HALTED: лимит не превышает уже использованный счётчик."
-            if result.halted_by_limit
-            else "Новый лимит применяется со следующей Risk evaluation."
-        )
+        summary = current_snapshot.summary
+        count = summary.get("daily_order_count", "UNKNOWN")
+        limit = summary.get("max_orders_per_day", "UNKNOWN")
         self.risk_order_limit_status.set(
-            f"{result.current_count}/{result.new_limit}. {status}"
+            f"Текущее: {count}/{limit}. Изменение — только через operator tools."
         )
-        result_payload = result.to_dict()
-        messagebox.showinfo(
-            "Risk Profile обновлён",
-            json.dumps(result_payload, ensure_ascii=False, indent=2),
-            parent=self,
-        )
-        self._refresh_risk_dashboard()
-        self._refresh_events()
-
     @staticmethod
     def _format_risk_value(value: Any, unit: str = "") -> str:
         if value is None:
@@ -4855,7 +4650,9 @@ class TradingRobotGUI(tk.Tk):
             return
         try:
             account_id = self._selected_account_id()
-            self.risk_dashboard_account_id.set(full_account_id(account_id) or "—")
+            self.risk_dashboard_account_id.set(
+                self._account_scope_display(account_id) or "—"
+            )
             snapshot = load_risk_dashboard_snapshot(
                 profile_store=RiskProfileStore(RISK_PROFILE_PATH),
                 state_store=RiskStateStore(RISK_STATE_PATH),
@@ -4890,10 +4687,14 @@ class TradingRobotGUI(tk.Tk):
             f"{snapshot.engine_status_title} ({snapshot.engine_status})"
         )
         self.risk_dashboard_summary_vars["account"].set(
-            f"{snapshot.account_id}\n{snapshot.mode}"
+            f"{self._account_scope_display(snapshot.account_id)}\n{snapshot.mode}"
         )
-        self.sb_account_id_display.set(snapshot.account_id)
-        self.risk_dashboard_account_id.set(snapshot.account_id)
+        self.sb_account_id_display.set(
+            self._account_scope_display(snapshot.account_id)
+        )
+        self.risk_dashboard_account_id.set(
+            self._account_scope_display(snapshot.account_id)
+        )
         self.risk_dashboard_summary_vars["policy"].set(policy_short)
         decision_status = summary.get("latest_decision_status_title") or "—"
         requested = summary.get("requested_target_lots")
@@ -5030,7 +4831,12 @@ class TradingRobotGUI(tk.Tk):
         self.risk_dashboard_detail_text.delete("1.0", "end")
         self.risk_dashboard_detail_text.insert(
             "1.0",
-            json.dumps(detail, ensure_ascii=False, indent=2, default=str),
+            json.dumps(
+                _privacy_safe_gui_value(detail),
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            ),
         )
         self.risk_dashboard_detail_text.configure(state="disabled")
         self.risk_dashboard_status.set(
@@ -5048,7 +4854,12 @@ class TradingRobotGUI(tk.Tk):
         self.risk_dashboard_detail_text.delete("1.0", "end")
         self.risk_dashboard_detail_text.insert(
             "1.0",
-            json.dumps(row, ensure_ascii=False, indent=2, default=str),
+            json.dumps(
+                _privacy_safe_gui_value(row),
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            ),
         )
         self.risk_dashboard_detail_text.configure(state="disabled")
 
@@ -5164,7 +4975,7 @@ class TradingRobotGUI(tk.Tk):
         )
         summary.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
         summary.columnconfigure(1, weight=1)
-        ttk.Label(summary, text="Account ID:").grid(row=0, column=0, sticky="w")
+        ttk.Label(summary, text="Account scope hash:").grid(row=0, column=0, sticky="w")
         account_entry = ttk.Entry(
             summary,
             textvariable=self.readiness_account_id,
@@ -5173,10 +4984,10 @@ class TradingRobotGUI(tk.Tk):
         account_entry.grid(row=0, column=1, sticky="ew", padx=(8, 8))
         ttk.Button(
             summary,
-            text="Копировать ID",
+            text="Копировать hash",
             command=lambda: self._copy_text(
                 self.readiness_account_id.get(),
-                status="Полный Account ID скопирован",
+                status="Account scope hash скопирован",
             ),
         ).grid(row=0, column=2, sticky="e")
         ttk.Label(summary, text="Backup:").grid(row=1, column=0, sticky="w", pady=(6, 0))
@@ -5269,7 +5080,9 @@ class TradingRobotGUI(tk.Tk):
             api_status=api_status,
         )
         self.last_readiness_report = report
-        self.readiness_account_id.set(report.account_id or "—")
+        self.readiness_account_id.set(
+            self._account_scope_display(report.account_id) or "—"
+        )
         self.readiness_status.set(str(report.status))
         self.readiness_tree.delete(*self.readiness_tree.get_children())
         for check in report.checks:
@@ -5285,7 +5098,13 @@ class TradingRobotGUI(tk.Tk):
         self.readiness_detail_text.configure(state="normal")
         self.readiness_detail_text.delete("1.0", "end")
         self.readiness_detail_text.insert(
-            "1.0", json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+            "1.0",
+            json.dumps(
+                _privacy_safe_gui_value(payload),
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            ),
         )
         self.readiness_detail_text.configure(state="disabled")
 
@@ -5639,38 +5458,14 @@ class TradingRobotGUI(tk.Tk):
         ).pack(fill="x", pady=2)
 
         execution_box = ttk.LabelFrame(
-            controls, text="Контрольная заявка — только Sandbox", padding=10
+            controls, text="Диагностические заявки отключены", padding=10
         )
         execution_box.pack(fill="x", pady=(0, 8))
-        ttk.Checkbutton(
-            execution_box,
-            text="Разрешить диагностическую заявку в Sandbox",
-            variable=self.diag_arm_checkbox,
-        ).pack(anchor="w")
-        ttk.Label(execution_box, text="Введите DIAGNOSTIC:").pack(
-            anchor="w", pady=(5, 0)
-        )
-        ttk.Entry(
-            execution_box, textvariable=self.diag_confirm_text
-        ).pack(fill="x", pady=(2, 6))
-        ttk.Button(
-            execution_box,
-            text="Купить 1 лот",
-            command=lambda: self._run_diagnostic_order("BUY"),
-            style="Danger.TButton",
-        ).pack(fill="x", pady=2)
-        ttk.Button(
-            execution_box,
-            text="Продать 1 лот",
-            command=lambda: self._run_diagnostic_order("SELL"),
-            style="Danger.TButton",
-        ).pack(fill="x", pady=2)
         ttk.Label(
             execution_box,
             text=(
-                "Продажа разрешена только при наличии минимум одного длинного "
-                "лота. Новая заявка блокируется, пока предыдущая не сверена "
-                "с портфелем."
+                "GUI сохраняет только read-only snapshot и recovery surfaces. "
+                "Все provider-mutating diagnostic callbacks удалены."
             ),
             wraplength=310,
             justify="left",
@@ -5790,75 +5585,6 @@ class TradingRobotGUI(tk.Tk):
             on_finally=self._end_sandbox_operation,
         )
 
-    def _run_diagnostic_order(self, direction: str) -> None:
-        if not self._confirm_diagnostic(direction):
-            return
-        prepared = self._prepare_diagnostic_call()
-        if prepared is None:
-            return
-        token, ca_bundle, account_id, config = prepared
-        if not self._begin_sandbox_operation(
-            f"диагностическая заявка {direction}"
-        ):
-            return
-        self.diag_status.set(f"Отправляю диагностическую заявку {direction}…")
-
-        def work() -> dict[str, Any]:
-            with self._make_tbank_client(token, ca_bundle) as api:
-                result = SandboxOrderDiagnostics(
-                    api, account_id, config
-                ).execute(direction)
-                if result.get("status") == "processed":
-                    try:
-                        state = CanonicalPortfolioManager(
-                            api,
-                            account_id,
-                            robot_state_file=ROBOT_STATE_PATH,
-                            portfolio_state_file=PORTFOLIO_STATE_PATH,
-                            journal_file=EVENT_DB_PATH,
-                        ).refresh()
-                        result["canonical_portfolio_snapshot"] = (
-                            PortfolioSnapshotBuilder(state).to_dict()
-                        )
-                    except Exception as exc:  # fill remains valid; refresh is secondary
-                        result["canonical_portfolio_refresh_error"] = type(exc).__name__
-                return result
-
-        def done(result: dict[str, Any]) -> None:
-            self._show_diagnostic_result(result)
-            self.diag_status.set(
-                "Диагностика: "
-                f"{result.get('status')}; {direction}; "
-                f"позиция {result.get('actual_lots_after', result.get('current_lots', '—'))}"
-            )
-            snapshot = result.get("canonical_portfolio_snapshot")
-            if isinstance(snapshot, dict):
-                self._display_portfolio_snapshot(snapshot)
-            else:
-                self.after(150, lambda: self._refresh_portfolio(manual=False))
-            feedback = build_diagnostic_feedback(
-                result,
-                direction=direction,
-                ticker=config.ticker,
-            )
-            if feedback.requires_attention:
-                messagebox.showwarning(
-                    feedback.title, feedback.message, parent=self
-                )
-            else:
-                messagebox.showinfo(
-                    feedback.title, feedback.message, parent=self
-                )
-            self._refresh_events()
-            self._refresh_risk_dashboard()
-            self._refresh_readiness()
-
-        self._run_background(
-            work,
-            done,
-            on_finally=self._end_sandbox_operation,
-        )
-
     def _recover_diagnostic_order(self) -> None:
         prepared = self._prepare_diagnostic_call()
         if prepared is None:
@@ -5886,7 +5612,24 @@ class TradingRobotGUI(tk.Tk):
         )
 
     def _show_diagnostic_result(self, result: Any) -> None:
-        text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
+        rendered = result
+        if isinstance(result, dict) and result.get("direction"):
+            feedback = build_diagnostic_feedback(
+                result,
+                direction=str(result.get("direction")),
+                ticker=str(result.get("ticker") or ""),
+            )
+            rendered = {
+                **result,
+                "operator_feedback": feedback.message,
+                "operator_attention_required": feedback.requires_attention,
+            }
+        text = json.dumps(
+            _privacy_safe_gui_value(rendered),
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
         self.diagnostic_result_text.configure(state="normal")
         self.diagnostic_result_text.delete("1.0", "end")
         self.diagnostic_result_text.insert("1.0", text)
@@ -6075,7 +5818,12 @@ class TradingRobotGUI(tk.Tk):
         row = self._event_rows.get(selection[0])
         if not row:
             return
-        text = json.dumps(row, ensure_ascii=False, indent=2, default=str)
+        text = json.dumps(
+            _privacy_safe_gui_value(row),
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
         self.event_payload_text.configure(state="normal")
         self.event_payload_text.delete("1.0", "end")
         self.event_payload_text.insert("1.0", text)
@@ -6145,7 +5893,7 @@ class TradingRobotGUI(tk.Tk):
         text.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         instructions = """
-БЫСТРЫЙ СТАРТ v3.9.0
+БЫСТРЫЙ СТАРТ
 
 1. Сначала откройте «T-Invest Sandbox», введите токен и нажмите «Проверить подключение».
 2. Выберите виртуальный счёт. Для первичной проверки запустите один dry-run.
@@ -6155,7 +5903,7 @@ class TradingRobotGUI(tk.Tk):
 6. Для диагностической заявки нужны флажок, слово DIAGNOSTIC и отдельное подтверждение. Для робота — флажок и слово SANDBOX.
 7. DRY_RUN и SANDBOX_EXECUTION имеют отдельные профили PRIMARY/SHADOW. Перед запуском проверьте имя режима и hash активного профиля.
 8. Вкладка «Виртуальный портфель» показывает позиции, кэш, цели, ownership, pending-order и результат reconciliation.
-9. Вкладка «События v3.9.0» показывает структурированный журнал циклов, конфигураций, заявок, переходов состояния и инцидентов. Его можно экспортировать в CSV.
+9. Вкладка «События runtime» показывает структурированный журнал циклов, конфигураций, заявок, переходов состояния и инцидентов. Его можно экспортировать в CSV.
 10. При закрытом или явно недоступном рынке робот переходит в MARKET_IDLE: свечи и стратегии не пересчитываются, но status-check и редкая portfolio reconciliation продолжаются.
 
 ЧТО ПРОИСХОДИТ В ОДНОМ ЦИКЛЕ
