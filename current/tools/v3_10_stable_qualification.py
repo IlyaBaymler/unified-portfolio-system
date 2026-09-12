@@ -14,8 +14,8 @@ import os
 import re
 import subprocess
 import sys
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -243,32 +243,45 @@ OFFLINE_CASE_NODE_IDS: dict[str, tuple[str, ...]] = {
         + "test_v310_cl8_006_008_009_backup_includes_cl2_cl7_and_isolated_restore"
     ),
     "V310-CL8-010": _test_nodes(
-        _CL8_TEST + "test_v310_cl8_010_011_012_cash_custody_corruption_fails_closed"
+        _CL8_TEST + "test_v310_cl8_q23_cashledger_complete_matrix"
     ),
     "V310-CL8-011": _test_nodes(
         "tests/test_v3_10_cash_ledger_persistence.py::test_v310_cl2_18_committed_wal_recovery_and_corrupt_sidecar_refusal"
     ),
     "V310-CL8-012": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_q23_runtime_authority_complete_matrix",
         _CL7_TEST + "test_cas_and_checksum_fail_closed",
         _CL7_TEST + "test_corrupt_active_never_restores_lastgood",
         _CL7_TEST + "test_authority_commit_crash_outcome_at_each_replace_boundary",
     ),
     "V310-CL8-013": _test_nodes(
-        "tests/test_central_order_manager_v3_8.py::test_store_fails_closed_on_checksum_mismatch"
+        "tests/test_central_order_manager_v3_8.py::test_store_fails_closed_on_checksum_mismatch",
+        "tests/test_central_order_manager_v3_8.py::test_persisted_identity_tampering_is_rejected_even_with_new_checksum",
+        "tests/test_v3_10_runtime_cash_cutover_recovery.py::test_central_rejects_noncanonical_locked_proof_text",
+        "tests/test_v3_10_runtime_cash_cutover_recovery.py::test_d3_invalid_hmac_cannot_mutate_central",
     ),
     "V310-CL8-014": _test_nodes(
-        "tests/test_portfolio_repository_v3_7.py::test_repository_rejects_checksum_mismatch"
+        "tests/test_portfolio_repository_v3_7.py::test_repository_rejects_checksum_mismatch",
+        "tests/test_portfolio_repository_v3_7.py::test_repository_rejects_account_scope_change",
+        "tests/test_portfolio_repository_v3_7.py::test_repository_corrupt_json_is_not_silently_reset",
     ),
     "V310-CL8-015": _test_nodes(
-        "tests/test_risk.py::test_corrupt_state_store_fails_closed"
+        "tests/test_risk.py::test_profile_store_separates_modes_and_checks_checksum",
+        "tests/test_risk.py::test_corrupt_state_store_fails_closed",
+        "tests/test_risk.py::test_stale_snapshot_is_absolute_block",
+        "tests/test_v3_10_cash_ledger_opening_reconciliation.py::test_v310_cl4_12_projection_classifications_and_account_scope",
+        "tests/test_v3_10_cash_availability.py::test_forged_proofs_and_cl4_binding_fail_closed",
+        "tests/test_v3_10_reporting_risk_cash_context.py::test_v310_cl6_08_valuation_hmac_and_scope_mutations_fail",
     ),
     "V310-CL8-016": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_q23_c0_c6_point_labelled_replay",
         _CL7_TEST + "test_bootstrap_and_full_state_chain",
         _CL7_TEST + "test_authority_commit_crash_outcome_at_each_replace_boundary",
         _CL7_TEST
         + "test_full_prepare_confirm_activate_arm_uses_fresh_cl2_to_cl6_evidence",
     ),
     "V310-CL8-017": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_q23_d0_d10_point_labelled_replay",
         _CL7_TEST + "test_central_lease_persists_exact_proof_before_d3_recovery",
         _CL7_TEST
         + "test_exact_dispatch_marker_precedes_single_post_and_classifies_outcome",
@@ -282,18 +295,21 @@ OFFLINE_CASE_NODE_IDS: dict[str, tuple[str, ...]] = {
         _CL7_TEST + "test_legacy_recovery_has_no_automatic_post_resubmit",
     ),
     "V310-CL8-019": _test_nodes(
-        "tests/test_runtime_bootstrap.py::test_first_run_bootstrap_creates_complete_canonical_runtime_set"
+        _CL8_TEST + "test_v310_cl8_q23_clean_install_exact_candidate_artifact"
     ),
     "V310-CL8-020": _test_nodes(
-        "tests/test_runtime_bootstrap.py::test_bootstrap_migrates_valid_legacy_singular_risk_profile"
+        _CL8_TEST + "test_v310_cl8_q23_v39_to_v310_upgrade_exact_oracles"
     ),
     "V310-CL8-021": _test_nodes(
-        "tests/test_runtime_bootstrap.py::test_bootstrap_is_idempotent_and_preserves_user_runtime_files"
+        _CL8_TEST + "test_v310_cl8_q23_v39_to_v310_upgrade_exact_oracles"
     ),
     "V310-CL8-022": _test_nodes(
-        _CL8_TEST + "test_v310_cl8_019_023_bootstrap_preserves_cl7_and_does_not_arm"
+        _CL8_TEST + "test_v310_cl8_q23_full_runtime_backup_inventory"
     ),
-    "V310-CL8-023": _test_nodes(_CL7_TEST + "test_pending_attempt_kat_and_no_rollback"),
+    "V310-CL8-023": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_q23_rollback_package_and_attempt_boundaries",
+        _CL7_TEST + "test_pending_attempt_kat_and_no_rollback",
+    ),
     "V310-CL8-024": _test_nodes(
         _CL8_TEST
         + "test_v310_cl8_024_027_release_artifacts_are_deterministic_and_private"
@@ -353,7 +369,7 @@ OFFLINE_CASE_NODE_IDS: dict[str, tuple[str, ...]] = {
         _CL8_TEST + "test_v310_cl8_042_gui_runtime_matrix_is_closed"
     ),
     "V310-CL8-043": _test_nodes(
-        _CL8_TEST + "test_v310_cl8_043_multi_session_matrix_is_closed"
+        _CL8_TEST + "test_v310_cl8_q23_multi_session_matrix_is_executed"
     ),
     "V310-CL8-044": _test_nodes(
         _CL8_TEST + "test_v310_cl8_044_account_disposition_is_exact"
@@ -1609,9 +1625,9 @@ __all__ = [
     "QUALIFICATION_KAT_SHA256",
     "RELEASE_CUT_ALLOWLIST",
     "RELEASE_CUT_BASE_ALLOWLIST",
+    "RELEASE_MANIFEST_KAT_SHA256",
     "RELEASE_REVIEW_CORRECTION_ALLOWLIST",
     "RELEASE_REVIEW_RESCOPE_ADDITIONS",
-    "RELEASE_MANIFEST_KAT_SHA256",
     "SUPERSEDED_RELEASE_METADATA_FAILURES",
     "V39_ORACLE_COMMIT",
     "V39_ORACLE_TREE",
@@ -1626,11 +1642,11 @@ __all__ = [
     "canonical_json_bytes",
     "commit_is_ancestor",
     "compare_regression_failures",
-    "pytest_junit_failure_node_ids",
     "derive_overall_status",
     "git_commit_tree",
     "parse_canonical_json",
     "private_artifact_members",
+    "pytest_junit_failure_node_ids",
     "release_sha256_lines",
     "scan_shareable_bytes",
     "sha256_hex",

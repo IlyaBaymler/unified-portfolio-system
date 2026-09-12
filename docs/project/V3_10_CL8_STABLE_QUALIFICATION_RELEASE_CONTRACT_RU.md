@@ -2580,3 +2580,116 @@ This rescope grants no Q6 controlled-clock experiment, Q7 Sandbox burn-in,
 provider access, real-account execution, Stable acceptance, tag, GitHub release
 or publication authority. Any new Q1 failure blocks acceptance and requires a
 separate governance decision.
+
+# PART AD — Q2/Q3 QUALIFICATION CLOSURE RESCOPE
+
+## 121. Fixed findings, parent and one-commit budget
+
+This bounded qualification-only rescope closes exactly:
+
+```text
+CL8-Q23-R1-01
+CL8-Q23-R1-02
+CL8-Q23-R1-03
+CL8-Q23-R1-04
+CL8-Q23-R1-05
+CL8-Q23-R1-06
+CL8-Q23-R1-07
+```
+
+The only authorized correction topology is:
+
+```text
+correction parent = 0b26cb1cf1fbd059ef41e49274ee58d04685a55e
+correction parent tree = ba309d04ceec97e1d3586e2c5031a7be3765850c
+correction branch = agent/v3-10-clean-cl8-q23-correction-r1
+correction commits = exactly one
+```
+
+The predecessor Q2/Q3 packet and its two phase summaries remain historical
+failed evidence and may not be reused as successor PASS evidence.
+
+## 122. Exact correction allowlist
+
+The complete changed-path set of the one successor commit is exactly:
+
+```text
+docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md
+current/tools/v3_10_stable_qualification.py
+current/tests/test_v3_10_stable_qualification.py
+```
+
+All production modules, predecessor tests and fixtures, release artifacts,
+workflows and every other repository path are immutable. The tools change may
+only strengthen exact offline-case node bindings. The test change may only add
+synthetic/offline qualification execution and the exact successor custody
+oracle. It grants no product feature or runtime authority.
+
+## 123. Required Q2 closure execution
+
+`CL8-Q23-R1-01` requires the Q2 node map to bind the full accepted CL2 matrix:
+schema/version, content/graph/head/revision tampering, WAL/SHM combinations,
+writer lock and stale CAS, interrupted batches, online backup/restore/no-clobber,
+and bounded large unresolved OperationInbox history. The large-history result
+must be built from actual appends, close/reopen validation and byte-exact export;
+fixture-declared counters are insufficient.
+
+`CL8-Q23-R1-02` requires exact executed nodes for RuntimeCashAuthority
+active/checksum/lastgood combinations, missing authority with remaining CL2
+custody, pending-proof/attempt-count inconsistencies, malformed Central proof,
+Portfolio corruption/staleness, Risk profile/state failure and cross-scope CL4,
+CL5 and CL6 proof rejection. Every generated corrupt custody set is read back
+after failure to prove no silent repair.
+
+`CL8-Q23-R1-03` requires separately collected, point-labelled synthetic pytest
+cases for every `C0..C6` and `D0..D10`. Each `C` point binds the durable authority
+revision/state or pre-custody state across a fresh store instance. Each `D` point
+binds an accepted CL7 proof/recovery node. `D3` proves no POST; `D4..D7` preserve
+the attempt/uncertainty boundary; `D8`, `D9` and `D10` remain reconcile-only,
+Risk-account-only and finalize-only. No node may authorize resubmission.
+
+`CL8-Q23-R1-04` replaces the fixture-declared multi-session PASS with actual
+session A/B close/reopen, exact replay, same-content/different-source, two open
+writers with stale-then-fresh CAS, CL3 watermark/pagination, wrong-scope HMAC,
+Central uncertain restart and CL7 pending restart executions. Only after those
+executions may the canonical eight-scenario result be constructed from observed
+revision/identity/outcome assertions.
+
+## 124. Required Q3 closure execution
+
+`CL8-Q23-R1-05` requires a fully bootstrapped synthetic runtime plus CL2 custody,
+an adversarial `.env` canary and lock file, exact accounting for every present
+member of `DEFAULT_RUNTIME_FILES`, manifest-last verification, source-byte
+immutability, secret/lock exclusion, isolated no-clobber restore and the exact
+CL2 writer/online-backup/interruption nodes.
+
+`CL8-Q23-R1-06` requires a deterministic source archive built from the exact
+successor checkout, extraction into an isolated directory and bootstrap of an
+empty runtime through that extracted source with an injected fake secret
+provider. It also requires `V39_ORACLE_COMMIT/V39_ORACLE_TREE` verification,
+`git archive` materialization of that exact source, creation of a v3.9 runtime,
+a verified pre-upgrade backup, bootstrap through the extracted exact v3.10
+candidate source, byte preservation of all pre-existing v3.9 state, safe
+`LEGACY_ACTIVE`/zero-attempt authority creation, no invented CashLedger and an
+idempotent second bootstrap.
+
+`CL8-Q23-R1-07` requires pre-attempt rollback only by isolated restore from the
+verified v3.9 backup, with restored bytes bound to the source runtime. A separate
+actual CL7 authority chain must persist an exact dispatch-attempt marker and
+prove `ROLLBACK_FORBIDDEN_AFTER_ATTEMPT`. Release recovery text must state that
+v3.9 downgrade after an exact attempt is `UNSUPPORTED`; the qualification does
+not claim an in-place package/state rewind.
+
+## 125. Successor packet and closure authority
+
+The successor evidence packet must be newly generated after the one commit and
+must bind the exact successor commit/tree, the exact three-path delta, complete
+Q2 and Q3 JUnit node identities, canonical phase summaries, manifest hashes and
+the closed finding set above. Closure review is limited to
+`CL8-Q23-R1-01..07`. Any surviving material finding, new failure, missing node,
+non-canonical evidence or path expansion yields `REQUEST_CHANGES / RESCOPE /
+DEFER`; a second correction batch is not authorized.
+
+This rescope grants no Q6 controlled-clock experiment, Q7 Sandbox burn-in,
+provider or credential access, real-account execution, Stable acceptance,
+Ready, merge, tag, GitHub Release or publication authority.

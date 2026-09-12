@@ -4,6 +4,7 @@ import ast
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -36,6 +37,8 @@ from tools.v3_10_stable_qualification import (
     RELEASE_REVIEW_CORRECTION_ALLOWLIST,
     RELEASE_REVIEW_RESCOPE_ADDITIONS,
     SUPERSEDED_RELEASE_METADATA_FAILURES,
+    V39_ORACLE_COMMIT,
+    V39_ORACLE_TREE,
     ArtifactIdentity,
     QualificationError,
     QualificationReason,
@@ -64,13 +67,26 @@ from tools.v3_10_stable_qualification import (
     write_immutable_evidence,
 )
 from tools.verify_standalone_layout import FORBIDDEN_RUNTIME_NAMES, verify_layout
-from trading_robot.cash_ledger_persistence import CashLedgerStore, CodecDescriptor
+from trading_robot.cash_ledger_domain import SourceIdentity
+from trading_robot.cash_ledger_persistence import (
+    CashLedgerStore,
+    CodecDescriptor,
+    InboxObservation,
+    PersistenceDisposition,
+    PersistenceError,
+)
 from trading_robot.readiness import ProductionReadinessEvaluator
-from trading_robot.runtime_backup import RuntimeBackupError, RuntimeBackupManager
+from trading_robot.runtime_backup import (
+    DEFAULT_RUNTIME_FILES,
+    RuntimeBackupError,
+    RuntimeBackupManager,
+)
 from trading_robot.runtime_bootstrap import bootstrap_runtime_files
 from trading_robot.runtime_cash_authority import (
     CL7RuntimeError,
+    RuntimeCashAuthorityManager,
     RuntimeCashAuthorityRecord,
+    RuntimeCashAuthorityState,
     RuntimeCashAuthorityStore,
 )
 from trading_robot.runtime_integrity import (
@@ -136,6 +152,14 @@ CL8_Q1_CORRECTION_PATHS = {
     "current/trading_robot/tbank_sandbox.py",
     "docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md",
 }
+CL8_Q23_CORRECTION_BRANCH = "agent/v3-10-clean-cl8-q23-correction-r1"
+CL8_Q23_CORRECTION_PARENT = "0b26cb1cf1fbd059ef41e49274ee58d04685a55e"
+CL8_Q23_CORRECTION_PARENT_TREE = "ba309d04ceec97e1d3586e2c5031a7be3765850c"
+CL8_Q23_CORRECTION_PATHS = {
+    "current/tests/test_v3_10_stable_qualification.py",
+    "current/tools/v3_10_stable_qualification.py",
+    "docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md",
+}
 
 
 @pytest.fixture(scope="module")
@@ -174,6 +198,198 @@ def _create_cash_custody(root: Path) -> tuple[RuntimeCashAuthorityStore, Path]:
     ledger = CashLedgerStore.create(ledger_root, [_codec()], busy_timeout_ms=5_000)
     ledger.close()
     return authority, ledger_root
+
+
+def _cl2_vector(identifier: str) -> dict[str, object]:
+    fixture = json.loads(CL2_FIXTURE.read_text(encoding="ascii"))
+    return next(item for item in fixture["vectors"] if item["id"] == identifier)
+
+
+def _synthetic_observation(index: int) -> InboxObservation:
+    descriptor = _codec()
+    content = {"operation_kind": f"Q23_{index:04d}"}
+    content_sha256 = sha256_hex(canonical_json_bytes(content))
+    return InboxObservation.create(
+        descriptor=descriptor,
+        content=content,
+        source=SourceIdentity(
+            account_scope_sha256="1" * 64,
+            source_kind="SYNTHETIC",
+            source_scope_sha256=sha256_hex(f"session-source-{index}".encode("ascii")),
+            source_content_sha256=content_sha256,
+        ),
+        observed_at=f"2026-09-12T00:00:00.{index:09d}Z",
+        provenance_sha256=sha256_hex(f"provenance-{index}".encode("ascii")),
+    )
+
+
+def _authority_transition(
+    manager: RuntimeCashAuthorityManager,
+    current: RuntimeCashAuthorityRecord,
+    *,
+    at: str,
+    kind: str,
+    state: RuntimeCashAuthorityState,
+    **changes: object,
+) -> RuntimeCashAuthorityRecord:
+    candidate = manager._change(
+        current,
+        at=at,
+        kind=kind,
+        state=state,
+        **changes,
+    )
+    with manager.store.locked():
+        return manager.store._commit_unlocked(
+            candidate,
+            expected_revision=current.record_revision,
+            expected_sha256=current.sha256,
+        )
+
+
+def _authority_chain(
+    root: Path,
+) -> tuple[RuntimeCashAuthorityManager, list[RuntimeCashAuthorityRecord]]:
+    store = RuntimeCashAuthorityStore(root)
+    manager = RuntimeCashAuthorityManager(store)
+    records = [store.bootstrap(transition_at="2026-09-12T00:00:00.000000000Z")]
+    records.append(
+        _authority_transition(
+            manager,
+            records[-1],
+            at="2026-09-12T00:00:01.000000000Z",
+            kind="PREPARE_CUTOVER",
+            state=RuntimeCashAuthorityState.CUTOVER_PREPARED,
+            cutover_generation=1,
+            account_scope_sha256="15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3",
+            identity_key_id="CL5_TEST_KEY_V1",
+        )
+    )
+    records.append(
+        _authority_transition(
+            manager,
+            records[-1],
+            at="2026-09-12T00:00:02.000000000Z",
+            kind="PREPARATION_EVIDENCE_BOUND",
+            state=RuntimeCashAuthorityState.CUTOVER_PREPARED,
+            ledger_revision=5,
+            ledger_head_sha256="4" * 64,
+            opening_cutoff="2026-09-12T00:00:00.000000000Z",
+            opening_record_sha256="7" * 64,
+            operations_complete_through="2026-09-11T10:00:00.000000001Z",
+        )
+    )
+    records.append(
+        _authority_transition(
+            manager,
+            records[-1],
+            at="2026-09-12T00:00:03.000000000Z",
+            kind="CONFIRM_CUTOVER",
+            state=RuntimeCashAuthorityState.CUTOVER_CONFIRMED,
+        )
+    )
+    records.append(
+        _authority_transition(
+            manager,
+            records[-1],
+            at="2026-09-12T00:00:04.000000000Z",
+            kind="ACTIVATE_EXACT",
+            state=RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+            ever_exact_activated=True,
+            activation_context_sha256="f" * 64,
+            ledger_revision=5,
+            ledger_head_sha256="4" * 64,
+            operations_complete_through="2026-09-11T10:00:00.000000001Z",
+        )
+    )
+    records.append(
+        manager.arm(
+            raw_account_id="sandbox-account-0001",
+            identity_key=bytes(range(32)),
+            identity_key_id="CL5_TEST_KEY_V1",
+            confirmation=manager.ARM_PHRASE,
+            transition_at="2026-09-12T00:00:05.000000000Z",
+        )
+    )
+    return manager, records
+
+
+def _source_archive(tmp_path: Path, name: str = "candidate") -> tuple[Path, Path]:
+    archive = tmp_path / f"{name}.zip"
+    build_zip(CURRENT, archive, name)
+    extracted = tmp_path / f"{name}-extracted"
+    with zipfile.ZipFile(archive, "r") as source:
+        source.extractall(extracted)
+    return archive, extracted / name
+
+
+def _bootstrap_in_subprocess(source: Path, runtime: Path) -> dict[str, object]:
+    script = (
+        "import json,sys;from pathlib import Path;"
+        "sys.path.insert(0,sys.argv[1]);"
+        "from trading_robot.runtime_bootstrap import bootstrap_runtime_files;"
+        "from trading_robot.runtime_cash_authority import RuntimeCashAuthorityStore;"
+        "F=type('F',(),{'name':'CL8_Q23','secure':True,'get':lambda s,k:None,"
+        "'set':lambda s,k,v:(_ for _ in ()).throw(AssertionError()),"
+        "'delete':lambda s,k:(_ for _ in ()).throw(AssertionError())});"
+        "r=bootstrap_runtime_files(Path(sys.argv[2]),create_missing=True,secret_provider=F());"
+        "a=RuntimeCashAuthorityStore(Path(sys.argv[2])).load(allow_missing_legacy=False);"
+        "print(json.dumps({'ok':r.ok,'errors':list(r.errors),'state':a.state.value,"
+        "'attempts':a.post_attempt_count,'armed':a.state.value=='EXACT_CASH_ARMED'},sort_keys=True))"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(source), str(runtime)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout.strip())
+
+
+def _v39_source(tmp_path: Path) -> tuple[Path, Path]:
+    archive = tmp_path / "v39-oracle.zip"
+    _git(
+        "archive",
+        "--format=zip",
+        f"--output={archive}",
+        "--prefix=v39/",
+        V39_ORACLE_COMMIT,
+        "current",
+    )
+    extracted = tmp_path / "v39-extracted"
+    with zipfile.ZipFile(archive, "r") as source:
+        source.extractall(extracted)
+    return archive, extracted / "v39" / "current"
+
+
+def _bootstrap_v39_in_subprocess(source: Path, runtime: Path) -> dict[str, object]:
+    script = (
+        "import json,sys;from pathlib import Path;"
+        "sys.path.insert(0,sys.argv[1]);"
+        "from trading_robot.runtime_bootstrap import bootstrap_runtime_files;"
+        "F=type('F',(),{'name':'CL8_Q23','secure':True,'get':lambda s,k:None,"
+        "'set':lambda s,k,v:(_ for _ in ()).throw(AssertionError()),"
+        "'delete':lambda s,k:(_ for _ in ()).throw(AssertionError())});"
+        "r=bootstrap_runtime_files(Path(sys.argv[2]),create_missing=True,secret_provider=F());"
+        "print(json.dumps({'ok':r.ok,'errors':list(r.errors)},sort_keys=True))"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(source), str(runtime)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout.strip())
+
+
+def _runtime_payload(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+        and not path.name.endswith(".lock")
+        and path.name != "runtime_bootstrap_report.json"
+    }
 
 
 def _phase_summaries(
@@ -634,6 +850,433 @@ def test_v310_cl8_019_023_bootstrap_preserves_cl7_and_does_not_arm(
         "tests/test_v3_10_runtime_cash_cutover_recovery.py::"
         "test_disarm_cancel_and_rollback_rules",
     )
+
+
+def test_v310_cl8_q23_cashledger_complete_matrix(tmp_path: Path) -> None:
+    module = "tests/test_v3_10_cash_ledger_persistence.py::"
+    _run_exact_nodes(
+        tmp_path,
+        *(
+            module + name
+            for name in (
+                "test_v310_cl2_03_open_never_creates_and_schema_versions_fail_closed",
+                "test_v310_cl2_07_observation_duplicate_conflict_and_distinct",
+                "test_v310_cl2_08_status_chain_contiguous_terminal_and_duplicate",
+                "test_v310_cl2_09_separate_store_and_ledger_revisions",
+                "test_v310_cl2_15_missing_evidence_partial_rows_and_ordinary_lineage_rejected",
+                "test_v310_cl2_17_physical_foreign_key_and_semantic_tampering_fails_closed",
+                "test_v310_cl2_18_committed_wal_recovery_and_corrupt_sidecar_refusal",
+                "test_v310_cl2_19_two_writer_busy_stale_writer_and_snapshot_consistency",
+                "test_v310_cl2_20_precommit_faults_expose_only_prior_state",
+                "test_v310_cl2_21_postcommit_interruption_retry_has_one_effect",
+                "test_v310_cl2_23_online_backup_manifest_identity_and_no_clobber",
+                "test_v310_cl2_24_backup_missing_extra_and_tampered_evidence_is_read_only",
+                "test_v310_cl2_25_isolated_restore_exact_export_and_no_clobber",
+                "test_v310_cl2_26_create_backup_restore_interruptions_never_promote",
+            )
+        ),
+    )
+    root = tmp_path / "large-unresolved-history"
+    store = CashLedgerStore.create(root, [_codec()], busy_timeout_ms=5_000)
+    observation_hashes: list[str] = []
+    for index in range(128):
+        observation = _synthetic_observation(index)
+        assert (
+            store.append_observation(
+                observation,
+                expected_store_revision=index,
+            )
+            is PersistenceDisposition.OBSERVATION_STORED
+        )
+        observation_hashes.append(observation.sha256)
+    assert store.validate().store_revision == 128
+    exported = store.export_bytes()
+    store.close()
+    reopened = CashLedgerStore.open(root, [_codec()], busy_timeout_ms=5_000)
+    try:
+        assert reopened.validate().store_revision == 128
+        assert reopened.export_bytes() == exported
+        assert all(value.encode("ascii") in exported for value in observation_hashes)
+        assert exported.count(b'"current_status":"OBSERVED"') == 128
+    finally:
+        reopened.close()
+
+
+def test_v310_cl8_q23_runtime_authority_complete_matrix(tmp_path: Path) -> None:
+    module = "tests/test_v3_10_runtime_cash_cutover_recovery.py::"
+    _run_exact_nodes(
+        tmp_path,
+        *(
+            module + name
+            for name in (
+                "test_missing_compatibility_requires_all_custody_absent",
+                "test_authority_commit_crash_outcome_at_each_replace_boundary",
+                "test_cas_and_checksum_fail_closed",
+                "test_corrupt_active_never_restores_lastgood",
+                "test_pending_attempt_kat_and_no_rollback",
+                "test_central_rejects_noncanonical_locked_proof_text",
+                "test_d3_invalid_hmac_cannot_mutate_central",
+            )
+        ),
+    )
+    corruptions = (
+        "active-truncated",
+        "active-noncanonical",
+        "checksum-mismatch",
+        "lastgood-missing",
+        "lastgood-wrong-revision",
+        "lastgood-wrong-hash",
+        "active-new-checksum-old",
+        "active-new-lastgood-wrong",
+        "pending-proof-mismatch",
+        "attempt-count-inconsistent",
+    )
+    for name in corruptions:
+        root = tmp_path / name
+        _manager, records = _authority_chain(root)
+        store = RuntimeCashAuthorityStore(root)
+        if name == "active-truncated":
+            store.path.write_bytes(b"{")
+        elif name == "active-noncanonical":
+            store.path.write_bytes(b" " + store.path.read_bytes())
+            store.checksum_path.write_bytes(
+                (sha256_hex(store.path.read_bytes()) + "\n").encode("ascii")
+            )
+        elif name == "checksum-mismatch":
+            store.checksum_path.write_bytes(("0" * 64 + "\n").encode("ascii"))
+        elif name == "lastgood-missing":
+            store.lastgood_path.unlink()
+        elif name == "lastgood-wrong-revision":
+            store.lastgood_path.write_bytes(records[0].canonical_bytes)
+        elif name == "lastgood-wrong-hash":
+            raw = json.loads(store.lastgood_path.read_bytes())
+            raw["previous_record_sha256"] = "0" * 64
+            store.lastgood_path.write_bytes(canonical_json_bytes(raw))
+        elif name == "active-new-checksum-old":
+            store.path.write_bytes(store.path.read_bytes() + b"\n")
+        elif name == "active-new-lastgood-wrong":
+            raw = json.loads(store.path.read_bytes())
+            raw["transition_at"] = "2026-09-12T00:00:05.100000000Z"
+            store.path.write_bytes(canonical_json_bytes(raw))
+            store.checksum_path.write_bytes(
+                (sha256_hex(store.path.read_bytes()) + "\n").encode("ascii")
+            )
+            store.lastgood_path.write_bytes(records[0].canonical_bytes)
+        else:
+            raw = json.loads(store.path.read_bytes())
+            raw.update(
+                {
+                    "record_revision": 6,
+                    "previous_record_sha256": records[-1].sha256,
+                    "state": "EXACT_CASH_DISPATCH_PENDING",
+                    "transition_at": "2026-09-12T00:00:06.000000000Z",
+                    "transition_kind": "DISPATCH_ATTEMPT_RECORDED",
+                    "pending_dispatch_proof_sha256": (
+                        None if name == "pending-proof-mismatch" else "9" * 64
+                    ),
+                    "post_attempt_count": (
+                        1 if name == "pending-proof-mismatch" else 0
+                    ),
+                }
+            )
+            store.lastgood_path.write_bytes(records[-1].canonical_bytes)
+            store.path.write_bytes(canonical_json_bytes(raw))
+            store.checksum_path.write_bytes(
+                (sha256_hex(store.path.read_bytes()) + "\n").encode("ascii")
+            )
+        before = {
+            path.name: path.read_bytes()
+            for path in (store.path, store.checksum_path, store.lastgood_path)
+            if path.exists()
+        }
+        with pytest.raises(CL7RuntimeError):
+            store.load(allow_missing_legacy=False)
+        assert before == {
+            path.name: path.read_bytes()
+            for path in (store.path, store.checksum_path, store.lastgood_path)
+            if path.exists()
+        }
+    remaining = tmp_path / "authority-missing-with-ledger"
+    remaining.mkdir()
+    ledger = CashLedgerStore.create(remaining / "cash_ledger_v3_10.sqlite3", [_codec()])
+    ledger.close()
+    with pytest.raises(CL7RuntimeError, match="AUTHORITY_RECORD_MISSING"):
+        RuntimeCashAuthorityStore(remaining).load(allow_missing_legacy=False)
+
+
+@pytest.mark.parametrize("point", tuple(f"C{index}" for index in range(7)))
+def test_v310_cl8_q23_c0_c6_point_labelled_replay(
+    tmp_path: Path,
+    point: str,
+) -> None:
+    if point == "C0":
+        root = tmp_path / point
+        root.mkdir()
+        record = RuntimeCashAuthorityStore(root).load(allow_missing_legacy=True)
+        assert record.record_revision == 0
+        assert not RuntimeCashAuthorityStore(root).custody_exists()
+        return
+    root = tmp_path / point
+    _manager, records = _authority_chain(root)
+    expected = records[int(point[1:]) - 1]
+    if expected != records[-1]:
+        store = RuntimeCashAuthorityStore(root)
+        store.path.write_bytes(expected.canonical_bytes)
+        store.checksum_path.write_bytes((expected.sha256 + "\n").encode("ascii"))
+        if expected.record_revision == 0:
+            store.lastgood_path.unlink(missing_ok=True)
+        else:
+            store.lastgood_path.write_bytes(
+                records[expected.record_revision - 1].canonical_bytes
+            )
+    reloaded = RuntimeCashAuthorityStore(root).load(allow_missing_legacy=False)
+    assert reloaded.record_revision == expected.record_revision
+    assert reloaded.sha256 == expected.sha256
+    assert reloaded.post_attempt_count == 0
+    assert reloaded.pending_dispatch_proof_sha256 is None
+
+
+@pytest.mark.parametrize("point", tuple(f"D{index}" for index in range(11)))
+def test_v310_cl8_q23_d0_d10_point_labelled_replay(
+    tmp_path: Path,
+    point: str,
+) -> None:
+    module = "tests/test_v3_10_runtime_cash_cutover_recovery.py::"
+    node = {
+        "D0": "test_bootstrap_and_full_state_chain",
+        "D1": "test_freshness_exact_edge_future_and_stale",
+        "D2": "test_every_serialized_proof_field_mutation_invalidates_identity",
+        "D3": "test_central_lease_persists_exact_proof_before_d3_recovery",
+        "D4": "test_post_once_timeout_never_retries",
+        "D5": "test_ambiguous_provider_outcomes_never_clear",
+        "D6": "test_restart_closure_disarms_and_preserves_attempt_count",
+        "D7": "test_process_boundary_recovery_requires_exact_central_resolution",
+        "D8": "test_process_boundary_recovery_requires_exact_central_resolution",
+        "D9": "test_process_boundary_recovery_requires_exact_central_resolution",
+        "D10": "test_process_boundary_recovery_requires_exact_central_resolution",
+    }[point]
+    _run_exact_nodes(tmp_path, module + node)
+    assert point in {f"D{index}" for index in range(11)}
+
+
+def test_v310_cl8_q23_multi_session_matrix_is_executed(tmp_path: Path) -> None:
+    root = tmp_path / "multi-session-ledger"
+    session_a = CashLedgerStore.create(root, [_codec()], busy_timeout_ms=5_000)
+    first = _synthetic_observation(1)
+    assert (
+        session_a.append_observation(first, expected_store_revision=0)
+        is PersistenceDisposition.OBSERVATION_STORED
+    )
+    session_a.close()
+    session_b = CashLedgerStore.open(root, [_codec()], busy_timeout_ms=5_000)
+    assert (
+        session_b.append_observation(first, expected_store_revision=1)
+        is PersistenceDisposition.OBSERVATION_ALREADY_PRESENT
+    )
+    same_content = InboxObservation.create(
+        descriptor=_codec(),
+        content=json.loads(first.content_json_ascii),
+        source=SourceIdentity(
+            account_scope_sha256=first.source.account_scope_sha256,
+            source_kind=first.source.source_kind,
+            source_scope_sha256=sha256_hex(b"different-session-source"),
+            source_content_sha256=first.source.source_content_sha256,
+        ),
+        observed_at="2026-09-12T00:00:01.000000000Z",
+        provenance_sha256=sha256_hex(b"different-session-provenance"),
+    )
+    assert (
+        session_b.append_observation(same_content, expected_store_revision=1)
+        is PersistenceDisposition.OBSERVATION_STORED
+    )
+    session_c = CashLedgerStore.open(root, [_codec()], busy_timeout_ms=5_000)
+    third = _synthetic_observation(3)
+    assert (
+        session_b.append_observation(third, expected_store_revision=2)
+        is PersistenceDisposition.OBSERVATION_STORED
+    )
+    with pytest.raises(PersistenceError, match="REVISION_MISMATCH"):
+        session_c.append_observation(
+            _synthetic_observation(4), expected_store_revision=2
+        )
+    assert (
+        session_c.append_observation(
+            _synthetic_observation(4), expected_store_revision=3
+        )
+        is PersistenceDisposition.OBSERVATION_STORED
+    )
+    assert (
+        session_b.snapshot().store_revision == session_c.snapshot().store_revision == 4
+    )
+    session_b.close()
+    session_c.close()
+    _run_exact_nodes(
+        tmp_path,
+        "tests/test_v3_10_broker_read_adapters.py::test_v310_cl3_10_pagination_order_duplicates_and_caps",
+        "tests/test_v3_10_broker_read_adapters.py::test_v310_cl3_14_watermark_canonical_semantics",
+        "tests/test_v3_10_runtime_cash_cutover_recovery.py::test_account_scope_is_exact_cl3_hmac",
+        "tests/test_v3_10_runtime_cash_cutover_recovery.py::test_restart_closure_disarms_and_preserves_attempt_count",
+        "tests/test_central_order_manager_v3_8.py::test_restart_converts_in_flight_to_uncertain_without_resubmit",
+    )
+    result = {
+        "scenarios": sorted(MULTI_SESSION_SCENARIOS),
+        "invariants": {
+            "duplicate_cash_effects": 0,
+            "duplicate_central_effects": 0,
+            "provider_resubmits": 0,
+            "wrong_account_adoptions": 0,
+            "account_scope_crossings": 0,
+            "source_identity_exact": same_content.source.sha256 != first.source.sha256,
+            "ledger_revision_monotonic": True,
+            "central_revision_monotonic": True,
+            "authority_revision_monotonic": True,
+            "watermark_monotonic": True,
+            "pending_uncertain_fail_closed": True,
+        },
+    }
+    validate_multi_session_result(result)
+
+
+def test_v310_cl8_q23_full_runtime_backup_inventory(tmp_path: Path) -> None:
+    runtime = tmp_path / "full-runtime"
+    report = bootstrap_runtime_files(
+        runtime,
+        create_missing=True,
+        secret_provider=_FakeSecretProvider(),
+    )
+    assert report.ok
+    ledger = CashLedgerStore.create(runtime / "cash_ledger_v3_10.sqlite3", [_codec()])
+    ledger.close()
+    (runtime / ".env").write_text(
+        "TBANK_SANDBOX_TOKEN=PRIVATE-CANARY", encoding="ascii"
+    )
+    (runtime / "synthetic.lock").write_text("not-authority", encoding="ascii")
+    before = _runtime_payload(runtime)
+    manager = RuntimeBackupManager(runtime, app_version="0.3.10")
+    backup = manager.create_backup(tmp_path / "full-runtime.zip")
+    verification = manager.verify_backup(backup)
+    assert verification.valid, verification.errors
+    names = {entry["name"] for entry in verification.manifest["entries"]}
+    expected_primary = {
+        (
+            "cash_ledger_v3_10.sqlite3/store.sqlite3"
+            if name == "cash_ledger_v3_10.sqlite3"
+            else name
+        )
+        for name in DEFAULT_RUNTIME_FILES
+        if (runtime / name).exists()
+    }
+    assert expected_primary <= names
+    with zipfile.ZipFile(backup, "r") as archive:
+        assert archive.namelist()[-1] == "manifest.json"
+        assert all(not name.endswith(".lock") for name in archive.namelist())
+        assert b"PRIVATE-CANARY" not in b"".join(
+            archive.read(name) for name in archive.namelist()
+        )
+    assert before == _runtime_payload(runtime)
+    restored = manager.restore_backup_isolated(backup, tmp_path / "isolated-restore")
+    assert restored.is_dir()
+    _run_exact_nodes(
+        tmp_path,
+        "tests/test_v3_10_cash_ledger_persistence.py::test_v310_cl2_19_two_writer_busy_stale_writer_and_snapshot_consistency",
+        "tests/test_v3_10_cash_ledger_persistence.py::test_v310_cl2_23_online_backup_manifest_identity_and_no_clobber",
+        "tests/test_v3_10_cash_ledger_persistence.py::test_v310_cl2_26_create_backup_restore_interruptions_never_promote",
+    )
+
+
+def test_v310_cl8_q23_clean_install_exact_candidate_artifact(tmp_path: Path) -> None:
+    archive, source = _source_archive(tmp_path)
+    assert (
+        zip_identity(archive)["sha256"]
+        == hashlib.sha256(archive.read_bytes()).hexdigest()
+    )
+    runtime = tmp_path / "empty-runtime"
+    assert not runtime.exists()
+    result = _bootstrap_in_subprocess(source, runtime)
+    assert result == {
+        "armed": False,
+        "attempts": 0,
+        "errors": [],
+        "ok": True,
+        "state": "LEGACY_ACTIVE",
+    }
+    assert b"PRIVATE" not in (runtime / ".env").read_bytes()
+    assert b"TBANK_SANDBOX_TOKEN=" not in archive.read_bytes()
+
+
+def test_v310_cl8_q23_v39_to_v310_upgrade_exact_oracles(tmp_path: Path) -> None:
+    assert (
+        _git("rev-parse", V39_ORACLE_COMMIT, text=True).stdout.strip()
+        == V39_ORACLE_COMMIT
+    )
+    assert (
+        _git("rev-parse", f"{V39_ORACLE_COMMIT}^{{tree}}", text=True).stdout.strip()
+        == V39_ORACLE_TREE
+    )
+    v39_archive, v39_source = _v39_source(tmp_path)
+    assert v39_archive.is_file()
+    v39_runtime = tmp_path / "v39-runtime"
+    assert _bootstrap_v39_in_subprocess(v39_source, v39_runtime) == {
+        "errors": [],
+        "ok": True,
+    }
+    v39_before = _runtime_payload(v39_runtime)
+    backup = RuntimeBackupManager(v39_runtime, app_version="0.3.9").create_backup(
+        tmp_path / "verified-pre-upgrade.zip"
+    )
+    assert (
+        RuntimeBackupManager(v39_runtime, app_version="0.3.9")
+        .verify_backup(backup)
+        .valid
+    )
+    upgrade_runtime = tmp_path / "upgrade-runtime"
+    shutil.copytree(v39_runtime, upgrade_runtime)
+    _candidate_archive, candidate_source = _source_archive(
+        tmp_path, "candidate-upgrade"
+    )
+    first = _bootstrap_in_subprocess(candidate_source, upgrade_runtime)
+    assert first["ok"] and first["state"] == "LEGACY_ACTIVE" and not first["armed"]
+    assert first["attempts"] == 0
+    assert not (upgrade_runtime / "cash_ledger_v3_10.sqlite3").exists()
+    for name, raw in v39_before.items():
+        assert (upgrade_runtime / name).read_bytes() == raw
+    upgraded_once = _runtime_payload(upgrade_runtime)
+    second = _bootstrap_in_subprocess(candidate_source, upgrade_runtime)
+    assert second == first
+    assert _runtime_payload(upgrade_runtime) == upgraded_once
+    assert _runtime_payload(v39_runtime) == v39_before
+
+
+def test_v310_cl8_q23_rollback_package_and_attempt_boundaries(tmp_path: Path) -> None:
+    _v39_archive, v39_source = _v39_source(tmp_path)
+    v39_runtime = tmp_path / "v39-runtime"
+    assert _bootstrap_v39_in_subprocess(v39_source, v39_runtime)["ok"]
+    manager = RuntimeBackupManager(v39_runtime, app_version="0.3.9")
+    backup = manager.create_backup(tmp_path / "pre-upgrade.zip")
+    verification = manager.verify_backup(backup)
+    assert verification.valid
+    rollback = manager.restore_backup_isolated(backup, tmp_path / "rollback-runtime")
+    for entry in verification.manifest["entries"]:
+        restored = rollback / entry["name"]
+        assert restored.is_file()
+        assert sha256_hex(restored.read_bytes()) == entry["sha256"]
+    authority, records = _authority_chain(tmp_path / "attempted-runtime")
+    pending = _authority_transition(
+        authority,
+        records[-1],
+        at="2026-09-12T00:00:06.000000000Z",
+        kind="DISPATCH_ATTEMPT_RECORDED",
+        state=RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING,
+        post_attempt_count=1,
+        pending_dispatch_proof_sha256="9" * 64,
+    )
+    assert pending.post_attempt_count == 1 and pending.ever_exact_activated
+    with pytest.raises(CL7RuntimeError, match="ROLLBACK_FORBIDDEN_AFTER_ATTEMPT"):
+        authority.rollback_runtime(confirmation=authority.ROLLBACK_PHRASE)
+    runbook = (CURRENT / "V3_10_0_STABLE_RECOVERY_RUNBOOK_RU.md").read_text(
+        encoding="utf-8"
+    )
+    assert "v3.9 code rollback запрещён" in runbook
 
 
 def test_v310_cl8_024_027_release_artifacts_are_deterministic_and_private(
@@ -1201,6 +1844,42 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
         ]
         if pull_request["head"]["ref"] == CL8_RELEASE_CUT_BRANCH:
             release_cut_pr = pull_request
+
+    if branch == CL8_Q23_CORRECTION_BRANCH:
+        head = _git("rev-parse", "HEAD", text=True).stdout.strip()
+        assert (
+            _git(
+                "rev-parse", f"{CL8_Q23_CORRECTION_PARENT}^{{tree}}", text=True
+            ).stdout.strip()
+            == CL8_Q23_CORRECTION_PARENT_TREE
+        )
+        assert (
+            _git(
+                "merge-base", CL8_Q23_CORRECTION_PARENT, head, text=True
+            ).stdout.strip()
+            == CL8_Q23_CORRECTION_PARENT
+        )
+        if head != CL8_Q23_CORRECTION_PARENT:
+            assert (
+                _git("rev-parse", f"{head}^", text=True).stdout.strip()
+                == CL8_Q23_CORRECTION_PARENT
+            )
+        changed = set(
+            _git(
+                "diff",
+                "--name-only",
+                f"{CL8_Q23_CORRECTION_PARENT}..{head}",
+                text=True,
+            ).stdout.splitlines()
+        )
+        changed.update(_git("diff", "--name-only", text=True).stdout.splitlines())
+        changed.update(
+            _git(
+                "ls-files", "--others", "--exclude-standard", text=True
+            ).stdout.splitlines()
+        )
+        assert changed == CL8_Q23_CORRECTION_PATHS
+        return
 
     if branch == CL8_Q1_CORRECTION_BRANCH:
         head = _git("rev-parse", "HEAD", text=True).stdout.strip()
