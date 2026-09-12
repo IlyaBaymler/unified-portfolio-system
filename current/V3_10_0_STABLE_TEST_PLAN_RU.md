@@ -7,7 +7,7 @@ Accepted Issue #72 commit/tree, independent review SHA и explicit acceptance SH
 
 ## Q1 — regression и GUI/runtime
 
-- full pytest: exact six inherited custody failures плюс exact nine superseded
+- full pytest: exact six inherited custody failures плюс exact eight superseded
   v3.9 release-metadata nodes, без новых failures;
 - account-level Start/Stop, configured multi-instrument set и canonical positions;
 - Central reservations, Risk, pending/uncertain и CL7 status visibility;

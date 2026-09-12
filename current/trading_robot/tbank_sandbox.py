@@ -186,12 +186,8 @@ class TBankSandboxClient:
         "CANDLE_INTERVAL_10_SEC": 1250,
         "CANDLE_INTERVAL_30_SEC": 2500,
     }
-    _INSTRUMENT_CACHE: ClassVar[
-        dict[tuple[str, str], dict[str, Any]]
-    ] = {}
-    _INSTRUMENT_ID_CACHE: ClassVar[
-        dict[tuple[str, str], dict[str, Any]]
-    ] = {}
+    _INSTRUMENT_CACHE: ClassVar[dict[tuple[str, str], dict[str, Any]]] = {}
+    _INSTRUMENT_ID_CACHE: ClassVar[dict[tuple[str, str], dict[str, Any]]] = {}
 
     def __post_init__(self) -> None:
         if not self.token.strip():
@@ -288,9 +284,7 @@ class TBankSandboxClient:
             "retry_count": max(0, int(attempt_count) - 1),
             "retry_delays_seconds": [round(float(value), 6) for value in retry_delays],
             "retry_delay_total_seconds": round(sum(retry_delays), 6),
-            "recovered_after_retry": (
-                event_type == "API_RETRY_RECOVERED"
-            ),
+            "recovered_after_retry": (event_type == "API_RETRY_RECOVERED"),
             "status_code": status_code,
             "tracking_id": tracking_id,
         }
@@ -304,9 +298,7 @@ class TBankSandboxClient:
             meta.update(
                 {
                     "rate_limit": response_headers.get("x-ratelimit-limit"),
-                    "rate_remaining": response_headers.get(
-                        "x-ratelimit-remaining"
-                    ),
+                    "rate_remaining": response_headers.get("x-ratelimit-remaining"),
                     "rate_reset": response_headers.get("x-ratelimit-reset"),
                 }
             )
@@ -325,8 +317,7 @@ class TBankSandboxClient:
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         url = (
-            f"{self.BASE_URL}/"
-            f"tinkoff.public.invest.api.contract.v1.{service}/{method}"
+            f"{self.BASE_URL}/tinkoff.public.invest.api.contract.v1.{service}/{method}"
         )
         attempts = self.max_retries + 1 if retry_safe else 1
         last_error: TBankAPIError | None = None
@@ -449,9 +440,7 @@ class TBankSandboxClient:
                         error_class=type(exc).__name__,
                     ) from exc
                 event_type = (
-                    "API_RETRY_RECOVERED"
-                    if attempt > 0
-                    else "API_REQUEST_SUCCEEDED"
+                    "API_RETRY_RECOVERED" if attempt > 0 else "API_REQUEST_SUCCEEDED"
                 )
                 self._complete_request_meta(
                     event_type=event_type,
@@ -478,10 +467,10 @@ class TBankSandboxClient:
                     "client or use date-range mode without limit."
                 )
             else:
-                message = f"T-Invest API returned HTTP {response.status_code}: {details}"
-            retry_after = self._parse_retry_after(
-                response.headers.get("Retry-After")
-            )
+                message = (
+                    f"T-Invest API returned HTTP {response.status_code}: {details}"
+                )
+            retry_after = self._parse_retry_after(response.headers.get("Retry-After"))
             transient = response.status_code in self.TRANSIENT_STATUS_CODES
             last_error = TBankAPIError(
                 message,
@@ -688,8 +677,7 @@ class TBankSandboxClient:
             self._INSTRUMENT_CACHE[cache_key] = selected
             return dict(selected)
         available = [
-            f"{item.get('ticker')}_{item.get('classCode')}"
-            for item in instruments[:10]
+            f"{item.get('ticker')}_{item.get('classCode')}" for item in instruments[:10]
         ]
         raise TBankAPIError(
             f"Exact instrument {query_upper}_{class_upper} not found. "
@@ -965,7 +953,11 @@ class TBankSandboxClient:
     ) -> dict[str, Any]:
         """Perform one non-replaying CL3 Sandbox cursor-read attempt."""
 
-        if not isinstance(payload, dict) or type(timeout_ns) is not int or timeout_ns <= 0:
+        if (
+            not isinstance(payload, dict)
+            or type(timeout_ns) is not int
+            or timeout_ns <= 0
+        ):
             raise ValueError("payload and timeout_ns are invalid.")
         try:
             return self._post(

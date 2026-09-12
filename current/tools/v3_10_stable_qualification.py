@@ -212,72 +212,160 @@ def _test_nodes(*names: str) -> tuple[str, ...]:
 _CL8_TEST = "tests/test_v3_10_stable_qualification.py::"
 _CL7_TEST = "tests/test_v3_10_runtime_cash_cutover_recovery.py::"
 OFFLINE_CASE_NODE_IDS: dict[str, tuple[str, ...]] = {
-    "V310-CL8-001": _test_nodes(_CL8_TEST + "test_v310_cl8_001_exact_contract_and_allowlists"),
-    "V310-CL8-002": _test_nodes(_CL8_TEST + "test_v310_cl8_002_v39_and_cl7_oracles_are_exact"),
-    "V310-CL8-003": _test_nodes(_CL8_TEST + "test_v310_cl8_003_004_regression_failure_sets_are_exact"),
-    "V310-CL8-004": _test_nodes(_CL8_TEST + "test_v310_cl8_003_004_regression_failure_sets_are_exact"),
-    "V310-CL8-005": _test_nodes(_CL8_TEST + "test_v310_cl8_005_038_qualification_and_release_path_gates"),
-    "V310-CL8-006": _test_nodes(_CL8_TEST + "test_v310_cl8_006_008_009_backup_includes_cl2_cl7_and_isolated_restore"),
-    "V310-CL8-007": _test_nodes(_CL8_TEST + "test_v310_cl8_006_008_009_backup_includes_cl2_cl7_and_isolated_restore"),
-    "V310-CL8-008": _test_nodes(_CL8_TEST + "test_v310_cl8_008_backup_detects_single_byte_corruption"),
-    "V310-CL8-009": _test_nodes(_CL8_TEST + "test_v310_cl8_006_008_009_backup_includes_cl2_cl7_and_isolated_restore"),
-    "V310-CL8-010": _test_nodes(_CL8_TEST + "test_v310_cl8_010_011_012_cash_custody_corruption_fails_closed"),
-    "V310-CL8-011": _test_nodes("tests/test_v3_10_cash_ledger_persistence.py::test_v310_cl2_18_committed_wal_recovery_and_corrupt_sidecar_refusal"),
+    "V310-CL8-001": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_001_exact_contract_and_allowlists"
+    ),
+    "V310-CL8-002": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_002_v39_and_cl7_oracles_are_exact"
+    ),
+    "V310-CL8-003": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_003_004_regression_failure_sets_are_exact"
+    ),
+    "V310-CL8-004": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_003_004_regression_failure_sets_are_exact"
+    ),
+    "V310-CL8-005": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_005_038_qualification_and_release_path_gates"
+    ),
+    "V310-CL8-006": _test_nodes(
+        _CL8_TEST
+        + "test_v310_cl8_006_008_009_backup_includes_cl2_cl7_and_isolated_restore"
+    ),
+    "V310-CL8-007": _test_nodes(
+        _CL8_TEST
+        + "test_v310_cl8_006_008_009_backup_includes_cl2_cl7_and_isolated_restore"
+    ),
+    "V310-CL8-008": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_008_backup_detects_single_byte_corruption"
+    ),
+    "V310-CL8-009": _test_nodes(
+        _CL8_TEST
+        + "test_v310_cl8_006_008_009_backup_includes_cl2_cl7_and_isolated_restore"
+    ),
+    "V310-CL8-010": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_010_011_012_cash_custody_corruption_fails_closed"
+    ),
+    "V310-CL8-011": _test_nodes(
+        "tests/test_v3_10_cash_ledger_persistence.py::test_v310_cl2_18_committed_wal_recovery_and_corrupt_sidecar_refusal"
+    ),
     "V310-CL8-012": _test_nodes(
         _CL7_TEST + "test_cas_and_checksum_fail_closed",
         _CL7_TEST + "test_corrupt_active_never_restores_lastgood",
         _CL7_TEST + "test_authority_commit_crash_outcome_at_each_replace_boundary",
     ),
-    "V310-CL8-013": _test_nodes("tests/test_central_order_manager_v3_8.py::test_store_fails_closed_on_checksum_mismatch"),
-    "V310-CL8-014": _test_nodes("tests/test_portfolio_repository_v3_7.py::test_repository_rejects_checksum_mismatch"),
-    "V310-CL8-015": _test_nodes("tests/test_risk.py::test_corrupt_state_store_fails_closed"),
+    "V310-CL8-013": _test_nodes(
+        "tests/test_central_order_manager_v3_8.py::test_store_fails_closed_on_checksum_mismatch"
+    ),
+    "V310-CL8-014": _test_nodes(
+        "tests/test_portfolio_repository_v3_7.py::test_repository_rejects_checksum_mismatch"
+    ),
+    "V310-CL8-015": _test_nodes(
+        "tests/test_risk.py::test_corrupt_state_store_fails_closed"
+    ),
     "V310-CL8-016": _test_nodes(
         _CL7_TEST + "test_bootstrap_and_full_state_chain",
         _CL7_TEST + "test_authority_commit_crash_outcome_at_each_replace_boundary",
-        _CL7_TEST + "test_full_prepare_confirm_activate_arm_uses_fresh_cl2_to_cl6_evidence",
+        _CL7_TEST
+        + "test_full_prepare_confirm_activate_arm_uses_fresh_cl2_to_cl6_evidence",
     ),
     "V310-CL8-017": _test_nodes(
         _CL7_TEST + "test_central_lease_persists_exact_proof_before_d3_recovery",
-        _CL7_TEST + "test_exact_dispatch_marker_precedes_single_post_and_classifies_outcome",
+        _CL7_TEST
+        + "test_exact_dispatch_marker_precedes_single_post_and_classifies_outcome",
         _CL7_TEST + "test_process_boundary_recovery_requires_exact_central_resolution",
-        _CL7_TEST + "test_operator_recovery_validates_before_lookup_under_authority_lock",
+        _CL7_TEST
+        + "test_operator_recovery_validates_before_lookup_under_authority_lock",
     ),
     "V310-CL8-018": _test_nodes(
         _CL7_TEST + "test_pending_attempt_kat_and_no_rollback",
         _CL7_TEST + "test_post_once_timeout_never_retries",
         _CL7_TEST + "test_legacy_recovery_has_no_automatic_post_resubmit",
     ),
-    "V310-CL8-019": _test_nodes("tests/test_runtime_bootstrap.py::test_first_run_bootstrap_creates_complete_canonical_runtime_set"),
-    "V310-CL8-020": _test_nodes("tests/test_runtime_bootstrap.py::test_bootstrap_migrates_valid_legacy_singular_risk_profile"),
-    "V310-CL8-021": _test_nodes("tests/test_runtime_bootstrap.py::test_bootstrap_is_idempotent_and_preserves_user_runtime_files"),
-    "V310-CL8-022": _test_nodes(_CL8_TEST + "test_v310_cl8_019_023_bootstrap_preserves_cl7_and_does_not_arm"),
+    "V310-CL8-019": _test_nodes(
+        "tests/test_runtime_bootstrap.py::test_first_run_bootstrap_creates_complete_canonical_runtime_set"
+    ),
+    "V310-CL8-020": _test_nodes(
+        "tests/test_runtime_bootstrap.py::test_bootstrap_migrates_valid_legacy_singular_risk_profile"
+    ),
+    "V310-CL8-021": _test_nodes(
+        "tests/test_runtime_bootstrap.py::test_bootstrap_is_idempotent_and_preserves_user_runtime_files"
+    ),
+    "V310-CL8-022": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_019_023_bootstrap_preserves_cl7_and_does_not_arm"
+    ),
     "V310-CL8-023": _test_nodes(_CL7_TEST + "test_pending_attempt_kat_and_no_rollback"),
-    "V310-CL8-024": _test_nodes(_CL8_TEST + "test_v310_cl8_024_027_release_artifacts_are_deterministic_and_private"),
-    "V310-CL8-025": _test_nodes(_CL8_TEST + "test_v310_cl8_025_028_standalone_private_denylist_is_complete"),
-    "V310-CL8-026": _test_nodes(_CL8_TEST + "test_v310_cl8_024_027_release_artifacts_are_deterministic_and_private"),
-    "V310-CL8-027": _test_nodes(_CL8_TEST + "test_v310_cl8_024_027_release_artifacts_are_deterministic_and_private"),
-    "V310-CL8-028": _test_nodes(_CL8_TEST + "test_v310_cl8_025_028_standalone_private_denylist_is_complete"),
-    "V310-CL8-029": _test_nodes(_CL8_TEST + "test_v310_cl8_029_030_support_bundle_reports_only_sanitized_cash_custody"),
-    "V310-CL8-030": _test_nodes(_CL8_TEST + "test_v310_cl8_029_030_support_bundle_reports_only_sanitized_cash_custody"),
-    "V310-CL8-031": _test_nodes(_CL8_TEST + "test_v310_cl8_031_036_privacy_scans_and_no_provider_boundary"),
+    "V310-CL8-024": _test_nodes(
+        _CL8_TEST
+        + "test_v310_cl8_024_027_release_artifacts_are_deterministic_and_private"
+    ),
+    "V310-CL8-025": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_025_028_standalone_private_denylist_is_complete"
+    ),
+    "V310-CL8-026": _test_nodes(
+        _CL8_TEST
+        + "test_v310_cl8_024_027_release_artifacts_are_deterministic_and_private"
+    ),
+    "V310-CL8-027": _test_nodes(
+        _CL8_TEST
+        + "test_v310_cl8_024_027_release_artifacts_are_deterministic_and_private"
+    ),
+    "V310-CL8-028": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_025_028_standalone_private_denylist_is_complete"
+    ),
+    "V310-CL8-029": _test_nodes(
+        _CL8_TEST
+        + "test_v310_cl8_029_030_support_bundle_reports_only_sanitized_cash_custody"
+    ),
+    "V310-CL8-030": _test_nodes(
+        _CL8_TEST
+        + "test_v310_cl8_029_030_support_bundle_reports_only_sanitized_cash_custody"
+    ),
+    "V310-CL8-031": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_031_036_privacy_scans_and_no_provider_boundary"
+    ),
     "V310-CL8-032": _test_nodes(_CL8_TEST + "test_v310_cl8_032_033_contract_kats"),
-    "V310-CL8-033": _test_nodes(_CL8_TEST + "test_v310_cl8_033_045_phase_bindings_prevent_substitution"),
-    "V310-CL8-034": _test_nodes(_CL8_TEST + "test_v310_cl8_034_035_controlled_clock_boundaries_are_executed"),
-    "V310-CL8-035": _test_nodes(_CL8_TEST + "test_v310_cl8_034_035_controlled_clock_boundaries_are_executed"),
-    "V310-CL8-036": _test_nodes(_CL8_TEST + "test_v310_cl8_031_036_privacy_scans_and_no_provider_boundary"),
-    "V310-CL8-037": _test_nodes(_CL8_TEST + "test_v310_cl8_037_no_production_host_or_mutation_route"),
-    "V310-CL8-038": _test_nodes(_CL8_TEST + "test_v310_cl8_005_038_qualification_and_release_path_gates"),
-    "V310-CL8-039": _test_nodes(_CL8_TEST + "test_exact_qualification_delta_and_predecessor_immutability"),
-    "V310-CL8-040": _test_nodes(_CL8_TEST + "test_v310_cl8_003_004_regression_failure_sets_are_exact"),
+    "V310-CL8-033": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_033_045_phase_bindings_prevent_substitution"
+    ),
+    "V310-CL8-034": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_034_035_controlled_clock_boundaries_are_executed"
+    ),
+    "V310-CL8-035": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_034_035_controlled_clock_boundaries_are_executed"
+    ),
+    "V310-CL8-036": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_031_036_privacy_scans_and_no_provider_boundary"
+    ),
+    "V310-CL8-037": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_037_no_production_host_or_mutation_route"
+    ),
+    "V310-CL8-038": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_005_038_qualification_and_release_path_gates"
+    ),
+    "V310-CL8-039": _test_nodes(
+        _CL8_TEST + "test_exact_qualification_delta_and_predecessor_immutability"
+    ),
+    "V310-CL8-040": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_003_004_regression_failure_sets_are_exact"
+    ),
     "V310-CL8-041": _test_nodes(_CL8_TEST + "test_v310_cl8_041_q0_is_hard_and_exact"),
-    "V310-CL8-042": _test_nodes(_CL8_TEST + "test_v310_cl8_042_gui_runtime_matrix_is_closed"),
-    "V310-CL8-043": _test_nodes(_CL8_TEST + "test_v310_cl8_043_multi_session_matrix_is_closed"),
-    "V310-CL8-044": _test_nodes(_CL8_TEST + "test_v310_cl8_044_account_disposition_is_exact"),
+    "V310-CL8-042": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_042_gui_runtime_matrix_is_closed"
+    ),
+    "V310-CL8-043": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_043_multi_session_matrix_is_closed"
+    ),
+    "V310-CL8-044": _test_nodes(
+        _CL8_TEST + "test_v310_cl8_044_account_disposition_is_exact"
+    ),
     "V310-CL8-045": _test_nodes(
         _CL8_TEST + "test_v310_cl8_033_045_phase_bindings_prevent_substitution",
         _CL8_TEST + "test_v310_cl8_045_evidence_gap_is_exact_and_prerequisite_bound",
     ),
-    "V310-CL8-046": _test_nodes(_CL8_TEST + "test_v310_cl8_046_missing_failure_never_compensates_for_new_failure"),
+    "V310-CL8-046": _test_nodes(
+        _CL8_TEST
+        + "test_v310_cl8_046_missing_failure_never_compensates_for_new_failure"
+    ),
 }
 
 QUALIFICATION_KAT_SHA256 = (
@@ -478,8 +566,7 @@ def validate_phase_summary(
         _fail(QualificationReason.KEYSET_INVALID)
     if (
         phase not in PHASE_KEYS
-        or
-        parsed["candidate_commit"] != candidate_commit
+        or parsed["candidate_commit"] != candidate_commit
         or parsed["candidate_tree"] != candidate_tree
         or parsed["contract_sha256"] != contract_sha256
     ):
@@ -775,17 +862,16 @@ def validate_release_artifact_manifest(
         if not path.is_file() or path.name != name:
             _fail(QualificationReason.IDENTITY_INVALID)
         raw = path.read_bytes()
-        if (
-            str(len(raw)) != entry["size_bytes"]
-            or sha256_hex(raw) != entry["sha256"]
-        ):
+        if str(len(raw)) != entry["size_bytes"] or sha256_hex(raw) != entry["sha256"]:
             _fail(QualificationReason.IDENTITY_INVALID)
         privacy_payloads[name] = raw
         if zipfile.is_zipfile(path):
             try:
                 with zipfile.ZipFile(path, "r") as archive:
                     members = tuple(
-                        item.filename for item in archive.infolist() if not item.is_dir()
+                        item.filename
+                        for item in archive.infolist()
+                        if not item.is_dir()
                     )
                     if private_artifact_members(members):
                         _fail(QualificationReason.PRIVACY_BOUNDARY_VIOLATION)
@@ -930,29 +1016,25 @@ def validate_q0_evidence(
     accepted_commit = _require_git_sha(evidence["accepted_commit"])
     expected_accepted_commit = _require_git_sha(expected_accepted_commit)
     expected_accepted_tree = _require_git_sha(expected_accepted_tree)
-    expected_review_evidence_sha256 = _require_sha256(
-        expected_review_evidence_sha256
-    )
+    expected_review_evidence_sha256 = _require_sha256(expected_review_evidence_sha256)
     expected_acceptance_record_sha256 = _require_sha256(
         expected_acceptance_record_sha256
     )
     if (
         accepted_commit != expected_accepted_commit
         or evidence["accepted_tree"] != expected_accepted_tree
-        or evidence["review_evidence_sha256"]
-        != expected_review_evidence_sha256
+        or evidence["review_evidence_sha256"] != expected_review_evidence_sha256
         or evidence["explicit_acceptance_record_sha256"]
         != expected_acceptance_record_sha256
     ):
         _fail(QualificationReason.Q0_BLOCKED)
     candidate_commit = _require_git_sha(candidate_commit)
-    if (
-        git_commit_tree(repository, accepted_commit) != evidence["accepted_tree"]
-        or not commit_is_ancestor(
-            repository,
-            accepted_commit,
-            candidate_commit,
-        )
+    if git_commit_tree(repository, accepted_commit) != evidence[
+        "accepted_tree"
+    ] or not commit_is_ancestor(
+        repository,
+        accepted_commit,
+        candidate_commit,
     ):
         _fail(QualificationReason.Q0_BLOCKED)
 
@@ -1103,11 +1185,10 @@ def validate_sandbox_account_disposition(
             preparation_summary, bytes
         ):
             _fail(QualificationReason.ACCOUNT_DISPOSITION_INVALID)
-        if (
-            sha256_hex(authorization_record)
-            != _require_sha256(value["authorization_record_sha256"])
-            or sha256_hex(preparation_summary)
-            != _require_sha256(value["preparation_summary_sha256"])
+        if sha256_hex(authorization_record) != _require_sha256(
+            value["authorization_record_sha256"]
+        ) or sha256_hex(preparation_summary) != _require_sha256(
+            value["preparation_summary_sha256"]
         ):
             _fail(QualificationReason.ACCOUNT_DISPOSITION_INVALID)
         authorization = parse_canonical_json(authorization_record)
@@ -1138,12 +1219,10 @@ def validate_sandbox_account_disposition(
         )
         if (
             authorization["command"] != "START EXPERIMENT"
-            or authorization["experiment_id"]
-            != "CL8-SANDBOX-ACCOUNT-CLEANUP-V1"
+            or authorization["experiment_id"] != "CL8-SANDBOX-ACCOUNT-CLEANUP-V1"
             or authorization["preparation_summary_sha256"]
             != value["preparation_summary_sha256"]
-            or preparation["experiment_id"]
-            != "CL8-SANDBOX-ACCOUNT-CLEANUP-V1"
+            or preparation["experiment_id"] != "CL8-SANDBOX-ACCOUNT-CLEANUP-V1"
             or preparation["contract_sha256"] != ACCEPTED_CONTRACT_SHA256
             or preparation["status"] != "PASS"
             or authorization["candidate_commit"] != expected_candidate_commit

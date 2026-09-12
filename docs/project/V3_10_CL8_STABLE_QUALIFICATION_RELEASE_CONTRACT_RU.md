@@ -2474,3 +2474,109 @@ exact successor commit/tree. Any surviving or new material failure produces
 
 This rescope grants no Ready, release-cut, provider, experiment, Stable
 acceptance, publication or merge authority.
+
+# PART AC — Q1 CANDIDATE CORRECTION RESCOPE
+
+## 117. Fixed finding set and exact parent
+
+This bounded rescope closes only:
+
+```text
+CL8-Q1-01
+CL8-Q1-02
+```
+
+The only authorized correction parent is:
+
+```text
+candidate parent = ebd68c7d71929ca194dbcdb9685a140a9eb319d5
+candidate parent tree = 170b959512e0a911ee7189d8b4ec1fa398892192
+correction branch = agent/v3-10-clean-cl8-q1-correction-r1
+correction commits = exactly one
+```
+
+The prior Q1 evidence for the parent is invalid for any successor and remains
+historical failure evidence only. The successor must receive a fresh exact
+commit/tree freeze and a complete Q1 rerun.
+
+## 118. Frozen correction allowlist
+
+The complete changed-path set of the single successor commit is exactly:
+
+```text
+docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md
+current/V3_10_0_STABLE_TEST_PLAN_RU.md
+current/tests/test_v3_10_issue72_gui_runtime.py
+current/tests/test_v3_10_stable_qualification.py
+current/tools/build_release.py
+current/tools/v3_10_stable_qualification.py
+current/trading_robot/tbank_sandbox.py
+```
+
+Every other repository path is immutable.
+
+A raw-blob recheck of the parent found five real formatter deltas. The earlier
+eight-path working-tree report additionally counted CRLF materialization for
+the three already-canonical parent blobs below. They remain byte-for-value
+unchanged in the successor and are outside its changed-path set:
+
+```text
+current/tests/test_release_hygiene.py
+current/tools/release_cleanup.py
+current/trading_robot/__init__.py
+```
+
+## 119. Allowed semantic delta
+
+`CL8-Q1-01` permits formatter output from `ruff 0.16.7` on the five Python
+paths above. The following two test paths may additionally add only a local
+successor-custody branch for this exact correction topology:
+
+```text
+current/tests/test_v3_10_issue72_gui_runtime.py
+current/tests/test_v3_10_stable_qualification.py
+```
+
+That branch must require the exact branch name and parent commit/tree in
+section 117, one direct successor commit, and the exact seven-path equality in
+section 118. It may not accept arbitrary branches, descendants or paths. This
+is a test-only custody adaptation caused by creating the required successor;
+it changes no expected regression failure node ID.
+
+The before/after Python ASTs of the remaining three Python paths, excluding
+source locations, must be exactly equal. No production import, constant,
+annotation, statement, expression, control-flow, authority, provider or
+runtime semantic may change.
+
+`CL8-Q1-02` permits exactly one test-plan substitution:
+
+```text
+exact nine superseded -> exact eight superseded
+```
+
+This aligns the active operator plan with the accepted contract and executable
+POST_RELEASE_CUT oracle. The frozen oracle remains six inherited custody nodes
+plus eight superseded release-metadata nodes; its node IDs do not change.
+
+The contract change itself is limited to this Part AC governance record.
+
+## 120. Successor closure and authority
+
+The exact successor must prove:
+
+```text
+parent = ebd68c7d71929ca194dbcdb9685a140a9eb319d5
+changed paths = exact section 118 set
+Python AST mismatches outside the two exact custody tests = 0
+custody-oracle topology/path equality = PASS
+test-plan substitution count = 1
+git diff --check = PASS
+ruff format --check = PASS with ruff 0.16.7
+full Q1 rerun = PASS
+material findings = 0
+```
+
+This rescope grants no Q6 controlled-clock experiment, Q7 Sandbox burn-in,
+provider access, real-account execution, Stable acceptance, tag, GitHub release
+or publication authority. Any new Q1 failure blocks acceptance and requires a
+separate governance decision.

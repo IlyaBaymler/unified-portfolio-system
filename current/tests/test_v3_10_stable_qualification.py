@@ -124,6 +124,18 @@ CL8_RELEASE_PR180_RESCOPE_PATHS = {
     "current/tests/test_v3_10_issue72_gui_runtime.py",
     "current/tests/test_v3_10_stable_qualification.py",
 }
+CL8_Q1_CORRECTION_BRANCH = "agent/v3-10-clean-cl8-q1-correction-r1"
+CL8_Q1_CORRECTION_PARENT = "ebd68c7d71929ca194dbcdb9685a140a9eb319d5"
+CL8_Q1_CORRECTION_PARENT_TREE = "170b959512e0a911ee7189d8b4ec1fa398892192"
+CL8_Q1_CORRECTION_PATHS = {
+    "current/V3_10_0_STABLE_TEST_PLAN_RU.md",
+    "current/tests/test_v3_10_issue72_gui_runtime.py",
+    "current/tests/test_v3_10_stable_qualification.py",
+    "current/tools/build_release.py",
+    "current/tools/v3_10_stable_qualification.py",
+    "current/trading_robot/tbank_sandbox.py",
+    "docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md",
+}
 
 
 @pytest.fixture(scope="module")
@@ -261,13 +273,9 @@ def test_v310_cl8_001_exact_contract_and_allowlists() -> None:
         ).hexdigest()
     )
     assert (
-        ACCEPTED_CONTRACT_RESCOPE_COMMIT
-        == "a2ee377f4180bcc0f7ced080233f3bc1c5a73792"
+        ACCEPTED_CONTRACT_RESCOPE_COMMIT == "a2ee377f4180bcc0f7ced080233f3bc1c5a73792"
     )
-    assert (
-        ACCEPTED_CONTRACT_RESCOPE_TREE
-        == "8d80c956fce3ab3ce8b3a6fb6ff57ffbd35e3366"
-    )
+    assert ACCEPTED_CONTRACT_RESCOPE_TREE == "8d80c956fce3ab3ce8b3a6fb6ff57ffbd35e3366"
     assert (
         ACCEPTED_CONTRACT_RESCOPE_SHA256
         == hashlib.sha256(
@@ -291,9 +299,7 @@ def test_v310_cl8_001_exact_contract_and_allowlists() -> None:
     assert len(RELEASE_REVIEW_RESCOPE_ADDITIONS) == 7
     assert len(RELEASE_REVIEW_CORRECTION_ALLOWLIST) == 12
     assert len(RELEASE_CUT_ALLOWLIST) == 41
-    assert not (
-        QUALIFICATION_IMPLEMENTATION_ALLOWLIST & RELEASE_CUT_BASE_ALLOWLIST
-    )
+    assert not (QUALIFICATION_IMPLEMENTATION_ALLOWLIST & RELEASE_CUT_BASE_ALLOWLIST)
     assert not CONTRACT.exists()
 
 
@@ -454,7 +460,9 @@ def test_v310_cl8_010_011_012_cash_custody_corruption_fails_closed(
         runtime,
         app_version="0.3.10",
     ).evaluate(account_id="synthetic-account")
-    custody = next(item for item in readiness.checks if item.code == "V3_10_CASH_CUSTODY")
+    custody = next(
+        item for item in readiness.checks if item.code == "V3_10_CASH_CUSTODY"
+    )
     assert custody.status == "FAIL" and custody.blocking
     bootstrap = bootstrap_runtime_files(
         runtime,
@@ -471,9 +479,7 @@ def test_v310_cl8_010_011_012_cash_custody_corruption_fails_closed(
 
     transition_root = tmp_path / "invalid-transition"
     transition_root.mkdir()
-    previous = RuntimeCashAuthorityRecord.bootstrap(
-        "2026-09-12T00:00:00.000000000Z"
-    )
+    previous = RuntimeCashAuthorityRecord.bootstrap("2026-09-12T00:00:00.000000000Z")
     current = replace(
         previous,
         record_revision=1,
@@ -542,8 +548,10 @@ def test_v310_cl8_016_018_cl7_crash_replay_and_no_resubmit_are_executed(
         tmp_path,
         module + "test_authority_commit_crash_outcome_at_each_replace_boundary",
         module + "test_bootstrap_and_full_state_chain",
-        module + "test_full_prepare_confirm_activate_arm_uses_fresh_cl2_to_cl6_evidence",
-        module + "test_exact_dispatch_marker_precedes_single_post_and_classifies_outcome",
+        module
+        + "test_full_prepare_confirm_activate_arm_uses_fresh_cl2_to_cl6_evidence",
+        module
+        + "test_exact_dispatch_marker_precedes_single_post_and_classifies_outcome",
         module + "test_pending_attempt_kat_and_no_rollback",
         module + "test_restart_closure_disarms_and_preserves_attempt_count",
         module + "test_post_once_timeout_never_retries",
@@ -687,12 +695,15 @@ def test_standalone_archive_preserves_required_empty_directories(
     extracted = tmp_path / "extracted"
     with zipfile.ZipFile(archive) as completed:
         completed.extractall(extracted)
-    assert verify_layout(
-        extracted / "portable",
-        expected_version="0.3.10",
-        expected_channel="stable",
-        minimum_risk_state_schema=4,
-    ) == []
+    assert (
+        verify_layout(
+            extracted / "portable",
+            expected_version="0.3.10",
+            expected_channel="stable",
+            minimum_risk_state_schema=4,
+        )
+        == []
+    )
     assert zip_identity(archive)["members"] == members
 
 
@@ -862,7 +873,6 @@ def test_v310_cl8_045_evidence_gap_is_exact_and_prerequisite_bound() -> None:
             "status": "EVIDENCE_GAP",
         }
     )
-
 
     summaries["SANDBOX_BURNIN"] = canonical_json_bytes(sandbox)
     envelope = build_qualification_envelope(
@@ -1192,49 +1202,108 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
         if pull_request["head"]["ref"] == CL8_RELEASE_CUT_BRANCH:
             release_cut_pr = pull_request
 
+    if branch == CL8_Q1_CORRECTION_BRANCH:
+        head = _git("rev-parse", "HEAD", text=True).stdout.strip()
+        assert (
+            _git(
+                "rev-parse", f"{CL8_Q1_CORRECTION_PARENT}^{{tree}}", text=True
+            ).stdout.strip()
+            == CL8_Q1_CORRECTION_PARENT_TREE
+        )
+        assert (
+            _git("merge-base", CL8_Q1_CORRECTION_PARENT, head, text=True).stdout.strip()
+            == CL8_Q1_CORRECTION_PARENT
+        )
+        if head != CL8_Q1_CORRECTION_PARENT:
+            assert (
+                _git("rev-parse", f"{head}^", text=True).stdout.strip()
+                == CL8_Q1_CORRECTION_PARENT
+            )
+        changed = set(
+            _git(
+                "diff",
+                "--name-only",
+                f"{CL8_Q1_CORRECTION_PARENT}..{head}",
+                text=True,
+            ).stdout.splitlines()
+        )
+        changed.update(_git("diff", "--name-only", text=True).stdout.splitlines())
+        changed.update(
+            _git(
+                "ls-files", "--others", "--exclude-standard", text=True
+            ).stdout.splitlines()
+        )
+        assert changed == CL8_Q1_CORRECTION_PATHS
+        cumulative_changed = set(
+            _git(
+                "diff",
+                "--name-only",
+                f"{CL8_RELEASE_CUT_PREDECESSOR}..{head}",
+                text=True,
+            ).stdout.splitlines()
+        )
+        cumulative_changed.update(
+            _git("diff", "--name-only", text=True).stdout.splitlines()
+        )
+        assert cumulative_changed == RELEASE_CUT_ALLOWLIST - {"current/desktop_gui.py"}
+        return
+
     if branch == CL8_RELEASE_CUT_BRANCH or release_cut_pr is not None:
         head = _git("rev-parse", "HEAD", text=True).stdout.strip()
         if release_cut_pr is not None:
-            assert release_cut_pr["base"]["ref"] == (
-                "program/v3-10-v4-stable-line"
-            )
+            assert release_cut_pr["base"]["ref"] == ("program/v3-10-v4-stable-line")
             assert release_cut_pr["base"]["sha"] == CL8_RELEASE_CUT_PREDECESSOR
             head = str(release_cut_pr["head"]["sha"])
             assert _git("cat-file", "-e", f"{head}^{{commit}}").returncode == 0
             checked_out_head = _git("rev-parse", "HEAD", text=True).stdout.strip()
             assert checked_out_head == os.environ.get("GITHUB_SHA")
-            commit_text = _git(
-                "cat-file", "-p", checked_out_head, text=True
-            ).stdout
+            commit_text = _git("cat-file", "-p", checked_out_head, text=True).stdout
             parents = [
                 line.removeprefix("parent ")
                 for line in commit_text.splitlines()
                 if line.startswith("parent ")
             ]
             assert parents == [CL8_RELEASE_CUT_PREDECESSOR, head]
-            assert _git(
-                "rev-parse", f"{checked_out_head}^{{tree}}", text=True
-            ).stdout.strip() == _git(
-                "rev-parse", f"{head}^{{tree}}", text=True
+            assert (
+                _git(
+                    "rev-parse", f"{checked_out_head}^{{tree}}", text=True
+                ).stdout.strip()
+                == _git("rev-parse", f"{head}^{{tree}}", text=True).stdout.strip()
+            )
+        assert (
+            _git(
+                "rev-parse", f"{CL8_RELEASE_CUT_PREDECESSOR}^{{tree}}", text=True
             ).stdout.strip()
-        assert _git(
-            "rev-parse", f"{CL8_RELEASE_CUT_PREDECESSOR}^{{tree}}", text=True
-        ).stdout.strip() == CL8_RELEASE_CUT_PREDECESSOR_TREE
-        assert _git(
-            "rev-parse", f"{CL8_RELEASE_REVIEW_PARENT}^{{tree}}", text=True
-        ).stdout.strip() == CL8_RELEASE_REVIEW_PARENT_TREE
-        assert _git(
-            "rev-parse", f"{CL8_RELEASE_REVIEW_PARENT}^", text=True
-        ).stdout.strip() == CL8_RELEASE_CUT_PREDECESSOR
-        assert _git(
-            "rev-parse", f"{CL8_RELEASE_REVIEW_ACCEPTED_HEAD}^{{tree}}", text=True
-        ).stdout.strip() == CL8_RELEASE_REVIEW_ACCEPTED_TREE
-        assert _git(
-            "rev-parse", f"{CL8_RELEASE_REVIEW_ACCEPTED_HEAD}^", text=True
-        ).stdout.strip() == CL8_RELEASE_REVIEW_PARENT
-        assert _git(
-            "merge-base", CL8_RELEASE_CUT_PREDECESSOR, head, text=True
-        ).stdout.strip() == CL8_RELEASE_CUT_PREDECESSOR
+            == CL8_RELEASE_CUT_PREDECESSOR_TREE
+        )
+        assert (
+            _git(
+                "rev-parse", f"{CL8_RELEASE_REVIEW_PARENT}^{{tree}}", text=True
+            ).stdout.strip()
+            == CL8_RELEASE_REVIEW_PARENT_TREE
+        )
+        assert (
+            _git("rev-parse", f"{CL8_RELEASE_REVIEW_PARENT}^", text=True).stdout.strip()
+            == CL8_RELEASE_CUT_PREDECESSOR
+        )
+        assert (
+            _git(
+                "rev-parse", f"{CL8_RELEASE_REVIEW_ACCEPTED_HEAD}^{{tree}}", text=True
+            ).stdout.strip()
+            == CL8_RELEASE_REVIEW_ACCEPTED_TREE
+        )
+        assert (
+            _git(
+                "rev-parse", f"{CL8_RELEASE_REVIEW_ACCEPTED_HEAD}^", text=True
+            ).stdout.strip()
+            == CL8_RELEASE_REVIEW_PARENT
+        )
+        assert (
+            _git(
+                "merge-base", CL8_RELEASE_CUT_PREDECESSOR, head, text=True
+            ).stdout.strip()
+            == CL8_RELEASE_CUT_PREDECESSOR
+        )
         if head not in {
             CL8_RELEASE_REVIEW_PARENT,
             CL8_RELEASE_REVIEW_ACCEPTED_HEAD,
@@ -1299,33 +1368,49 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
         cumulative_changed.update(
             _git("diff", "--name-only", text=True).stdout.splitlines()
         )
-        assert cumulative_changed == RELEASE_CUT_ALLOWLIST - {
-            "current/desktop_gui.py"
-        }
+        assert cumulative_changed == RELEASE_CUT_ALLOWLIST - {"current/desktop_gui.py"}
         return
 
     head = _cl8_adoption_candidate_head()
-    assert _git(
-        "rev-parse", f"{CL8_ADOPTION_PREDECESSOR_COMMIT}^{{tree}}", text=True
-    ).stdout.strip() == CL8_ADOPTION_PREDECESSOR_TREE
-    assert _git(
-        "rev-parse", f"{CL8_ADOPTION_MECHANICAL_COMMIT}^{{tree}}", text=True
-    ).stdout.strip() == CL8_ADOPTION_MECHANICAL_TREE
-    assert _git(
-        "rev-parse", f"{CL8_ADOPTION_SOURCE_COMMIT}^{{tree}}", text=True
-    ).stdout.strip() == CL8_ADOPTION_SOURCE_TREE
-    assert _git(
-        "rev-parse", f"{CL8_ADOPTION_MECHANICAL_COMMIT}^", text=True
-    ).stdout.strip() == CL8_ADOPTION_PREDECESSOR_COMMIT
+    assert (
+        _git(
+            "rev-parse", f"{CL8_ADOPTION_PREDECESSOR_COMMIT}^{{tree}}", text=True
+        ).stdout.strip()
+        == CL8_ADOPTION_PREDECESSOR_TREE
+    )
+    assert (
+        _git(
+            "rev-parse", f"{CL8_ADOPTION_MECHANICAL_COMMIT}^{{tree}}", text=True
+        ).stdout.strip()
+        == CL8_ADOPTION_MECHANICAL_TREE
+    )
+    assert (
+        _git(
+            "rev-parse", f"{CL8_ADOPTION_SOURCE_COMMIT}^{{tree}}", text=True
+        ).stdout.strip()
+        == CL8_ADOPTION_SOURCE_TREE
+    )
+    assert (
+        _git(
+            "rev-parse", f"{CL8_ADOPTION_MECHANICAL_COMMIT}^", text=True
+        ).stdout.strip()
+        == CL8_ADOPTION_PREDECESSOR_COMMIT
+    )
     assert _git("rev-parse", f"{head}^", text=True).stdout.strip() == (
         CL8_ADOPTION_MECHANICAL_COMMIT
     )
-    assert _git(
-        "merge-base", CL8_ADOPTION_PREDECESSOR_COMMIT, head, text=True
-    ).stdout.strip() == CL8_ADOPTION_PREDECESSOR_COMMIT
-    assert _git(
-        "merge-base", CL8_ADOPTION_MECHANICAL_COMMIT, head, text=True
-    ).stdout.strip() == CL8_ADOPTION_MECHANICAL_COMMIT
+    assert (
+        _git(
+            "merge-base", CL8_ADOPTION_PREDECESSOR_COMMIT, head, text=True
+        ).stdout.strip()
+        == CL8_ADOPTION_PREDECESSOR_COMMIT
+    )
+    assert (
+        _git(
+            "merge-base", CL8_ADOPTION_MECHANICAL_COMMIT, head, text=True
+        ).stdout.strip()
+        == CL8_ADOPTION_MECHANICAL_COMMIT
+    )
 
     correction_changed = set(
         _git(

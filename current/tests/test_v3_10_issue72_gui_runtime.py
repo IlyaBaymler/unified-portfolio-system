@@ -42,7 +42,9 @@ from trading_robot.runtime_cash_authority import (
 ROOT = Path(__file__).resolve().parents[2]
 CURRENT = ROOT / "current"
 FIXTURE = CURRENT / "tests" / "fixtures" / "v3_10_issue72_gui_runtime_vectors.json"
-CONTRACT = ROOT / "docs" / "project" / "V3_10_ISSUE72_GUI_RUNTIME_RESCOPE_CONTRACT_RU.md"
+CONTRACT = (
+    ROOT / "docs" / "project" / "V3_10_ISSUE72_GUI_RUNTIME_RESCOPE_CONTRACT_RU.md"
+)
 ACCOUNT = "sandbox-account-synthetic"
 SCOPE = "15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3"
 T0 = datetime(2026, 9, 12, 10, 0, tzinfo=timezone.utc)
@@ -63,6 +65,18 @@ CL8_RELEASE_REVIEW_ACCEPTED_TREE = "5729ed32a94a813905e14a868fe3edd73fe4a814"
 CL8_RELEASE_PR180_RESCOPE_PATHS = {
     "current/tests/test_v3_10_issue72_gui_runtime.py",
     "current/tests/test_v3_10_stable_qualification.py",
+}
+CL8_Q1_CORRECTION_BRANCH = "agent/v3-10-clean-cl8-q1-correction-r1"
+CL8_Q1_CORRECTION_PARENT = "ebd68c7d71929ca194dbcdb9685a140a9eb319d5"
+CL8_Q1_CORRECTION_PARENT_TREE = "170b959512e0a911ee7189d8b4ec1fa398892192"
+CL8_Q1_CORRECTION_PATHS = {
+    "current/V3_10_0_STABLE_TEST_PLAN_RU.md",
+    "current/tests/test_v3_10_issue72_gui_runtime.py",
+    "current/tests/test_v3_10_stable_qualification.py",
+    "current/tools/build_release.py",
+    "current/tools/v3_10_stable_qualification.py",
+    "current/trading_robot/tbank_sandbox.py",
+    "docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md",
 }
 IMPLEMENTATION_PATHS = {
     "ROADMAP.md",
@@ -150,11 +164,35 @@ def test_exact_contract_branch_and_fourteen_path_custody():
         assert changed == IMPLEMENTATION_PATHS
         return
 
+    if branch == CL8_Q1_CORRECTION_BRANCH:
+        assert _git("rev-parse", f"{CL8_Q1_CORRECTION_PARENT}^{{tree}}") == (
+            CL8_Q1_CORRECTION_PARENT_TREE
+        )
+        assert _git("merge-base", CL8_Q1_CORRECTION_PARENT, head) == (
+            CL8_Q1_CORRECTION_PARENT
+        )
+        if head != CL8_Q1_CORRECTION_PARENT:
+            assert _git("rev-parse", f"{head}^") == CL8_Q1_CORRECTION_PARENT
+        changed = set(
+            _git(
+                "diff", "--name-only", f"{CL8_Q1_CORRECTION_PARENT}..{head}"
+            ).splitlines()
+        )
+        changed.update(_git("diff", "--name-only").splitlines())
+        changed.update(_git("ls-files", "--others", "--exclude-standard").splitlines())
+        assert changed == CL8_Q1_CORRECTION_PATHS
+        for path in IMPLEMENTATION_PATHS - {
+            "current/README.md",
+            "current/tests/test_v3_10_issue72_gui_runtime.py",
+        }:
+            assert _git("rev-parse", f"{ACCEPTED_IMPLEMENTATION}:{path}") == _git(
+                "rev-parse", f"{head}:{path}"
+            )
+        return
+
     if branch == CL8_RELEASE_CUT_BRANCH or release_cut_pr is not None:
         if release_cut_pr is not None:
-            assert release_cut_pr["base"]["ref"] == (
-                "program/v3-10-v4-stable-line"
-            )
+            assert release_cut_pr["base"]["ref"] == ("program/v3-10-v4-stable-line")
             assert release_cut_pr["base"]["sha"] == CL8_RELEASE_CUT_PREDECESSOR
             head = release_cut_pr["head"]["sha"]
             assert _git("cat-file", "-e", f"{head}^{{commit}}") == ""
@@ -178,9 +216,10 @@ def test_exact_contract_branch_and_fourteen_path_custody():
         assert _git("rev-parse", f"{CL8_RELEASE_REVIEW_PARENT}^") == (
             CL8_RELEASE_CUT_PREDECESSOR
         )
-        assert _git(
-            "rev-parse", f"{CL8_RELEASE_REVIEW_ACCEPTED_HEAD}^{{tree}}"
-        ) == CL8_RELEASE_REVIEW_ACCEPTED_TREE
+        assert (
+            _git("rev-parse", f"{CL8_RELEASE_REVIEW_ACCEPTED_HEAD}^{{tree}}")
+            == CL8_RELEASE_REVIEW_ACCEPTED_TREE
+        )
         assert _git("rev-parse", f"{CL8_RELEASE_REVIEW_ACCEPTED_HEAD}^") == (
             CL8_RELEASE_REVIEW_PARENT
         )
@@ -206,7 +245,9 @@ def test_exact_contract_branch_and_fourteen_path_custody():
             )
             assert rescope_changed == CL8_RELEASE_PR180_RESCOPE_PATHS
         correction_changed = set(
-            _git("diff", "--name-only", f"{CL8_RELEASE_REVIEW_PARENT}..{head}").splitlines()
+            _git(
+                "diff", "--name-only", f"{CL8_RELEASE_REVIEW_PARENT}..{head}"
+            ).splitlines()
         )
         correction_changed.update(_git("diff", "--name-only").splitlines())
         correction_changed.update(
@@ -221,9 +262,7 @@ def test_exact_contract_branch_and_fourteen_path_custody():
             ).splitlines()
         )
         cumulative_changed.update(_git("diff", "--name-only").splitlines())
-        assert cumulative_changed == RELEASE_CUT_ALLOWLIST - {
-            "current/desktop_gui.py"
-        }
+        assert cumulative_changed == RELEASE_CUT_ALLOWLIST - {"current/desktop_gui.py"}
         for path in IMPLEMENTATION_PATHS - {
             "current/README.md",
             "current/tests/test_v3_10_issue72_gui_runtime.py",
@@ -337,7 +376,9 @@ def _authority(state: RuntimeCashAuthorityState) -> RuntimeCashAuthorityRecord:
     object.__setattr__(
         record,
         "pending_dispatch_proof_sha256",
-        "f" * 64 if state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING else None,
+        "f" * 64
+        if state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+        else None,
     )
     object.__setattr__(record, "record_revision", 9)
     return record
@@ -578,7 +619,9 @@ def test_group_start_is_all_or_nothing_when_one_runtime_is_blocked(tmp_path: Pat
 
     persisted = store.load(expected_account_id=ACCOUNT)
     assert persisted == blocked
-    assert scheduler.runtimes == tuple(sorted(blocked, key=lambda item: item.runtime_key))
+    assert scheduler.runtimes == tuple(
+        sorted(blocked, key=lambda item: item.runtime_key)
+    )
     _emit_behavior_counters(
         active_runtimes=sum(item.status == "ACTIVE" for item in persisted)
     )
@@ -617,7 +660,10 @@ def test_controller_rejects_distinct_portfolio_risk_instances(tmp_path: Path):
         (RuntimeCashAuthorityState.CUTOVER_PREPARED, "CL7_CUTOVER_INCOMPLETE"),
         (RuntimeCashAuthorityState.CUTOVER_CONFIRMED, "CL7_CUTOVER_INCOMPLETE"),
         (RuntimeCashAuthorityState.EXACT_CASH_DISARMED, "CL7_EXACT_AUTHORITY_DISARMED"),
-        (RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING, "CL7_RECOVERY_REQUIRED"),
+        (
+            RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING,
+            "CL7_RECOVERY_REQUIRED",
+        ),
     ],
 )
 def test_controller_enforces_closed_cl7_start_matrix(tmp_path: Path, state, reason):
@@ -627,8 +673,7 @@ def test_controller_enforces_closed_cl7_start_matrix(tmp_path: Path, state, reas
         controller.start_configured_set()
     _emit_behavior_counters(
         active_runtimes=sum(
-            item.status == "ACTIVE"
-            for item in store.load(expected_account_id=ACCOUNT)
+            item.status == "ACTIVE" for item in store.load(expected_account_id=ACCOUNT)
         )
     )
 
@@ -642,9 +687,13 @@ def test_controller_starts_and_stops_exact_three_runtime_set(tmp_path: Path):
     assert started.status == "ACTIVE"
     assert {item[1] for item in started.runtime_statuses} == {"ACTIVE"}
     assert stopped.status == "STOPPED"
-    assert {item.status for item in store.load(expected_account_id=ACCOUNT)} == {"STOPPED"}
+    assert {item.status for item in store.load(expected_account_id=ACCOUNT)} == {
+        "STOPPED"
+    }
     _emit_behavior_counters(
-        active_runtimes=sum(status == "ACTIVE" for _, status in started.runtime_statuses)
+        active_runtimes=sum(
+            status == "ACTIVE" for _, status in started.runtime_statuses
+        )
     )
 
 
@@ -678,7 +727,9 @@ def test_restart_with_pending_state_is_recovery_first(tmp_path: Path):
     with pytest.raises(GuiRuntimeBlockedError, match="RECOVERY_REQUIRED"):
         controller.start_configured_set()
 
-    assert {item.status for item in store.load(expected_account_id=ACCOUNT)} == {"STOPPED"}
+    assert {item.status for item in store.load(expected_account_id=ACCOUNT)} == {
+        "STOPPED"
+    }
     _emit_behavior_counters()
 
 
@@ -723,7 +774,9 @@ def test_controller_prevalidation_blockers_create_no_proposal_or_dispatch(
 ):
     controller, store, profiles, _, coordinator, adapter = _controller(tmp_path)
     if blocker == "portfolio":
-        controller.portfolio_repository.positions[profiles[0].instrument_id].target = None
+        controller.portfolio_repository.positions[
+            profiles[0].instrument_id
+        ].target = None
     elif blocker == "central":
         coordinator.manager.current = _CentralState(
             intents=(SimpleNamespace(status="SUBMITTED"),)
@@ -760,7 +813,9 @@ def test_controller_rejects_cross_account_scope(tmp_path: Path):
     controller, *_ = _controller(tmp_path)
     controller.central_order_coordinator.manager.account_id = "another-account"
 
-    with pytest.raises(GuiRuntimeBlockedError, match="CENTRAL_OWNER_MISMATCH|ACCOUNT_SCOPE_MISMATCH"):
+    with pytest.raises(
+        GuiRuntimeBlockedError, match="CENTRAL_OWNER_MISMATCH|ACCOUNT_SCOPE_MISMATCH"
+    ):
         controller.start_configured_set()
     _emit_behavior_counters()
 
@@ -812,11 +867,14 @@ def test_account_disposition_validator_binds_closed_enum_and_trusted_hash(
 
     value["disposition"] = "PREFILLED_PASS"
     path.write_bytes(q0.canonical_bytes(value))
-    assert q0._validate_external(
-        path,
-        value["record_sha256"],
-        validated_at="2026-09-12T10:02:00+00:00",
-    )[0] is False
+    assert (
+        q0._validate_external(
+            path,
+            value["record_sha256"],
+            validated_at="2026-09-12T10:02:00+00:00",
+        )[0]
+        is False
+    )
 
 
 @pytest.mark.parametrize(
@@ -859,24 +917,28 @@ def test_account_disposition_rejects_unsafe_statuses(tmp_path: Path, field, inva
     path = tmp_path / "disposition.json"
     path.write_bytes(q0.canonical_bytes(value))
 
-    assert q0._validate_external(
-        path,
-        value["record_sha256"],
-        validated_at="2026-09-12T10:02:00+00:00",
-    )[0] is False
-    assert q0._validate_external(
-        path,
-        value["record_sha256"],
-        validated_at="2026-09-12T10:06:00+00:00",
-    )[0] is False
+    assert (
+        q0._validate_external(
+            path,
+            value["record_sha256"],
+            validated_at="2026-09-12T10:02:00+00:00",
+        )[0]
+        is False
+    )
+    assert (
+        q0._validate_external(
+            path,
+            value["record_sha256"],
+            validated_at="2026-09-12T10:06:00+00:00",
+        )[0]
+        is False
+    )
 
 
 def test_q0_producer_table_and_verify_mode_are_closed_and_rerun_bound():
     assert tuple(q0.PRODUCERS) == q0.CASE_IDS
     assert len(q0.PRODUCERS) == 32
-    assert all(
-        spec.kind in q0.ALLOWED_PRODUCER_KINDS for spec in q0.PRODUCERS.values()
-    )
+    assert all(spec.kind in q0.ALLOWED_PRODUCER_KINDS for spec in q0.PRODUCERS.values())
     assert all(
         "*" not in spec.producer_id and "?" not in spec.producer_id
         for spec in q0.PRODUCERS.values()
@@ -950,7 +1012,13 @@ def test_proposal_routes_through_central_then_execution_adapter(tmp_path: Path):
     result = controller.service_tick(
         now=T0,
         latest_closed_candles={runtime.runtime_key: T0},
-        hooks=_Hooks(next(item for item in profiles if item.instrument_id == runtime.config.instrument_id)),
+        hooks=_Hooks(
+            next(
+                item
+                for item in profiles
+                if item.instrument_id == runtime.config.instrument_id
+            )
+        ),
     )
 
     assert not result.failures
@@ -963,7 +1031,9 @@ def test_proposal_routes_through_central_then_execution_adapter(tmp_path: Path):
     )
 
 
-def test_nonnull_proposal_without_central_request_fails_before_watermark(tmp_path: Path):
+def test_nonnull_proposal_without_central_request_fails_before_watermark(
+    tmp_path: Path,
+):
     controller, store, profiles, _, coordinator, adapter = _controller(tmp_path)
     controller.start_configured_set()
     runtime = controller.scheduler.runtimes[0]
@@ -976,7 +1046,11 @@ def test_nonnull_proposal_without_central_request_fails_before_watermark(tmp_pat
         now=T0,
         latest_closed_candles={runtime.runtime_key: T0},
         hooks=MissingRequestHooks(
-            next(item for item in profiles if item.instrument_id == runtime.config.instrument_id)
+            next(
+                item
+                for item in profiles
+                if item.instrument_id == runtime.config.instrument_id
+            )
         ),
     )
 
@@ -984,14 +1058,25 @@ def test_nonnull_proposal_without_central_request_fails_before_watermark(tmp_pat
     assert coordinator.calls == []
     assert adapter.dispatches == 0
     persisted = store.load(expected_account_id=ACCOUNT)
-    assert next(item for item in persisted if item.runtime_key == runtime.runtime_key).last_processed_candle is None
+    assert (
+        next(
+            item for item in persisted if item.runtime_key == runtime.runtime_key
+        ).last_processed_candle
+        is None
+    )
 
 
 def test_market_idle_and_disconnect_do_not_create_proposals(tmp_path: Path):
     controller, _, profiles, _, coordinator, adapter = _controller(tmp_path)
     controller.start_configured_set()
     runtime = controller.scheduler.runtimes[0]
-    hooks = _Hooks(next(item for item in profiles if item.instrument_id == runtime.config.instrument_id))
+    hooks = _Hooks(
+        next(
+            item
+            for item in profiles
+            if item.instrument_id == runtime.config.instrument_id
+        )
+    )
     controller.set_market_state("MARKET_IDLE")
     with pytest.raises(GuiRuntimeBlockedError, match="MARKET_IDLE"):
         controller.service_tick(now=T0, latest_closed_candles={}, hooks=hooks)
@@ -1012,7 +1097,13 @@ def test_open_market_idle_open_preserves_set_and_watermark(tmp_path: Path):
     controller, store, profiles, _, coordinator, adapter = _controller(tmp_path)
     started = controller.start_configured_set()
     runtime = controller.scheduler.runtimes[0]
-    hooks = _Hooks(next(item for item in profiles if item.instrument_id == runtime.config.instrument_id))
+    hooks = _Hooks(
+        next(
+            item
+            for item in profiles
+            if item.instrument_id == runtime.config.instrument_id
+        )
+    )
     first = controller.service_tick(
         now=T0,
         latest_closed_candles={runtime.runtime_key: T0},
@@ -1034,7 +1125,12 @@ def test_open_market_idle_open_preserves_set_and_watermark(tmp_path: Path):
     assert adapter.dispatches == 1
     assert stopped.status == "STOPPED"
     persisted = store.load(expected_account_id=ACCOUNT)
-    assert next(item for item in persisted if item.runtime_key == runtime.runtime_key).last_processed_candle == T0
+    assert (
+        next(
+            item for item in persisted if item.runtime_key == runtime.runtime_key
+        ).last_processed_candle
+        == T0
+    )
     _emit_behavior_counters(
         active_runtimes=sum(
             status == "ACTIVE" for _, status in started.runtime_statuses
@@ -1045,7 +1141,9 @@ def test_open_market_idle_open_preserves_set_and_watermark(tmp_path: Path):
     )
 
 
-def test_dashboard_binds_positions_central_risk_and_cl7_without_collapsing_rows(tmp_path: Path):
+def test_dashboard_binds_positions_central_risk_and_cl7_without_collapsing_rows(
+    tmp_path: Path,
+):
     controller, _, profiles, runtimes, *_ = _controller(tmp_path)
     portfolio = controller.portfolio_repository
     first = profiles[0].instrument_id
@@ -1208,9 +1306,7 @@ def test_gui_process_always_receives_one_controller_and_raw_ids_are_sanitized():
         {"accounts": [{"id": "RAW-ACCOUNT-ID", "status": "OPEN"}]}
     )
     assert "RAW-ACCOUNT-ID" not in json.dumps(rendered)
-    assert rendered["accounts"][0]["id_sha256"] == q0.digest(
-        b"RAW-ACCOUNT-ID"
-    )
+    assert rendered["accounts"][0]["id_sha256"] == q0.digest(b"RAW-ACCOUNT-ID")
 
 
 def test_active_gui_has_no_legacy_bot_provider_mutation_or_risk_write_callback():
@@ -1274,4 +1370,7 @@ def test_contract_fixture_and_governance_documents_are_synthetic_and_provider_fr
         "docs/plans/V3_10_ISSUE72_SANDBOX_ACCOUNT_CLEANUP_RUNBOOK_RU.md",
     ):
         text = (ROOT / relative).read_text(encoding="utf-8")
-        assert "START EXPERIMENT" in text or "READ_ONLY_GUI_PLUS_EXISTING_ACCEPTED_OPERATOR_TOOLS" in text
+        assert (
+            "START EXPERIMENT" in text
+            or "READ_ONLY_GUI_PLUS_EXISTING_ACCEPTED_OPERATOR_TOOLS" in text
+        )

@@ -152,9 +152,7 @@ def build_zip(
         info.compress_type = zipfile.ZIP_DEFLATED
         info.external_attr = ((0o40755 & 0xFFFF) << 16) | 0x10
         info.create_system = 3
-        archive.writestr(
-            info, b"", compress_type=zipfile.ZIP_DEFLATED, compresslevel=9
-        )
+        archive.writestr(info, b"", compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
 
     prefix = archive_root.strip("/")
     directory_members: list[str] = []
