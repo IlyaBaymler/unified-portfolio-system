@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -36,6 +37,17 @@ FORBIDDEN_RUNTIME_NAMES = {
     "trading_events.db",
     "robot_gui.log",
     "robot_debug.log",
+    "runtime_cash_authority.json",
+    "runtime_cash_authority.json.sha256",
+    "runtime_cash_authority.json.lastgood",
+    "cash_ledger_v3_10.sqlite3",
+    "store.sqlite3",
+    "store.sqlite3-wal",
+    "store.sqlite3-shm",
+}
+FORBIDDEN_RUNTIME_DIRECTORIES = {
+    "qualification_output",
+    "verification_output",
 }
 
 
@@ -177,12 +189,47 @@ def verify_layout(
                     + path.relative_to(base).as_posix()
                 )
     for path in base.rglob("*"):
-        if path.is_file() and _private_runtime_name(path.name):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(base)
+        if _private_runtime_name(path.name) or any(
+            part.lower() in FORBIDDEN_RUNTIME_DIRECTORIES
+            for part in relative.parts[:-1]
+        ):
             errors.append(
-                "Private runtime file leaked into package: "
-                + path.relative_to(base).as_posix()
+                "Private runtime file leaked into package: " + relative.as_posix()
             )
     return errors
+
+
+def layout_identity(root: str | Path) -> dict[str, object]:
+    """Return a path-independent digest of a verified standalone layout."""
+
+    base = Path(root).resolve()
+    members: list[dict[str, object]] = []
+    for path in sorted(
+        (item for item in base.rglob("*") if item.is_file()),
+        key=lambda item: item.relative_to(base).as_posix(),
+    ):
+        raw = path.read_bytes()
+        members.append(
+            {
+                "name": path.relative_to(base).as_posix(),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "size_bytes": str(len(raw)),
+            }
+        )
+    canonical = json.dumps(
+        members,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("ascii")
+    return {
+        "member_count": len(members),
+        "members_sha256": hashlib.sha256(canonical).hexdigest(),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

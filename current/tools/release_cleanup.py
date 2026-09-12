@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import shutil
 import sys
+from pathlib import Path
 
 CURRENT_FILES = {
     "CHANGELOG_V3_9_0_STABLE_RU.md",
@@ -17,7 +17,6 @@ CURRENT_FILES = {
     "install_and_verify_v3_9_0.bat",
     "restore_stable_default_risk_profile.bat",
 }
-
 
 
 LEGACY_RELATIVE_PATHS = {
@@ -113,6 +112,24 @@ RUNTIME_NAMES = {
     "sandbox_diagnostic_state.json.lock",
     "runtime_backup.lock",
     "build_manifest.runtime.json",
+    "runtime_cash_authority.json",
+    "runtime_cash_authority.json.sha256",
+    "runtime_cash_authority.json.lastgood",
+    "runtime_cash_authority.json.lock",
+    "cash_ledger_v3_10.sqlite3",
+    "store.sqlite3",
+    "store.sqlite3-wal",
+    "store.sqlite3-shm",
+}
+
+PRIVATE_RUNTIME_DIRECTORIES = {
+    "backups",
+    "logs",
+    "reports",
+    "runtime",
+    "support",
+    "qualification_output",
+    "verification_output",
 }
 
 
@@ -170,6 +187,11 @@ def clean(root: Path) -> list[Path]:
 
 def check_runtime_absent(root: Path) -> list[Path]:
     found = {root / name for name in RUNTIME_NAMES if (root / name).exists()}
+    found.update(
+        root / name
+        for name in PRIVATE_RUNTIME_DIRECTORIES
+        if (root / name).is_dir() and any((root / name).iterdir())
+    )
     found.update(path for path in root.glob("*.lock") if path.is_file())
     found.update(
         path

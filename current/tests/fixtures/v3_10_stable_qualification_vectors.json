@@ -1,0 +1,166 @@
+{
+  "version": 1,
+  "qualification_kat": {
+    "sha256": "a16672bd9f825e73b75a51bcd4a7af93f0bafb239b63bb86d5a4d1bf96ded57d",
+    "value": {
+      "candidate_commit": "ef2eba758bbffb587dbe237a96372b2273fdee03",
+      "candidate_tree": "f55788ff362a24d368b0d01dc0d68e85d8183199",
+      "contract_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "domain": "v3.10-cl8-qualification-evidence",
+      "generated_at": "2026-09-12T00:00:00.000000000Z",
+      "oracle_v39_commit": "412e126166831a8bac0435d61932ab328fc61f12",
+      "oracle_v39_tree": "18c2822d2aa7f174a99d7d7dc5f5a5851dc59eba",
+      "overall_status": "PASS",
+      "phase_results": {
+        "ARTIFACTS": {
+          "canonical_summary_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "run_id": "kat-q4-artifacts",
+          "status": "PASS"
+        },
+        "CONTROLLED_CLOCK": {
+          "canonical_summary_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "run_id": "kat-q6-controlled-clock",
+          "status": "PASS"
+        },
+        "CORRUPTION_RECOVERY": {
+          "canonical_summary_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "run_id": "kat-q2-corruption-recovery",
+          "status": "PASS"
+        },
+        "GUI_RUNTIME_PREREQUISITE": {
+          "canonical_summary_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+          "run_id": "kat-q0-gui-runtime-prerequisite",
+          "status": "PASS"
+        },
+        "INSTALL_UPGRADE_ROLLBACK": {
+          "canonical_summary_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+          "run_id": "kat-q3-install-upgrade-rollback",
+          "status": "PASS"
+        },
+        "PRIVACY": {
+          "canonical_summary_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+          "run_id": "kat-q5-privacy",
+          "status": "PASS"
+        },
+        "REGRESSION": {
+          "canonical_summary_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+          "run_id": "kat-q1-regression",
+          "status": "PASS"
+        },
+        "SANDBOX_BURNIN": {
+          "canonical_summary_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "run_id": "kat-q7-sandbox-burnin",
+          "status": "PASS"
+        },
+        "STANDALONE": {
+          "canonical_summary_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+          "run_id": "kat-q4-standalone",
+          "status": "PASS"
+        }
+      },
+      "release_version": "v3.10.0",
+      "version": 1
+    }
+  },
+  "release_manifest_kat": {
+    "sha256": "8d3dda9aa4c747d69a83632758500ac4483ff1787f5ad959b4be520cbcace0fe",
+    "value": {
+      "artifacts": [
+        {
+          "name": "moex_trading_robot_source_v3_10_0.zip",
+          "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "size_bytes": "123456"
+        },
+        {
+          "name": "moex_trading_robot_standalone_v3_10_0.zip",
+          "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "size_bytes": "654321"
+        }
+      ],
+      "candidate_commit": "ef2eba758bbffb587dbe237a96372b2273fdee03",
+      "candidate_tree": "f55788ff362a24d368b0d01dc0d68e85d8183199",
+      "domain": "v3.10-cl8-release-artifact-manifest",
+      "qualification_evidence_sha256": "a16672bd9f825e73b75a51bcd4a7af93f0bafb239b63bb86d5a4d1bf96ded57d",
+      "release_version": "v3.10.0",
+      "runtime_private_files_present": false,
+      "source_tree_clean": true,
+      "version": 1
+    }
+  },
+  "q0_evidence": {
+    "accepted_commit": "1111111111111111111111111111111111111111",
+    "accepted_tree": "2222222222222222222222222222222222222222",
+    "explicit_acceptance_record_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "issue": 72,
+    "review_evidence_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "review_verdict": "PASS"
+  },
+  "gui_runtime_pass": {
+    "account_level_start_stop": true,
+    "central_reservations_visible": true,
+    "configured_execution_set_complete": true,
+    "duplicate_refresh_paths": 0,
+    "gui_provider_post_paths": 0,
+    "instrument_rows_canonical": true,
+    "multiple_positions_visible": true,
+    "open_market_idle_open_account_wide": true,
+    "pending_uncertain_visible": true,
+    "popup_storms": 0,
+    "read_model_owners_bound": true,
+    "restart_disconnect_single_owner": true,
+    "risk_state_visible": true,
+    "widget_owned_calculations": 0,
+    "widgets_do_not_access_authoritative_files": true
+  },
+  "multi_session_pass": {
+    "invariants": {
+      "account_scope_crossings": 0,
+      "authority_revision_monotonic": true,
+      "central_revision_monotonic": true,
+      "duplicate_cash_effects": 0,
+      "duplicate_central_effects": 0,
+      "ledger_revision_monotonic": true,
+      "pending_uncertain_fail_closed": true,
+      "provider_resubmits": 0,
+      "source_identity_exact": true,
+      "watermark_monotonic": true,
+      "wrong_account_adoptions": 0
+    },
+    "scenarios": [
+      "CLEAN_RESTART_REPLAY",
+      "PENDING_UNCERTAIN_CRASH_RECOVERY",
+      "PARALLEL_SAME_ACCOUNT",
+      "SEQUENTIAL_SAME_ACCOUNT",
+      "OPERATION_REPLAY_ACROSS_SESSIONS",
+      "SAME_CONTENT_DIFFERENT_SOURCE",
+      "WRONG_ACCOUNT_SCOPE",
+      "STALE_THEN_FRESH_WATERMARK"
+    ]
+  },
+  "retained_account_disposition": {
+    "active_account_scope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "active_unchanged": true,
+    "candidate_commit": "ef2eba758bbffb587dbe237a96372b2273fdee03",
+    "candidate_tree": "f55788ff362a24d368b0d01dc0d68e85d8183199",
+    "canonical_evidence_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "reason": "REDUNDANT_ACCOUNT_REFERENCED_BY_AUDIT_HISTORY",
+    "redundant_account_scope_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "redundant_unreferenced": true,
+    "run_id": "account-disposition-1",
+    "status": "REDUNDANT_ACCOUNT_RETAINED_WITH_REASON"
+  },
+  "offline_case_ids": [
+    "V310-CL8-001", "V310-CL8-002", "V310-CL8-003", "V310-CL8-004",
+    "V310-CL8-005", "V310-CL8-006", "V310-CL8-007", "V310-CL8-008",
+    "V310-CL8-009", "V310-CL8-010", "V310-CL8-011", "V310-CL8-012",
+    "V310-CL8-013", "V310-CL8-014", "V310-CL8-015", "V310-CL8-016",
+    "V310-CL8-017", "V310-CL8-018", "V310-CL8-019", "V310-CL8-020",
+    "V310-CL8-021", "V310-CL8-022", "V310-CL8-023", "V310-CL8-024",
+    "V310-CL8-025", "V310-CL8-026", "V310-CL8-027", "V310-CL8-028",
+    "V310-CL8-029", "V310-CL8-030", "V310-CL8-031", "V310-CL8-032",
+    "V310-CL8-033", "V310-CL8-034", "V310-CL8-035", "V310-CL8-036",
+    "V310-CL8-037", "V310-CL8-038", "V310-CL8-039", "V310-CL8-040",
+    "V310-CL8-041", "V310-CL8-042", "V310-CL8-043", "V310-CL8-044",
+    "V310-CL8-045", "V310-CL8-046"
+  ]
+}

@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 import json
 import os
-from pathlib import Path
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from trading_robot import __version__
 from trading_robot.paths import resolve_app_paths
 from trading_robot.readiness import ProductionReadinessEvaluator
-from trading_robot.runtime_backup import RuntimeBackupManager
-from trading_robot.support_bundle import SupportBundleBuilder
+from trading_robot.runtime_backup import RuntimeBackupError, RuntimeBackupManager
+from trading_robot.support_bundle import SupportBundleBuilder, SupportBundleError
 
 
 def runtime_dir() -> Path:
@@ -20,7 +20,7 @@ def runtime_dir() -> Path:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description="v3.9.0 readiness and recovery tool")
+    root = argparse.ArgumentParser(description="Sandbox readiness and recovery tool")
     root.add_argument("--runtime-dir", default=None)
     commands = root.add_subparsers(dest="command", required=True)
 
@@ -40,6 +40,10 @@ def parser() -> argparse.ArgumentParser:
     restore = commands.add_parser("restore")
     restore.add_argument("path")
     restore.add_argument("--confirmation", required=True)
+
+    isolated = commands.add_parser("restore-isolated")
+    isolated.add_argument("path")
+    isolated.add_argument("destination")
 
     support = commands.add_parser("support-bundle")
     support.add_argument("--output", default=None)
@@ -63,7 +67,8 @@ def main(argv: list[str] | None = None) -> int:
                 app_version=__version__,
                 backups_dir=root / "backups",
                 build_manifest_path=(
-                    local_manifest if local_manifest.exists()
+                    local_manifest
+                    if local_manifest.exists()
                     else app_paths.app_dir / "build_manifest.json"
                 ),
             ).evaluate(
@@ -81,7 +86,9 @@ def main(argv: list[str] | None = None) -> int:
             output = args.output or str(
                 root
                 / "backups"
-                / datetime.now().strftime("runtime_backup_%Y%m%d_%H%M%S.zip")
+                / datetime.now(timezone.utc).strftime(
+                    "runtime_backup_%Y%m%d_%H%M%S.zip"
+                )
             )
             path = manager.create_backup(output)
             print(path)
@@ -117,11 +124,21 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
+        if args.command == "restore-isolated":
+            destination = manager.restore_backup_isolated(
+                args.path,
+                args.destination,
+            )
+            print(json.dumps({"status": "RESTORED_ISOLATED", "path": str(destination)}))
+            return 0
+
         if args.command == "support-bundle":
             output = args.output or str(
                 root
                 / "reports"
-                / datetime.now().strftime("support_bundle_%Y%m%d_%H%M%S.zip")
+                / datetime.now(timezone.utc).strftime(
+                    "support_bundle_%Y%m%d_%H%M%S.zip"
+                )
             )
             result = SupportBundleBuilder(
                 root,
@@ -129,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
             ).build(output, account_id=args.account_id)
             print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
             return 0
-    except Exception as exc:
+    except (RuntimeBackupError, SupportBundleError, OSError, ValueError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
     return 2

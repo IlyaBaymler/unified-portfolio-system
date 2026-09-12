@@ -1,20 +1,26 @@
 from __future__ import annotations
 
-"""Production-readiness gate for the v3.6 RC Sandbox-only release."""
+"""Sandbox readiness and read-only runtime-custody reporting."""
 
+import json
+import os
+import shutil
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
-import json
-import os
 from pathlib import Path
-import shutil
-from typing import Any, Mapping
+from typing import Any
 from uuid import uuid4
 
-from .runtime_backup import RuntimeBackupManager
 from .portfolio_model import PORTFOLIO_STATE_SCHEMA_VERSION, validate_portfolio_document
-from .runtime_integrity import inspect_json_file, inspect_sqlite_file
+from .runtime_backup import RuntimeBackupManager
+from .runtime_integrity import (
+    IntegrityStatus,
+    inspect_json_file,
+    inspect_sqlite_file,
+    inspect_v3_10_cash_custody,
+)
 from .secret_provider import probe_secret_provider
 
 
@@ -272,6 +278,46 @@ class ProductionReadinessEvaluator:
             )
         )
 
+        cash_custody = inspect_v3_10_cash_custody(self.runtime_dir)
+        authority_report = cash_custody["runtime_cash_authority.json"]
+        ledger_report = cash_custody["cash_ledger_v3_10.sqlite3"]
+        custody_present = any(
+            report.status is not IntegrityStatus.MISSING
+            for report in (authority_report, ledger_report)
+        )
+        if self.app_version.startswith("0.3.10") or custody_present:
+            authority_state = str(
+                self._load_json("runtime_cash_authority.json").get("state") or ""
+            )
+            ledger_present = ledger_report.status is not IntegrityStatus.MISSING
+            ledger_required = (
+                authority_state not in {"", "LEGACY_ACTIVE"} or ledger_present
+            )
+            custody_blocking = (
+                authority_report.status is not IntegrityStatus.VALID
+                or (
+                    ledger_required
+                    and ledger_report.status is not IntegrityStatus.VALID
+                )
+                or (
+                    authority_report.status is IntegrityStatus.MISSING
+                    and ledger_report.status is not IntegrityStatus.MISSING
+                )
+            )
+            checks.append(
+                ReadinessCheck(
+                    "V3_10_CASH_CUSTODY",
+                    "CL2/CL7 cash custody",
+                    "FAIL" if custody_blocking else "PASS",
+                    (
+                        f"authority={authority_report.status.value}; "
+                        f"ledger={ledger_report.status.value}; "
+                        f"state={authority_state or 'UNBOUND'}"
+                    ),
+                    blocking=custody_blocking,
+                )
+            )
+
         checks.append(
             ReadinessCheck(
                 "ACCOUNT_IDENTITY",
@@ -286,9 +332,11 @@ class ProductionReadinessEvaluator:
         risk_state = self._load_json("risk_state.json")
         if normalized_account:
             known_robot_accounts = self._robot_accounts(robot_state)
-            known_risk_accounts = set(
-                str(key) for key in (risk_state.get("accounts") or {})
-            ) if isinstance(risk_state.get("accounts"), Mapping) else set()
+            known_risk_accounts = (
+                {str(key) for key in (risk_state.get("accounts") or {})}
+                if isinstance(risk_state.get("accounts"), Mapping)
+                else set()
+            )
             identity_detail = (
                 f"selected={normalized_account}; robot_state="
                 f"{'present' if normalized_account in known_robot_accounts else 'not-yet-present'}; "

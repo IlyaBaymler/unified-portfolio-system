@@ -1,16 +1,26 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
-from pathlib import Path
 import sys
-from typing import Iterable
 import zipfile
+from collections.abc import Iterable
+from pathlib import Path
+from uuid import uuid4
 
 try:
-    from .release_cleanup import RUNTIME_NAMES, find_legacy_files
+    from .release_cleanup import (
+        PRIVATE_RUNTIME_DIRECTORIES,
+        RUNTIME_NAMES,
+        find_legacy_files,
+    )
 except ImportError:  # direct script execution
-    from release_cleanup import RUNTIME_NAMES, find_legacy_files
+    from release_cleanup import (  # type: ignore[no-redef]
+        PRIVATE_RUNTIME_DIRECTORIES,
+        RUNTIME_NAMES,
+        find_legacy_files,
+    )
 
 
 EXCLUDED_DIR_NAMES = {
@@ -29,6 +39,7 @@ EXCLUDED_DIR_NAMES = {
     "risk_beta_output",
     "risk_integration_output",
     "risk_stable_output",
+    "qualification_output",
     "verification_output",
     "backups",
     "logs",
@@ -36,6 +47,8 @@ EXCLUDED_DIR_NAMES = {
     "runtime",
     "support",
     "standalone_output",
+    "cash_ledger_v3_10.sqlite3",
+    *PRIVATE_RUNTIME_DIRECTORIES,
 }
 EXCLUDED_FILE_NAMES = {
     *RUNTIME_NAMES,
@@ -71,9 +84,7 @@ def scan_release_files_for_canaries(
         if any(needle in data for needle in needles):
             findings.append(str(path))
     if findings:
-        raise RuntimeError(
-            "Release secret canary detected in: " + ", ".join(findings)
-        )
+        raise RuntimeError("Release secret canary detected in: " + ", ".join(findings))
 
 
 def collect_release_files(
@@ -90,6 +101,11 @@ def collect_release_files(
     output_resolved = output.resolve() if output is not None else None
     files: list[Path] = []
     for path in root.rglob("*"):
+        if path.is_symlink():
+            raise RuntimeError(
+                "Release tree contains a symbolic link: "
+                + path.relative_to(root).as_posix()
+            )
         if not path.is_file():
             continue
         relative = path.relative_to(root)
@@ -119,28 +135,94 @@ def build_zip(
     files = collect_release_files(root, output, secret_canaries=secret_canaries)
     output.parent.mkdir(parents=True, exist_ok=True)
     members: list[str] = []
+
     def write_bytes(archive: zipfile.ZipFile, member: str, data: bytes) -> None:
         info = zipfile.ZipInfo(member, date_time=(2020, 1, 1, 0, 0, 0))
         info.compress_type = zipfile.ZIP_DEFLATED
         info.external_attr = (0o644 & 0xFFFF) << 16
         info.create_system = 3
-        archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+        archive.writestr(
+            info, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9
+        )
 
     prefix = archive_root.strip("/")
-    with zipfile.ZipFile(output, mode="w") as archive:
-        for path in files:
-            relative = path.relative_to(root).as_posix()
-            member = f"{prefix}/{relative}" if prefix else relative
-            write_bytes(archive, member, path.read_bytes())
-            members.append(member)
-        manifest_member = f"{prefix}/ZIP_CONTENTS.txt" if prefix else "ZIP_CONTENTS.txt"
-        write_bytes(
-            archive,
-            manifest_member,
-            ("\n".join(members + [manifest_member]) + "\n").encode("utf-8"),
-        )
-        members.append(manifest_member)
+    temporary = output.with_name(f"{output.name}.{uuid4().hex}.tmp")
+    temporary.unlink(missing_ok=True)
+    try:
+        with zipfile.ZipFile(temporary, mode="w") as archive:
+            for path in files:
+                relative = path.relative_to(root).as_posix()
+                member = f"{prefix}/{relative}" if prefix else relative
+                write_bytes(archive, member, path.read_bytes())
+                members.append(member)
+            manifest_member = (
+                f"{prefix}/ZIP_CONTENTS.txt" if prefix else "ZIP_CONTENTS.txt"
+            )
+            write_bytes(
+                archive,
+                manifest_member,
+                ("\n".join(members + [manifest_member]) + "\n").encode("utf-8"),
+            )
+            members.append(manifest_member)
+        with zipfile.ZipFile(temporary, "r") as completed:
+            if completed.namelist() != members or completed.testzip() is not None:
+                raise RuntimeError("Completed release ZIP verification failed.")
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
     return members
+
+
+def zip_identity(path: str | Path) -> dict[str, object]:
+    """Return deterministic member and content identities for a completed ZIP."""
+
+    selected = Path(path)
+    raw = selected.read_bytes()
+    with zipfile.ZipFile(selected, "r") as archive:
+        if archive.testzip() is not None:
+            raise RuntimeError("ZIP CRC validation failed.")
+        members = archive.namelist()
+        payload_members = members[:-1]
+        manifest_member = members[-1] if members else ""
+        if (
+            payload_members != sorted(payload_members)
+            or not manifest_member.endswith("ZIP_CONTENTS.txt")
+            or len(members) != len(set(members))
+        ):
+            raise RuntimeError("ZIP members are not unique and sorted.")
+        expected_contents = ("\n".join(members) + "\n").encode("utf-8")
+        if archive.read(manifest_member) != expected_contents:
+            raise RuntimeError("ZIP_CONTENTS.txt does not match archive members.")
+        for info in archive.infolist():
+            if (
+                info.is_dir()
+                or info.date_time != (2020, 1, 1, 0, 0, 0)
+                or info.compress_type != zipfile.ZIP_DEFLATED
+                or info.create_system != 3
+                or (info.external_attr >> 16) & 0o777 != 0o644
+            ):
+                raise RuntimeError("ZIP member metadata is not deterministic.")
+        member_sha256 = {
+            name: hashlib.sha256(archive.read(name)).hexdigest() for name in members
+        }
+    return {
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "size_bytes": len(raw),
+        "members": members,
+        "member_sha256": member_sha256,
+    }
+
+
+def verify_deterministic_pair(
+    first: str | Path, second: str | Path
+) -> dict[str, object]:
+    first_identity = zip_identity(first)
+    second_identity = zip_identity(second)
+    return {
+        "status": "PASS" if first_identity == second_identity else "FAIL",
+        "first": first_identity,
+        "second": second_identity,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

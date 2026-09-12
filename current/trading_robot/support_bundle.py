@@ -20,7 +20,12 @@ from .logging_setup import redact_sensitive_text
 from .portfolio_model import PORTFOLIO_STATE_SCHEMA_VERSION, validate_portfolio_document
 from .risk_persistence import RiskProfileStore, RiskStateStore
 from .risk_reporting import load_risk_dashboard_snapshot
-from .runtime_integrity import inspect_json_file, inspect_sqlite_file, sha256_file
+from .runtime_integrity import (
+    inspect_json_file,
+    inspect_sqlite_file,
+    inspect_v3_10_cash_custody,
+    sha256_file,
+)
 
 _SECRET_KEY_PARTS = (
     "token",
@@ -30,10 +35,16 @@ _SECRET_KEY_PARTS = (
     "credential",
     "api_key",
     "account_id",
+    "intent_id",
+    "order_id",
+    "identity_key",
 )
 _SECRET_LIKE_RE = re.compile(
     r"(?i)(?:Bearer\s+[A-Za-z0-9._~+\-/=]{12,}|"
     r"TBANK_(?:SANDBOX_)?TOKEN\s*[=:]\s*[^\s,;]+)"
+)
+_PRIVATE_PATH_RE = re.compile(
+    r"(?i)(?:[a-z]:[\\/](?:users|documents and settings)[\\/]|/(?:home|users)/)"
 )
 
 _RUNTIME_INTEGRITY_JSON_NAMES = (
@@ -136,6 +147,8 @@ def scan_text_for_secrets(
     findings: list[str] = []
     if _SECRET_LIKE_RE.search(text):
         findings.append("secret-like token pattern")
+    if _PRIVATE_PATH_RE.search(text):
+        findings.append("private absolute path")
     for secret in known_secrets:
         normalized = str(secret).strip()
         if normalized and normalized in text:
@@ -192,6 +205,14 @@ class SupportBundleBuilder:
             tuple(known_secrets)
             + ((canonical_account_id,) if canonical_account_id else ())
             + ((explicit_account_id,) if explicit_account_id else ())
+            + (
+                str(self.app_dir),
+                self.app_dir.as_posix(),
+                str(self.app_dir.parent),
+                self.app_dir.parent.as_posix(),
+                str(Path.home()),
+                Path.home().as_posix(),
+            )
         )
         with tempfile.TemporaryDirectory(prefix="moex-support-") as temp_name:
             staging = Path(temp_name)
@@ -206,9 +227,9 @@ class SupportBundleBuilder:
                     else "<REDACTED_ACCOUNT:" + effective_account_id[-4:] + ">"
                 ),
                 "account_id_sha256": (
-                    __import__("hashlib").sha256(
-                        effective_account_id.encode("utf-8")
-                    ).hexdigest()
+                    __import__("hashlib")
+                    .sha256(effective_account_id.encode("utf-8"))
+                    .hexdigest()
                     if effective_account_id
                     else None
                 ),
@@ -248,6 +269,10 @@ class SupportBundleBuilder:
             journal_integrity = inspect_sqlite_file(self.journal_path).to_dict()
             journal_integrity["path"] = "trading_events.db"
             integrity["trading_events.db"] = journal_integrity
+            for name, report in inspect_v3_10_cash_custody(self.app_dir).items():
+                item = report.to_dict()
+                item["path"] = name
+                integrity[name] = item
             self._write_json(
                 staging / "runtime_integrity.json",
                 redact_object(integrity, known_values=scan_secrets),
@@ -370,7 +395,9 @@ class SupportBundleBuilder:
                     for member in completed.namelist():
                         raw = completed.read(member)
                         decoded = raw.decode("utf-8", errors="replace")
-                        scan = scan_text_for_secrets(decoded, known_secrets=scan_secrets)
+                        scan = scan_text_for_secrets(
+                            decoded, known_secrets=scan_secrets
+                        )
                         archive_findings.extend(
                             f"{member}: {item}" for item in scan.findings
                         )

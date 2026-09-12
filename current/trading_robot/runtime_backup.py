@@ -3,6 +3,7 @@ from __future__ import annotations
 """Validated runtime backup, preview and transactional restore for v3.7-alpha3."""
 
 import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -11,6 +12,7 @@ import tempfile
 import time
 import zipfile
 from collections.abc import Iterable
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,12 +22,22 @@ from uuid import uuid4
 from .journal import EventJournal
 from .locking import InterProcessFileLock
 from .portfolio_model import PORTFOLIO_STATE_SCHEMA_VERSION, validate_portfolio_document
+from .runtime_cash_authority import RuntimeCashAuthorityStore
 from .runtime_integrity import (
     FileIntegrityReport,
+    IntegrityStatus,
+    inspect_cash_ledger_store,
     inspect_json_file,
+    inspect_runtime_cash_authority,
     inspect_sqlite_file,
     sha256_file,
 )
+
+_CASH_LEDGER_ROOT_NAME = "cash_ledger_v3_10.sqlite3"
+_CASH_LEDGER_DATABASE_MEMBER = "cash_ledger_v3_10.sqlite3/store.sqlite3"
+_AUTHORITY_ACTIVE_NAME = "runtime_cash_authority.json"
+_AUTHORITY_CHECKSUM_NAME = "runtime_cash_authority.json.sha256"
+_AUTHORITY_LASTGOOD_NAME = "runtime_cash_authority.json.lastgood"
 
 DEFAULT_RUNTIME_FILES: tuple[str, ...] = (
     "v3_8_runtime_seed_manifest.json",
@@ -48,6 +60,10 @@ DEFAULT_RUNTIME_FILES: tuple[str, ...] = (
     "portfolio_legacy_shadow.json",
     "sandbox_diagnostic_state.json",
     "trading_events.db",
+    _AUTHORITY_ACTIVE_NAME,
+    _AUTHORITY_CHECKSUM_NAME,
+    _AUTHORITY_LASTGOOD_NAME,
+    _CASH_LEDGER_ROOT_NAME,
 )
 
 _FORBIDDEN_BACKUP_NAMES = {
@@ -106,6 +122,7 @@ class BackupManifest:
     source_directory: str
     token_included: bool
     entries: tuple[BackupEntry, ...]
+    sqlite_sidecar_dispositions: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +132,7 @@ class BackupManifest:
             "source_directory": self.source_directory,
             "token_included": self.token_included,
             "entries": [entry.to_dict() for entry in self.entries],
+            "sqlite_sidecar_dispositions": self.sqlite_sidecar_dispositions,
         }
 
 
@@ -155,7 +173,11 @@ def format_backup_verification_summary(result: BackupVerification) -> str:
     manifest = result.manifest if isinstance(result.manifest, dict) else {}
     entries = manifest.get("entries")
     entries = entries if isinstance(entries, list) else []
-    status = "VALID — backup можно использовать" if result.valid else "INVALID — восстановление запрещено"
+    status = (
+        "VALID — backup можно использовать"
+        if result.valid
+        else "INVALID — восстановление запрещено"
+    )
     lines = [
         f"Статус: {status}",
         f"Архив: {result.path}",
@@ -217,17 +239,23 @@ class RuntimeBackupManager:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.suffix.lower() != ".zip":
             target = target.with_suffix(".zip")
-        with InterProcessFileLock(  # noqa: SIM117 - lock covers temp cleanup
-            self.lock_path, timeout_seconds=5.0
-        ):
-            with tempfile.TemporaryDirectory(prefix="moex-runtime-backup-") as temp_name:
+        with self._backup_locks():  # noqa: SIM117 - lock covers complete snapshot
+            with tempfile.TemporaryDirectory(
+                prefix="moex-runtime-backup-"
+            ) as temp_name:
                 staging = Path(temp_name)
                 entries: list[BackupEntry] = []
+                sidecar_dispositions: dict[str, str] = {}
                 for name in self.runtime_files:
                     source = self.runtime_dir / name
                     if not source.exists():
                         continue
                     staged = staging / name
+                    if name == _CASH_LEDGER_ROOT_NAME:
+                        entry, dispositions = self._stage_cash_ledger(source, staged)
+                        entries.append(entry)
+                        sidecar_dispositions.update(dispositions)
+                        continue
                     if name == "trading_events.db":
                         journal = EventJournal(source)
                         checkpoint = journal.checkpoint_wal("PASSIVE")
@@ -257,8 +285,63 @@ class RuntimeBackupManager:
                             schema_version=report.schema_version,
                         )
                     )
+                    for companion_name in self._managed_recovery_names(name):
+                        companion_source = self.runtime_dir / companion_name
+                        companion_staged = staging / companion_name
+                        protected_name = companion_name.removesuffix(".sha256")
+                        protected_source = self.runtime_dir / protected_name
+                        if companion_name.endswith(
+                            ".sha256"
+                        ) and not protected_source.is_file():
+                            protected = staging / protected_name
+                            if not protected.is_file():
+                                raise RuntimeBackupError(
+                                    "Managed recovery checksum has no protected "
+                                    f"member: {companion_name}"
+                                )
+                            companion_staged.write_bytes(
+                                (sha256_file(protected) + "\n").encode("ascii")
+                            )
+                        elif companion_source.is_file():
+                            shutil.copy2(companion_source, companion_staged)
+                        elif companion_name.endswith(".lastgood"):
+                            shutil.copy2(staged, companion_staged)
+                        elif companion_name.endswith(".sha256"):
+                            protected = staging / protected_name
+                            if not protected.is_file():
+                                raise RuntimeBackupError(
+                                    "Managed recovery checksum has no protected "
+                                    f"member: {companion_name}"
+                                )
+                            companion_staged.write_bytes(
+                                (sha256_file(protected) + "\n").encode("ascii")
+                            )
+                        else:  # pragma: no cover - closed helper output
+                            raise RuntimeBackupError(
+                                f"Unsupported recovery member: {companion_name}"
+                            )
+                        companion_report = self._inspect_member(
+                            companion_staged,
+                            companion_name,
+                        )
+                        if not companion_report.valid:
+                            raise RuntimeBackupError(
+                                "Managed recovery member failed validation: "
+                                f"{companion_name}: {companion_report.detail}"
+                            )
+                        entries.append(
+                            BackupEntry(
+                                name=companion_name,
+                                size_bytes=int(companion_staged.stat().st_size),
+                                sha256=sha256_file(companion_staged),
+                                kind=companion_report.kind,
+                                schema_version=companion_report.schema_version,
+                            )
+                        )
                 if not entries:
-                    raise RuntimeBackupError("No valid runtime files were found to back up.")
+                    raise RuntimeBackupError(
+                        "No valid runtime files were found to back up."
+                    )
                 manifest = BackupManifest(
                     format_version=self.FORMAT_VERSION,
                     created_at=datetime.now(timezone.utc).isoformat(),
@@ -266,6 +349,11 @@ class RuntimeBackupManager:
                     source_directory=str(self.runtime_dir),
                     token_included=False,
                     entries=tuple(entries),
+                    sqlite_sidecar_dispositions=(
+                        dict(sorted(sidecar_dispositions.items()))
+                        if sidecar_dispositions
+                        else None
+                    ),
                 )
                 (staging / "manifest.json").write_text(
                     json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2),
@@ -279,13 +367,16 @@ class RuntimeBackupManager:
                         compression=zipfile.ZIP_DEFLATED,
                         compresslevel=9,
                     ) as archive:
-                        archive.write(staging / "manifest.json", arcname="manifest.json")
                         for entry in sorted(entries, key=lambda item: item.name):
                             archive.write(staging / entry.name, arcname=entry.name)
+                        archive.write(
+                            staging / "manifest.json", arcname="manifest.json"
+                        )
                     verification = self.verify_backup(temporary)
                     if not verification.valid:
                         raise RuntimeBackupError(
-                            "Backup verification failed: " + "; ".join(verification.errors)
+                            "Backup verification failed: "
+                            + "; ".join(verification.errors)
                         )
                     os.replace(temporary, target)
                 finally:
@@ -298,7 +389,9 @@ class RuntimeBackupManager:
         warnings: list[str] = []
         manifest: dict[str, Any] | None = None
         if not target.exists():
-            return BackupVerification(str(target), False, None, ("File not found.",), ())
+            return BackupVerification(
+                str(target), False, None, ("File not found.",), ()
+            )
         try:
             with zipfile.ZipFile(target, "r") as archive:
                 listed_names = archive.namelist()
@@ -310,6 +403,8 @@ class RuntimeBackupManager:
                         errors.append(f"Unsafe archive member path: {name}")
                 if "manifest.json" not in names:
                     errors.append("manifest.json is missing.")
+                elif not listed_names or listed_names[-1] != "manifest.json":
+                    errors.append("manifest.json must be the final archive member.")
                 else:
                     manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
                 if not isinstance(manifest, dict):
@@ -318,7 +413,9 @@ class RuntimeBackupManager:
                     if manifest.get("format_version") != self.FORMAT_VERSION:
                         errors.append("Unsupported backup format version.")
                     if manifest.get("token_included") is not False:
-                        errors.append("Backup manifest indicates that a token is included.")
+                        errors.append(
+                            "Backup manifest indicates that a token is included."
+                        )
                     entries = manifest.get("entries")
                     expected_names = {"manifest.json"}
                     if not isinstance(entries, list) or not entries:
@@ -334,7 +431,7 @@ class RuntimeBackupManager:
                                 errors.append(f"Duplicate manifest entry: {name}")
                             seen_entries.add(name)
                             expected_names.add(name)
-                            if name not in self.runtime_files:
+                            if not self._allowed_archive_member(name):
                                 errors.append(f"Unexpected runtime member: {name}")
                             if not self._safe_member_name(name):
                                 errors.append(f"Unsafe manifest member: {name}")
@@ -351,13 +448,19 @@ class RuntimeBackupManager:
                                 expected_size = -1
                             if len(data) != expected_size:
                                 errors.append(f"Size mismatch: {name}")
-                            if name in _FORBIDDEN_BACKUP_NAMES or "token" in name.lower():
-                                errors.append(f"Forbidden secret file in backup: {name}")
+                            if (
+                                name in _FORBIDDEN_BACKUP_NAMES
+                                or "token" in name.lower()
+                            ):
+                                errors.append(
+                                    f"Forbidden secret file in backup: {name}"
+                                )
                             if self._safe_member_name(name):
                                 with tempfile.TemporaryDirectory(
                                     prefix="moex-runtime-verify-member-"
                                 ) as temp_name:
                                     staged = Path(temp_name) / name
+                                    staged.parent.mkdir(parents=True, exist_ok=True)
                                     staged.write_bytes(data)
                                     report = self._inspect_member(staged, name)
                                 if not report.valid:
@@ -374,6 +477,65 @@ class RuntimeBackupManager:
                         errors.append(
                             "Unexpected archive members: " + ", ".join(unexpected)
                         )
+                    if _AUTHORITY_ACTIVE_NAME in names:
+                        with tempfile.TemporaryDirectory(
+                            prefix="moex-runtime-verify-authority-"
+                        ) as temp_name:
+                            staged_root = Path(temp_name)
+                            for name in (
+                                _AUTHORITY_ACTIVE_NAME,
+                                _AUTHORITY_CHECKSUM_NAME,
+                                _AUTHORITY_LASTGOOD_NAME,
+                            ):
+                                if name in names:
+                                    (staged_root / name).write_bytes(archive.read(name))
+                            authority_report = inspect_runtime_cash_authority(
+                                staged_root
+                            )
+                        if not authority_report.valid:
+                            errors.append(
+                                "Runtime member failed custody validation: "
+                                + _AUTHORITY_ACTIVE_NAME
+                            )
+                    for primary_name in sorted(
+                        names & (_CHECKSUM_MANAGED_JSON_NAMES | _LAST_GOOD_MANAGED_JSON_NAMES)
+                    ):
+                        for companion_name in self._managed_recovery_names(primary_name):
+                            if companion_name not in names:
+                                errors.append(
+                                    "Managed recovery member is missing: "
+                                    + companion_name
+                                )
+                                continue
+                            protected_name = companion_name.removesuffix(".sha256")
+                            if companion_name.endswith(".sha256"):
+                                expected = hashlib.sha256(
+                                    archive.read(protected_name)
+                                ).hexdigest() + "\n"
+                                try:
+                                    actual = archive.read(companion_name).decode("ascii")
+                                except UnicodeDecodeError:
+                                    actual = ""
+                                if not hmac.compare_digest(actual, expected):
+                                    errors.append(
+                                        "Managed recovery checksum mismatch: "
+                                        + companion_name
+                                    )
+                    dispositions = manifest.get("sqlite_sidecar_dispositions")
+                    if _CASH_LEDGER_DATABASE_MEMBER in names:
+                        expected_disposition_keys = {
+                            "cash_ledger_v3_10.sqlite3-wal",
+                            "cash_ledger_v3_10.sqlite3-shm",
+                        }
+                        if (
+                            not isinstance(dispositions, dict)
+                            or set(dispositions) != expected_disposition_keys
+                            or any(
+                                value not in {"ABSENT", "SNAPSHOTTED_INTO_DATABASE"}
+                                for value in dispositions.values()
+                            )
+                        ):
+                            errors.append("CL2 SQLite sidecar disposition is invalid.")
         except (OSError, zipfile.BadZipFile, UnicodeError, json.JSONDecodeError) as exc:
             errors.append(str(exc))
         return BackupVerification(
@@ -387,12 +549,14 @@ class RuntimeBackupManager:
     def preview_restore(self, path: str | Path) -> tuple[RestorePreviewItem, ...]:
         verification = self.verify_backup(path)
         if not verification.valid or verification.manifest is None:
-            raise RuntimeBackupError("Backup is invalid: " + "; ".join(verification.errors))
+            raise RuntimeBackupError(
+                "Backup is invalid: " + "; ".join(verification.errors)
+            )
         items: list[RestorePreviewItem] = []
         for raw in verification.manifest.get("entries", []):
             name = str(raw["name"])
             current = self.runtime_dir / name
-            current_hash = sha256_file(current) if current.exists() else None
+            current_hash = sha256_file(current) if current.is_file() else None
             backup_hash = str(raw["sha256"])
             action = (
                 "UNCHANGED"
@@ -419,7 +583,9 @@ class RuntimeBackupManager:
             raise RuntimeBackupError("Confirmation must be exactly RESTORE RUNTIME.")
         verification = self.verify_backup(path)
         if not verification.valid or verification.manifest is None:
-            raise RuntimeBackupError("Backup is invalid: " + "; ".join(verification.errors))
+            raise RuntimeBackupError(
+                "Backup is invalid: " + "; ".join(verification.errors)
+            )
         preview = self.preview_restore(path)
         target = Path(path)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -428,16 +594,22 @@ class RuntimeBackupManager:
         with InterProcessFileLock(  # noqa: SIM117 - lock covers temp cleanup
             self.lock_path, timeout_seconds=5.0
         ):
-            with tempfile.TemporaryDirectory(prefix="moex-runtime-restore-") as temp_name:
+            with tempfile.TemporaryDirectory(
+                prefix="moex-runtime-restore-"
+            ) as temp_name:
                 workspace = Path(temp_name)
                 staging = workspace / "staging"
                 rollback = workspace / "rollback"
                 staging.mkdir()
                 rollback.mkdir()
-                entry_names = [str(raw["name"]) for raw in verification.manifest["entries"]]
+                entry_names = [
+                    str(raw["name"]) for raw in verification.manifest["entries"]
+                ]
                 with zipfile.ZipFile(target, "r") as archive:
                     for name in entry_names:
-                        (staging / name).write_bytes(archive.read(name))
+                        destination = staging / name
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        destination.write_bytes(archive.read(name))
 
                 # Validate every candidate before changing a single runtime file.
                 for name in entry_names:
@@ -452,6 +624,7 @@ class RuntimeBackupManager:
                     item
                     for item in preview
                     if item.action == "UNCHANGED"
+                    and self._is_recovery_managed_primary(item.name)
                     and not self._json_recovery_files_current(
                         self.runtime_dir / item.name
                     )
@@ -461,7 +634,7 @@ class RuntimeBackupManager:
                 audit_names: set[str] = set()
                 for item in transactional_items:
                     destination = self.runtime_dir / item.name
-                    if item.name != "trading_events.db":
+                    if self._is_recovery_managed_primary(item.name):
                         # Recovery companions can outlive a missing/corrupt
                         # primary. Preserve that exact pre-restore state too.
                         self._snapshot_json_recovery_files(destination, rollback)
@@ -470,7 +643,7 @@ class RuntimeBackupManager:
                     existing_names.add(item.name)
                     if item.action != "UNCHANGED":
                         audit_names.add(item.name)
-                    if item.name == "trading_events.db":
+                    if self._is_sqlite_member(item.name):
                         # A byte copy can omit uncheckpointed WAL pages and Windows
                         # may refuse to replace a database that the GUI/OneDrive has
                         # open.  Use SQLite's online backup API for a consistent
@@ -490,9 +663,10 @@ class RuntimeBackupManager:
                             # the same rollback boundary without rewriting the
                             # accepted primary or creating a misleading audit copy.
                             applied.append(item.name)
-                            self._refresh_json_recovery_files(destination)
+                            if self._is_recovery_managed_primary(item.name):
+                                self._refresh_json_recovery_files(destination)
                             continue
-                        if item.name == "trading_events.db":
+                        if self._is_sqlite_member(item.name):
                             # Do not os.replace() a live SQLite file on Windows.
                             # The SQLite backup API safely replaces database pages
                             # while preserving the path used by existing GUI objects.
@@ -514,17 +688,27 @@ class RuntimeBackupManager:
                     for item in transactional_items:
                         destination = self.runtime_dir / item.name
                         report = self._inspect_member(destination, item.name)
-                        if item.name == "trading_events.db":
-                            source_digest = self._sqlite_content_digest(staging / item.name)
-                            destination_digest = self._sqlite_content_digest(destination)
+                        if self._is_sqlite_member(item.name):
+                            source_digest = self._sqlite_content_digest(
+                                staging / item.name
+                            )
+                            destination_digest = self._sqlite_content_digest(
+                                destination
+                            )
                             content_matches = source_digest == destination_digest
                         else:
-                            content_matches = sha256_file(destination) == item.backup_sha256
+                            content_matches = (
+                                sha256_file(destination) == item.backup_sha256
+                            )
                         recovery_current = (
-                            item.name == "trading_events.db"
+                            not self._is_recovery_managed_primary(item.name)
                             or self._json_recovery_files_current(destination)
                         )
-                        if not report.valid or not content_matches or not recovery_current:
+                        if (
+                            not report.valid
+                            or not content_matches
+                            or not recovery_current
+                        ):
                             raise RuntimeBackupError(
                                 f"Restored file failed post-commit validation: {item.name}: "
                                 f"{report.detail}; recovery_current={recovery_current}"
@@ -535,19 +719,26 @@ class RuntimeBackupManager:
                         destination = self.runtime_dir / name
                         try:
                             if name in existing_names:
-                                if name == "trading_events.db":
+                                if self._is_sqlite_member(name):
                                     self._restore_sqlite(rollback / name, destination)
                                 else:
-                                    self._replace_with_retry(rollback / name, destination)
-                                    self._restore_json_recovery_snapshot(
-                                        destination,
-                                        rollback,
+                                    self._replace_with_retry(
+                                        rollback / name, destination
                                     )
+                                    if self._is_recovery_managed_primary(name):
+                                        self._restore_json_recovery_snapshot(
+                                            destination,
+                                            rollback,
+                                        )
                             else:
                                 destination.unlink(missing_ok=True)
-                                if name == "trading_events.db":
-                                    destination.with_name(destination.name + "-wal").unlink(missing_ok=True)
-                                    destination.with_name(destination.name + "-shm").unlink(missing_ok=True)
+                                if self._is_sqlite_member(name):
+                                    destination.with_name(
+                                        destination.name + "-wal"
+                                    ).unlink(missing_ok=True)
+                                    destination.with_name(
+                                        destination.name + "-shm"
+                                    ).unlink(missing_ok=True)
                                 else:
                                     self._restore_json_recovery_snapshot(
                                         destination,
@@ -572,9 +763,84 @@ class RuntimeBackupManager:
                         shutil.copy2(source, audit_copy)
         return preview
 
+    def restore_backup_isolated(
+        self,
+        path: str | Path,
+        destination: str | Path,
+    ) -> Path:
+        """Restore a verified backup into a new empty directory only."""
+
+        verification = self.verify_backup(path)
+        if not verification.valid or verification.manifest is None:
+            raise RuntimeBackupError(
+                "Backup is invalid: " + "; ".join(verification.errors)
+            )
+        target = Path(destination).resolve()
+        runtime_root = self.runtime_dir.resolve()
+        if (
+            target == runtime_root
+            or runtime_root in target.parents
+            or target.is_symlink()
+        ):
+            raise RuntimeBackupError("Isolated restore target is unsafe.")
+        if target.exists():
+            if not target.is_dir() or any(target.iterdir()):
+                raise RuntimeBackupError(
+                    "Isolated restore target must be new and empty."
+                )
+            target.rmdir()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        workspace = Path(
+            tempfile.mkdtemp(
+                prefix=f".{target.name}.cl8-restore-",
+                dir=target.parent,
+            )
+        )
+        try:
+            entry_names = [
+                str(raw["name"]) for raw in verification.manifest.get("entries", [])
+            ]
+            with zipfile.ZipFile(path, "r") as archive:
+                for name in entry_names:
+                    if not self._safe_member_name(name):
+                        raise RuntimeBackupError("Backup contains an unsafe member.")
+                    restored = workspace / name
+                    restored.parent.mkdir(parents=True, exist_ok=True)
+                    restored.write_bytes(archive.read(name))
+            for name in entry_names:
+                report = self._inspect_member(workspace / name, name)
+                if not report.valid:
+                    raise RuntimeBackupError(
+                        f"Isolated restore validation failed: {name}: {report.detail}"
+                    )
+            if _AUTHORITY_ACTIVE_NAME in entry_names:
+                authority_report = inspect_runtime_cash_authority(workspace)
+                if not authority_report.valid:
+                    raise RuntimeBackupError("Isolated CL7 custody validation failed.")
+            if _CASH_LEDGER_DATABASE_MEMBER in entry_names:
+                ledger_report = inspect_cash_ledger_store(
+                    workspace / _CASH_LEDGER_ROOT_NAME
+                )
+                if not ledger_report.valid:
+                    raise RuntimeBackupError("Isolated CL2 custody validation failed.")
+            if target.exists():
+                raise RuntimeBackupError(
+                    "Isolated restore target appeared during restore."
+                )
+            os.replace(workspace, target)
+        except Exception:
+            shutil.rmtree(workspace, ignore_errors=True)
+            raise
+        return target
+
     @staticmethod
     def _refresh_json_recovery_files(destination: Path) -> None:
         """Keep checksums and last-good recovery state aligned after restore."""
+
+        if destination.name == _AUTHORITY_ACTIVE_NAME:
+            # CL7 lastgood is the previous record in a CAS chain, not a copy of
+            # active.  Its three custody members are restored explicitly.
+            return
 
         sidecar = destination.with_name(destination.name + ".sha256")
         if (
@@ -584,7 +850,9 @@ class RuntimeBackupManager:
             return
         temporary = sidecar.with_name(sidecar.name + f".{uuid4().hex}.tmp")
         try:
-            temporary.write_text(sha256_file(destination) + "\n", encoding="ascii")
+            temporary.write_bytes(
+                (sha256_file(destination) + "\n").encode("ascii")
+            )
             os.replace(temporary, sidecar)
         finally:
             temporary.unlink(missing_ok=True)
@@ -605,9 +873,8 @@ class RuntimeBackupManager:
             last_good_sidecar.name + f".{uuid4().hex}.tmp"
         )
         try:
-            last_good_checksum_temporary.write_text(
-                sha256_file(last_good) + "\n",
-                encoding="ascii",
+            last_good_checksum_temporary.write_bytes(
+                (sha256_file(last_good) + "\n").encode("ascii")
             )
             os.replace(last_good_checksum_temporary, last_good_sidecar)
         finally:
@@ -617,23 +884,33 @@ class RuntimeBackupManager:
     def _json_recovery_files_current(destination: Path) -> bool:
         """Return whether managed checksum/last-good companions match primary."""
 
+        if destination.name == _AUTHORITY_ACTIVE_NAME:
+            return inspect_runtime_cash_authority(destination).valid
+
         sidecar = destination.with_name(destination.name + ".sha256")
         checksum_required = (
             destination.name in _CHECKSUM_MANAGED_JSON_NAMES or sidecar.exists()
         )
-        if checksum_required and not inspect_json_file(
-            destination,
-            require_checksum=True,
-        ).valid:
+        if (
+            checksum_required
+            and not inspect_json_file(
+                destination,
+                require_checksum=True,
+            ).valid
+        ):
             return False
         if destination.name not in _LAST_GOOD_MANAGED_JSON_NAMES:
             return True
         last_good = destination.with_name(destination.name + ".lastgood")
         if not last_good.is_file():
             return False
-        if sha256_file(last_good) != sha256_file(destination):
-            return False
-        return inspect_json_file(last_good, require_checksum=True).valid
+        return (
+            RuntimeBackupManager._inspect_member(
+                last_good,
+                destination.name,
+            ).valid
+            and inspect_json_file(last_good, require_checksum=True).valid
+        )
 
     @staticmethod
     def _snapshot_json_recovery_files(destination: Path, rollback: Path) -> None:
@@ -692,12 +969,95 @@ class RuntimeBackupManager:
         finally:
             target_connection.close()
             source_connection.close()
-        report = inspect_sqlite_file(destination)
+        report = (
+            inspect_cash_ledger_store(destination.parent)
+            if RuntimeBackupManager._is_cash_ledger_database_path(source)
+            else inspect_sqlite_file(destination)
+        )
         if not report.valid:
             destination.unlink(missing_ok=True)
             raise RuntimeBackupError(
                 f"SQLite rollback backup failed integrity check: {report.detail}"
             )
+
+    @staticmethod
+    def _stage_cash_ledger(
+        source: Path,
+        destination: Path,
+    ) -> tuple[BackupEntry, dict[str, str]]:
+        source_wal_present = (source / "store.sqlite3-wal").exists()
+        source_shm_present = (source / "store.sqlite3-shm").exists()
+        report = inspect_cash_ledger_store(source)
+        if not report.valid:
+            raise RuntimeBackupError(
+                "Cannot back up cash_ledger_v3_10.sqlite3: " + report.detail
+            )
+        source_database = source / "store.sqlite3"
+        staged_database = destination / "store.sqlite3"
+        destination.mkdir(parents=True, exist_ok=True)
+        source_connection = sqlite3.connect(source_database, timeout=10.0)
+        target_connection = sqlite3.connect(staged_database, timeout=10.0)
+        try:
+            source_connection.execute("PRAGMA busy_timeout=10000")
+            target_connection.execute("PRAGMA busy_timeout=10000")
+            source_connection.backup(target_connection)
+            target_connection.commit()
+            checkpoint = target_connection.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            ).fetchone()
+            if checkpoint and int(checkpoint[0]) != 0:
+                raise RuntimeBackupError("CL2 backup checkpoint remained busy.")
+        except sqlite3.Error as exc:
+            raise RuntimeBackupError("CL2 SQLite backup failed safely.") from exc
+        finally:
+            target_connection.close()
+            source_connection.close()
+        staged_report = inspect_cash_ledger_store(destination)
+        if not staged_report.valid:
+            raise RuntimeBackupError(
+                "Staged CL2 backup failed integrity validation: " + staged_report.detail
+            )
+        entry = BackupEntry(
+            name=_CASH_LEDGER_DATABASE_MEMBER,
+            size_bytes=staged_database.stat().st_size,
+            sha256=sha256_file(staged_database),
+            kind=staged_report.kind,
+            schema_version=staged_report.schema_version,
+        )
+        dispositions = {
+            "cash_ledger_v3_10.sqlite3-wal": (
+                "SNAPSHOTTED_INTO_DATABASE" if source_wal_present else "ABSENT"
+            ),
+            "cash_ledger_v3_10.sqlite3-shm": (
+                "SNAPSHOTTED_INTO_DATABASE" if source_shm_present else "ABSENT"
+            ),
+        }
+        return entry, dispositions
+
+    @contextmanager
+    def _backup_locks(self):
+        """Freeze the accepted JSON stores in the CL7 global lock order."""
+
+        authority_store = RuntimeCashAuthorityStore(self.runtime_dir)
+        with ExitStack() as stack:
+            if authority_store.custody_exists():
+                stack.enter_context(authority_store.locked())
+            for name in (
+                "portfolio_state.json",
+                "risk_profiles.json",
+                "risk_state.json",
+                "central_order_state.json",
+            ):
+                stack.enter_context(
+                    InterProcessFileLock(
+                        self.runtime_dir / f"{name}.lock",
+                        timeout_seconds=5.0,
+                    )
+                )
+            stack.enter_context(
+                InterProcessFileLock(self.lock_path, timeout_seconds=5.0)
+            )
+            yield
 
     @staticmethod
     def _sqlite_content_digest(path: Path) -> str:
@@ -728,9 +1088,7 @@ class RuntimeBackupManager:
                 digest.update(b"\n")
 
             table_names = [
-                str(row["name"])
-                for row in schema_rows
-                if str(row["type"]) == "table"
+                str(row["name"]) for row in schema_rows if str(row["type"]) == "table"
             ]
             for table in table_names:
                 quoted = table.replace('"', '""')
@@ -744,8 +1102,7 @@ class RuntimeBackupManager:
                 ]
                 if pk_columns:
                     order_clause = ", ".join(
-                        '"' + name.replace('"', '""') + '"'
-                        for name in pk_columns
+                        '"' + name.replace('"', '""') + '"' for name in pk_columns
                     )
                 else:
                     order_clause = "rowid"
@@ -754,9 +1111,7 @@ class RuntimeBackupManager:
                         f'SELECT * FROM "{quoted}" ORDER BY {order_clause}'
                     ).fetchall()
                 except sqlite3.OperationalError:
-                    rows = connection.execute(
-                        f'SELECT * FROM "{quoted}"'
-                    ).fetchall()
+                    rows = connection.execute(f'SELECT * FROM "{quoted}"').fetchall()
                 digest.update(f"TABLE:{table}\n".encode())
                 for row in rows:
                     normalized = {
@@ -787,7 +1142,11 @@ class RuntimeBackupManager:
         """
 
         destination.parent.mkdir(parents=True, exist_ok=True)
-        report = inspect_sqlite_file(source)
+        report = (
+            inspect_cash_ledger_store(source.parent)
+            if RuntimeBackupManager._is_cash_ledger_database_path(source)
+            else inspect_sqlite_file(source)
+        )
         if not report.valid:
             raise RuntimeBackupError(
                 f"SQLite restore source failed integrity check: {report.detail}"
@@ -830,17 +1189,70 @@ class RuntimeBackupManager:
     @staticmethod
     def _safe_member_name(name: str) -> bool:
         path = Path(name)
+        normalized = name.replace("\\", "/")
+        parts = tuple(part for part in normalized.split("/") if part)
         return (
             bool(name)
-            and path.name == name
+            and bool(parts)
+            and normalized == "/".join(parts)
             and not path.is_absolute()
             and ".." not in path.parts
             and "\\" not in name
-            and "/" not in name
+            and ":" not in name
+        )
+
+    def _allowed_archive_member(self, name: str) -> bool:
+        return (
+            name in self.runtime_files
+            or any(
+                primary in self.runtime_files
+                and name in self._managed_recovery_names(primary)
+                for primary in (_CHECKSUM_MANAGED_JSON_NAMES | _LAST_GOOD_MANAGED_JSON_NAMES)
+            )
+            or (
+            _CASH_LEDGER_ROOT_NAME in self.runtime_files
+            and name == _CASH_LEDGER_DATABASE_MEMBER
+            )
+        )
+
+    @staticmethod
+    def _managed_recovery_names(primary_name: str) -> tuple[str, ...]:
+        names: list[str] = []
+        if primary_name in _CHECKSUM_MANAGED_JSON_NAMES:
+            names.append(primary_name + ".sha256")
+        if primary_name in _LAST_GOOD_MANAGED_JSON_NAMES:
+            names.extend(
+                (
+                    primary_name + ".lastgood",
+                    primary_name + ".lastgood.sha256",
+                )
+            )
+        return tuple(names)
+
+    @staticmethod
+    def _is_sqlite_member(name: str) -> bool:
+        return name in {"trading_events.db", _CASH_LEDGER_DATABASE_MEMBER}
+
+    @staticmethod
+    def _is_recovery_managed_primary(name: str) -> bool:
+        return name in (
+            _CHECKSUM_MANAGED_JSON_NAMES | _LAST_GOOD_MANAGED_JSON_NAMES
+        )
+
+    @staticmethod
+    def _is_cash_ledger_database_path(path: Path) -> bool:
+        return (
+            path.name == "store.sqlite3" and path.parent.name == _CASH_LEDGER_ROOT_NAME
         )
 
     @staticmethod
     def _inspect_source_member(path: Path, name: str) -> FileIntegrityReport:
+        if name == _AUTHORITY_ACTIVE_NAME:
+            return inspect_runtime_cash_authority(path)
+        if name == _AUTHORITY_CHECKSUM_NAME:
+            return RuntimeBackupManager._inspect_checksum_member(path, name)
+        if name == _AUTHORITY_LASTGOOD_NAME:
+            return RuntimeBackupManager._inspect_authority_json_member(path, name)
         require_checksum = name in _CHECKSUM_MANAGED_JSON_NAMES
         if name == "portfolio_state.json":
             return inspect_json_file(
@@ -855,6 +1267,19 @@ class RuntimeBackupManager:
     def _inspect_member(path: Path, name: str) -> FileIntegrityReport:
         if name == "trading_events.db":
             return inspect_sqlite_file(path)
+        if name == _CASH_LEDGER_DATABASE_MEMBER:
+            return inspect_cash_ledger_store(path.parent)
+        if name in {_AUTHORITY_ACTIVE_NAME, _AUTHORITY_LASTGOOD_NAME}:
+            return RuntimeBackupManager._inspect_authority_json_member(path, name)
+        if name == _AUTHORITY_CHECKSUM_NAME:
+            return RuntimeBackupManager._inspect_checksum_member(path, name)
+        if name.endswith(".sha256"):
+            return RuntimeBackupManager._inspect_checksum_member(path, name)
+        if name.endswith(".lastgood"):
+            return RuntimeBackupManager._inspect_member(
+                path,
+                name.removesuffix(".lastgood"),
+            )
         if name == "portfolio_state.json":
             return inspect_json_file(
                 path,
@@ -862,3 +1287,56 @@ class RuntimeBackupManager:
                 validator=validate_portfolio_document,
             )
         return inspect_json_file(path)
+
+    @staticmethod
+    def _inspect_checksum_member(path: Path, name: str) -> FileIntegrityReport:
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return FileIntegrityReport(
+                path=str(path),
+                status=IntegrityStatus.UNREADABLE,
+                kind="sha256",
+                detail="Checksum sidecar is unreadable.",
+            )
+        valid = (
+            len(raw) == 65
+            and raw.endswith(b"\n")
+            and all(byte in b"0123456789abcdef" for byte in raw[:-1])
+        )
+        return FileIntegrityReport(
+            path=str(path),
+            status=IntegrityStatus.VALID if valid else IntegrityStatus.CORRUPT,
+            kind="sha256",
+            size_bytes=len(raw),
+            sha256=hashlib.sha256(raw).hexdigest(),
+            detail=(
+                "Checksum sidecar is canonical."
+                if valid
+                else "Checksum sidecar is non-canonical."
+            ),
+        )
+
+    @staticmethod
+    def _inspect_authority_json_member(path: Path, name: str) -> FileIntegrityReport:
+        try:
+            from .runtime_cash_authority import RuntimeCashAuthorityRecord
+
+            raw = path.read_bytes()
+            record = RuntimeCashAuthorityRecord.from_canonical_bytes(raw)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return FileIntegrityReport(
+                path=str(path),
+                status=IntegrityStatus.CORRUPT,
+                kind="runtime_cash_authority",
+                detail="CL7 authority member is unreadable or non-canonical.",
+            )
+        return FileIntegrityReport(
+            path=str(path),
+            status=IntegrityStatus.VALID,
+            kind="runtime_cash_authority",
+            size_bytes=len(raw),
+            sha256=record.sha256,
+            schema_version=record.version,
+            detail=f"CL7 authority member is canonical: {name}.",
+        )

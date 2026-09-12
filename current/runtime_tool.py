@@ -1,18 +1,21 @@
 from __future__ import annotations
 
-"""Command-line maintenance tool for v3.9.0 runtime operations."""
+"""Command-line maintenance tool for local runtime operations."""
 
 import argparse
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from trading_robot import __version__
 from trading_robot.paths import resolve_app_paths
 from trading_robot.readiness import ProductionReadinessEvaluator
-from trading_robot.runtime_backup import RuntimeBackupManager, RuntimeBackupError
-from trading_robot.secret_provider import preferred_secret_provider, probe_secret_provider
+from trading_robot.runtime_backup import RuntimeBackupError, RuntimeBackupManager
+from trading_robot.secret_provider import (
+    preferred_secret_provider,
+    probe_secret_provider,
+)
 from trading_robot.support_bundle import SupportBundleBuilder, SupportBundleError
 
 
@@ -27,7 +30,7 @@ def _json(value) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="v3.9.0 runtime maintenance tool")
+    parser = argparse.ArgumentParser(description="Local runtime maintenance tool")
     sub = parser.add_subparsers(dest="command", required=True)
 
     readiness = sub.add_parser("readiness", help="Evaluate Sandbox production-readiness gate.")
@@ -47,6 +50,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     restore = sub.add_parser("restore", help="Restore a verified runtime backup.")
     restore.add_argument("path")
     restore.add_argument("--confirmation", required=True)
+
+    isolated = sub.add_parser(
+        "restore-isolated",
+        help="Restore a verified backup into a new empty directory.",
+    )
+    isolated.add_argument("path")
+    isolated.add_argument("destination")
 
     support = sub.add_parser("support-bundle", help="Create a redacted support bundle.")
     support.add_argument("--output", default="")
@@ -100,6 +110,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "restore":
             preview = manager.restore_backup(args.path, confirmation=args.confirmation)
             _json({"status": "RESTORED", "items": [item.to_dict() for item in preview]})
+            return 0
+
+        if args.command == "restore-isolated":
+            restored = manager.restore_backup_isolated(args.path, args.destination)
+            _json({"status": "RESTORED_ISOLATED", "path": str(restored)})
             return 0
 
         if args.command == "support-bundle":

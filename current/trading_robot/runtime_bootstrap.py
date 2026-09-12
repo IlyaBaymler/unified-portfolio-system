@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 from uuid import uuid4
 
 from dotenv import dotenv_values
@@ -37,8 +38,10 @@ from .risk_persistence import (
 )
 from .runtime_cash_authority import (
     CL7RuntimeError,
+    RuntimeCashAuthorityState,
     RuntimeCashAuthorityStore,
 )
+from .runtime_integrity import IntegrityStatus, inspect_cash_ledger_store
 from .secret_provider import SecretProvider, SecretProviderProbe, probe_secret_provider
 from .state_persistence import atomic_write_json
 
@@ -404,6 +407,16 @@ def bootstrap_runtime_files(
         authority_store = RuntimeCashAuthorityStore(root)
         try:
             existed = authority_store.path.exists()
+            authority_members = (
+                authority_store.path,
+                authority_store.checksum_path,
+                authority_store.lastgood_path,
+            )
+            authority_before = {
+                path.name: path.read_bytes()
+                for path in authority_members
+                if path.is_file()
+            }
             if create_missing:
                 transition_at = (
                     datetime.now(timezone.utc)
@@ -429,7 +442,40 @@ def bootstrap_runtime_files(
                 )
             else:
                 warnings.append("Отсутствует runtime_cash_authority.json.")
-        except (CL7RuntimeError, OSError, TypeError, ValueError) as exc:
+                authority = None
+            authority_after = {
+                path.name: path.read_bytes()
+                for path in authority_members
+                if path.is_file()
+            }
+            if existed and authority_after != authority_before:
+                raise RuntimeBootstrapError(
+                    "Existing CL7 authority custody changed during validation."
+                )
+            ledger_report = inspect_cash_ledger_store(authority_store.ledger_path)
+            if ledger_report.valid:
+                items.append(
+                    RuntimeSetupItem(
+                        authority_store.ledger_path.name,
+                        "VALIDATED",
+                        ledger_report.detail,
+                    )
+                )
+            elif ledger_report.status is not IntegrityStatus.MISSING or (
+                authority is not None
+                and authority.state is not RuntimeCashAuthorityState.LEGACY_ACTIVE
+            ):
+                errors.append(
+                    "cash_ledger_v3_10.sqlite3 validation failed: "
+                    + ledger_report.status.value
+                )
+        except (
+            CL7RuntimeError,
+            OSError,
+            RuntimeBootstrapError,
+            TypeError,
+            ValueError,
+        ) as exc:
             errors.append(
                 "runtime_cash_authority.json не был автоматически исправлен: "
                 + str(exc)
@@ -729,11 +775,11 @@ def validate_runtime_files(
 __all__ = [
     "CANONICAL_RISK_PROFILE_NAME",
     "LEGACY_RISK_PROFILE_NAMES",
+    "RUNTIME_BOOTSTRAP_LOCK_NAME",
+    "RUNTIME_BOOTSTRAP_REPORT_NAME",
     "RuntimeBootstrapError",
     "RuntimeSetupItem",
     "RuntimeSetupReport",
-    "RUNTIME_BOOTSTRAP_LOCK_NAME",
-    "RUNTIME_BOOTSTRAP_REPORT_NAME",
     "bootstrap_runtime",
     "bootstrap_runtime_files",
     "validate_runtime_files",
