@@ -402,7 +402,34 @@ _UINT_RE = re.compile(r"0|[1-9][0-9]*")
 _PRIVATE_PATH_RE = re.compile(
     r"(?i)(?:[a-z]:[\\/](?:users|documents and settings)[\\/]|/(?:home|users)/)"
 )
-_AUTHORIZATION_RE = re.compile(r"(?i)authorization\s*:\s*bearer\s+\S+")
+_AUTHORIZATION_RE = re.compile(
+    r"(?i)authorization\s*:\s*bearer\s+(?!<redacted>(?:\s|$))\S+"
+)
+_TEXT_SHAREABLE_SUFFIXES = frozenset(
+    {
+        ".bat",
+        ".cfg",
+        ".cmd",
+        ".css",
+        ".csv",
+        ".html",
+        ".ini",
+        ".js",
+        ".json",
+        ".log",
+        ".md",
+        ".ps1",
+        ".py",
+        ".sha256",
+        ".spec",
+        ".tcl",
+        ".toml",
+        ".txt",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+)
 
 
 class PhaseStatus(StrEnum):
@@ -1317,14 +1344,16 @@ def scan_shareable_bytes(
     for name, raw in sorted(payloads.items()):
         if not isinstance(raw, bytes):
             _fail(QualificationReason.TYPE_INVALID)
-        text = raw.decode("utf-8", errors="replace")
         reasons: list[str] = []
         if any(needle in raw for needle in needles):
             reasons.append("KNOWN_CANARY")
-        if _AUTHORIZATION_RE.search(text):
-            reasons.append("AUTHORIZATION_BEARER")
-        if _PRIVATE_PATH_RE.search(text):
-            reasons.append("PRIVATE_ABSOLUTE_PATH")
+        member_name = str(name).rsplit(":", 1)[-1]
+        if PurePosixPath(member_name).suffix.lower() in _TEXT_SHAREABLE_SUFFIXES:
+            text = raw.decode("utf-8", errors="replace")
+            if _AUTHORIZATION_RE.search(text):
+                reasons.append("AUTHORIZATION_BEARER")
+            if _PRIVATE_PATH_RE.search(text):
+                reasons.append("PRIVATE_ABSOLUTE_PATH")
         for reason in sorted(set(reasons)):
             findings.append(f"{name}:{reason}")
     return tuple(findings)

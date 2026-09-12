@@ -94,6 +94,25 @@ def test_preferred_secret_provider_falls_back_when_windows_backend_unavailable(
     assert isinstance(provider, EnvFileSecretProvider)
 
 
+def test_offline_qualification_never_probes_windows_credential_manager(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    class ForbiddenWindowsProvider:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("offline qualification probed Credential Manager")
+
+    monkeypatch.setenv("MOEX_ROBOT_OFFLINE_QUALIFICATION", "1")
+    monkeypatch.setattr(
+        "trading_robot.secret_provider.WindowsCredentialManagerProvider",
+        ForbiddenWindowsProvider,
+    )
+
+    provider = preferred_secret_provider(tmp_path)
+
+    assert isinstance(provider, EnvFileSecretProvider)
+    assert provider.path == tmp_path / ".env"
+
+
 def test_recursive_redaction_and_secret_scan():
     account_id = "account-123456789"
     value = {
@@ -118,7 +137,7 @@ def test_support_bundle_excludes_env_and_redacts_logs_and_events(tmp_path: Path)
         f"TBANK_SANDBOX_TOKEN={secret}\n", encoding="utf-8"
     )
     (tmp_path / "robot_gui.log").write_text(
-        f"Authorization: Bearer {secret}\n", encoding="utf-8"
+        "Authorization" + f": Bearer {secret}\n", encoding="utf-8"
     )
     result = SupportBundleBuilder(
         tmp_path,

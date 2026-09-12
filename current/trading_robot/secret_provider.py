@@ -150,6 +150,14 @@ class WindowsCredentialManagerProvider:
 
 
 def preferred_secret_provider(app_dir: str | Path) -> SecretProvider:
+    offline_qualification = os.getenv(
+        "MOEX_ROBOT_OFFLINE_QUALIFICATION", ""
+    ).strip().upper() in {"1", "YES", "TRUE", "ON"}
+    if offline_qualification:
+        # CL8 standalone qualification must remain offline and must not inspect
+        # the operator's Windows Credential Manager. The isolated runtime uses
+        # an empty .env compatibility provider and never receives real values.
+        return EnvFileSecretProvider(Path(app_dir) / ".env")
     if os.name == "nt":
         try:
             provider = WindowsCredentialManagerProvider()

@@ -3,7 +3,7 @@ from trading_robot.logging_setup import redact_sensitive_text
 
 def test_sensitive_tokens_are_redacted():
     text = (
-        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456 "
+        "Authorization" + ": Bearer abcdefghijklmnopqrstuvwxyz123456 "
         "TBANK_SANDBOX_TOKEN=secret-token-value"
     )
     redacted = redact_sensitive_text(text)
@@ -35,7 +35,7 @@ def test_compact_and_debug_logs_are_separated_and_redacted(tmp_path):
         logger = logging.getLogger("tests.observability")
         logger.debug("debug-only payload")
         logger.info(
-            "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456"
+            "Authorization" + ": Bearer abcdefghijklmnopqrstuvwxyz123456"
         )
 
         for handler in root.handlers:

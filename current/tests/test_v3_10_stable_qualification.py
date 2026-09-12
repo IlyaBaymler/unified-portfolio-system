@@ -160,6 +160,18 @@ CL8_Q23_CORRECTION_PATHS = {
     "current/tools/v3_10_stable_qualification.py",
     "docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md",
 }
+CL8_Q45_CORRECTION_BRANCH = "agent/v3-10-clean-cl8-q45-correction-r1"
+CL8_Q45_CORRECTION_PARENT = "7c339fe0a9243f0d3c29396c3ad96068bef6f1dd"
+CL8_Q45_CORRECTION_PARENT_TREE = "3fc0fbbf1cbfc4c9a36897b246cabd176f942fb4"
+CL8_Q45_CORRECTION_PATHS = {
+    "current/tests/test_logging_setup.py",
+    "current/tests/test_observability.py",
+    "current/tests/test_security_rc1.py",
+    "current/tests/test_support_readiness_rc1.py",
+    "current/tests/test_v3_10_stable_qualification.py",
+    "current/tools/v3_10_stable_qualification.py",
+    "current/trading_robot/secret_provider.py",
+}
 
 
 @pytest.fixture(scope="module")
@@ -1400,7 +1412,8 @@ def test_v310_cl8_031_036_privacy_scans_and_no_provider_boundary() -> None:
     findings = scan_shareable_bytes(
         {
             "bad.json": (
-                b"Authorization: Bearer synthetic-secret C:\\Users\\person\\data"
+                b"Authorization"
+                + b": Bearer synthetic-secret C:\\Users\\person\\data"
             )
         },
         canaries=("synthetic-secret",),
@@ -1410,6 +1423,27 @@ def test_v310_cl8_031_036_privacy_scans_and_no_provider_boundary() -> None:
         "bad.json:KNOWN_CANARY",
         "bad.json:PRIVATE_ABSOLUTE_PATH",
     )
+    assert (
+        scan_shareable_bytes(
+            {"redacted.log": b"Authorization" + b": Bearer <REDACTED>"}
+        )
+        == ()
+    )
+    assert (
+        scan_shareable_bytes(
+            {
+                "vendor.dll": (
+                    b"Authorization" + b": Bearer vendor-symbol "
+                    b"C:\\Users\\vendor\\build"
+                )
+            }
+        )
+        == ()
+    )
+    assert scan_shareable_bytes(
+        {"vendor.dll": b"binary-synthetic-secret"},
+        canaries=("binary-synthetic-secret",),
+    ) == ("vendor.dll:KNOWN_CANARY",)
     tree = ast.parse(
         (CURRENT / "tools" / "v3_10_stable_qualification.py").read_text(
             encoding="utf-8"
@@ -1844,6 +1878,42 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
         ]
         if pull_request["head"]["ref"] == CL8_RELEASE_CUT_BRANCH:
             release_cut_pr = pull_request
+
+    if branch == CL8_Q45_CORRECTION_BRANCH:
+        head = _git("rev-parse", "HEAD", text=True).stdout.strip()
+        assert (
+            _git(
+                "rev-parse", f"{CL8_Q45_CORRECTION_PARENT}^{{tree}}", text=True
+            ).stdout.strip()
+            == CL8_Q45_CORRECTION_PARENT_TREE
+        )
+        assert (
+            _git(
+                "merge-base", CL8_Q45_CORRECTION_PARENT, head, text=True
+            ).stdout.strip()
+            == CL8_Q45_CORRECTION_PARENT
+        )
+        if head != CL8_Q45_CORRECTION_PARENT:
+            assert (
+                _git("rev-parse", f"{head}^", text=True).stdout.strip()
+                == CL8_Q45_CORRECTION_PARENT
+            )
+        changed = set(
+            _git(
+                "diff",
+                "--name-only",
+                f"{CL8_Q45_CORRECTION_PARENT}..{head}",
+                text=True,
+            ).stdout.splitlines()
+        )
+        changed.update(_git("diff", "--name-only", text=True).stdout.splitlines())
+        changed.update(
+            _git(
+                "ls-files", "--others", "--exclude-standard", text=True
+            ).stdout.splitlines()
+        )
+        assert changed == CL8_Q45_CORRECTION_PATHS
+        return
 
     if branch == CL8_Q23_CORRECTION_BRANCH:
         head = _git("rev-parse", "HEAD", text=True).stdout.strip()

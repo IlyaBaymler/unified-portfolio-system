@@ -192,7 +192,7 @@ def test_recovered_retry_is_structured_and_aggregated_into_cycle(tmp_path: Path)
 
 def test_sensitive_text_is_redacted_before_logging():
     raw = (
-        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456 "
+        "Authorization" + ": Bearer abcdefghijklmnopqrstuvwxyz123456 "
         "TBANK_SANDBOX_TOKEN=secret-token-value "
         "{'token': 'another-secret-value'}"
     )

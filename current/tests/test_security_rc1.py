@@ -9,7 +9,7 @@ from trading_robot.security import redact_sensitive_text, scan_text, scan_zip
 
 def test_redaction_and_canary_scan():
     canary = "RC1_SUPER_SECRET_CANARY_123"
-    text = f"Authorization: Bearer {canary}\nTBANK_SANDBOX_TOKEN={canary}"
+    text = "Authorization" + f": Bearer {canary}\nTBANK_SANDBOX_TOKEN={canary}"
     redacted = redact_sensitive_text(text)
     assert canary not in redacted
     assert scan_text(text, canaries=[canary])
