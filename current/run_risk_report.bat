@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title MOEX Risk Dashboard and Burn-in Report v3.9.0
+title MOEX Risk Dashboard and Burn-in Report v3.10.0
 
 call prepare_environment.bat --with-dev
 if errorlevel 1 goto :error

@@ -1,28 +1,32 @@
-# Быстрый запуск MOEX Research Robot v3.9.0 Stable Candidate
+# Быстрый запуск MOEX Research Robot v3.10.0 Stable Release Candidate
 
 ## Source candidate
 
 ```bat
-install_and_verify_v3_9_0.bat
+install_and_verify_v3_10_0.bat
 run_gui.bat
 ```
 
-Установщик создаёт локальную `.venv`, устанавливает зависимости и запускает
-автоматический M6 preflight. Runtime предыдущей версии переносите только через
-проверенный backup, preview restore и отдельную operator confirmation.
+Установщик создаёт локальную `.venv` и выполняет offline release-candidate
+verification. PASS этого шага не является Stable acceptance и не разрешает
+provider access или эксперимент.
 
 ## Portable candidate
 
-Запустите `MOEX Research Robot.bat`. Python на целевом компьютере не требуется.
-Сам факт запуска не закрывает standalone/restart/burn-in acceptance.
+Создайте пакет через `BUILD_STANDALONE.bat`, распакуйте его в новую папку и
+запустите `MOEX Research Robot.bat`. Standalone qualification должна отдельно
+доказать чистую установку, запуск без system Python и отсутствие private runtime
+данных внутри артефакта.
 
-## Перед Sandbox Execution
+## Перед Sandbox execution
 
-- выбран правильный Sandbox account ID;
-- canonical snapshot свежий и `READY/FRESH/MATCHED`;
+- exact Sandbox account scope подтверждён;
+- configured instrument set и canonical positions согласованы;
+- CL4 broker proof свежий и reconciliation имеет `MATCHED`;
+- CL5 CashAvailability и CL6 Risk cash context относятся к тем же revisions;
 - Central queue/reservations и pending/uncertain проверены;
-- Portfolio Risk `READY/ENFORCED`, kill switches в ожидаемом состоянии;
-- `risk_resync_required=false`;
-- увеличение риска имеет свежий dispatch proof.
+- CL7 находится в разрешённом состоянии и прошёл final freshness gate;
+- отдельная operator authorization действительно получена.
 
-Real-account execution в v3.9.0 отсутствует.
+Real-account execution отсутствует. Automatic retry/resubmit ambiguous POST
+запрещён.

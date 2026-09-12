@@ -138,7 +138,7 @@ class TBankSandboxClient:
     timeout_seconds: float | None = None
     connect_timeout_seconds: float = 8.0
     read_timeout_seconds: float = 25.0
-    app_name: str = "moex-research-robot-v3.9.0"
+    app_name: str = "moex-research-robot-v3.10.0"
     max_retries: int = 3
     retry_backoff_seconds: float = 0.5
     retry_jitter_seconds: float = 0.25

@@ -1,8 +1,8 @@
 {
-  "software_version": "0.3.9",
-  "display_version": "v3.9.0",
+  "software_version": "0.3.10",
+  "display_version": "v3.10.0",
   "release_channel": "stable",
-  "build_date": "2026-08-15",
+  "build_date": "2026-09-12",
   "sandbox_only": true,
   "real_account_execution": false,
   "state_schema": 6,
@@ -29,9 +29,9 @@
     480,
     600
   ],
-  "release_basis": "v3.9 M5.3 squash-merged implementation baseline",
-  "implementation_baseline_commit": "cddd80f3caf7191ecf2f85df9e1ccfea97af6cc4",
-  "qualification_branch_base_commit": "dd3b9a35f5d2b2dfb9e8776facb81712848e2c7d",
+  "release_basis": "v3.10 CL8 accepted qualification-adoption baseline",
+  "implementation_baseline_commit": "7a569eadfb2a99c5314ae43d24da0dee47819d6c",
+  "qualification_branch_base_commit": "e27204ad110db36b8ace540bd0738874fab69565",
   "default_max_position_lots": 1,
   "default_max_orders_per_day": 4,
   "sandbox_acceptance": {
@@ -182,5 +182,23 @@
     "persistence_final_review": "PASS",
     "disposable_restore": "PASS",
     "executable_launch_verified": false
+  },
+  "v3_10_cl8_release_cut": {
+    "status": "candidate-not-accepted-not-published",
+    "contract_commit": "711508e369d23bd6670d5697403fb824b3ea293d",
+    "contract_tree": "49fa21dbf8fb228a7a0f8165e1a407cc7a07896f",
+    "issue72_accepted_commit": "e27204ad110db36b8ace540bd0738874fab69565",
+    "issue72_accepted_tree": "a38d38617dcfa7e15dd1b8ce1f838aeec72c35f1",
+    "qualification_adoption_commit": "7a569eadfb2a99c5314ae43d24da0dee47819d6c",
+    "qualification_adoption_tree": "d4f6bf5d1b00f4b944ac0aece669a00cd72b5847",
+    "q0": "PASS",
+    "q1_q7": "NOT_RUN",
+    "q8_release_review": "NOT_RUN",
+    "q9_stable_acceptance": false,
+    "publication_authorized": false,
+    "provider_access_authorized": false,
+    "controlled_clock_experiment_authorized": false,
+    "sandbox_experiment_authorized": false,
+    "tag_or_github_release_authorized": false
   }
 }

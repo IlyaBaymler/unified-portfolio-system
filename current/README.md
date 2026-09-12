@@ -1,85 +1,63 @@
-# MOEX Research Robot v3.9.0 Stable Candidate
-
-## V3.10 Issue #72 local implementation candidate
-
-Основной GUI Sandbox-path теперь проектируется как один account-level
-`ConfiguredExecutionSet`: Start/Stop проходят через `GuiRuntimeController` и одну
-full-registry CAS-транзакцию `GlobalScheduler`. Proposal допускается только после
-canonical Portfolio, Central, Risk, same-instance Portfolio Risk и pre-existing
-`EXACT_CASH_ARMED` CL7 validation; provider mutation остаётся только в
-`SandboxExecutionAdapter`.
-
-GUI Risk Policy является read-only. Диагностические submit/close callbacks удалены,
-dashboard показывает отдельные actual/target, reconciliation, Central statuses, Risk и
-CL7 fields. Account identifiers отображаются только как scope hashes.
-
-Статус: `LOCAL IMPLEMENTATION CANDIDATE / NOT REVIEWED / NOT ACCEPTED / NOT PUBLISHED`.
-Provider access и `START EXPERIMENT` не авторизованы.
+# MOEX Research Robot v3.10.0 Stable Release Candidate
 
 Исследовательский менеджер инвестиционного портфеля для **T-Invest Sandbox**.
-Версия `0.3.9` фиксирует реализацию Portfolio Risk Engine M1–M5.3 из exact
-baseline commit `cddd80f3caf7191ecf2f85df9e1ccfea97af6cc4` как кандидата M6.
 
 ```text
-GUI:                         v3.9.0
-Python package:              0.3.9
+Python package:              0.3.10
+Display identity:            v3.10.0
 Release channel:             stable
-Qualification status:        candidate
-PortfolioState:              schema 2, canonical-only
-Portfolio Risk state:        schema 4, ENFORCED
-Execution:                   configured instruments, T-Invest Sandbox only
-Real account execution:      disabled
-Automatic position adoption: disabled
+Release-cut status:          candidate
+Stable acceptance:           not granted
+Publication:                 not authorized
+Real-account execution:      disabled
 ```
 
-## Зафиксированная архитектура
+Release cut построен от exact accepted CL8 qualification-adoption predecessor
+`7a569eadfb2a99c5314ae43d24da0dee47819d6c` с tree
+`d4f6bf5d1b00f4b944ac0aece669a00cd72b5847`. Сам release cut ещё должен пройти
+отдельный exact-head review, Q1–Q8 qualification и explicit Stable acceptance.
 
-- PortfolioState остаётся canonical actual-position/cash truth;
-- CentralOrderManager единолично владеет queue, reservations и dispatch proof;
-- Portfolio Risk оценивает current/projected account-wide exposure и выполняет
-  pre-dispatch revalidation;
-- stale/mixed canonical, queue, policy или Risk proof блокирует увеличение риска;
-- external cash/position change требует явного reconciliation/resync;
-- global и instrument kill switches изменяются только exact-confirmation
-  operator-командами;
-- provider POST доступен только через Sandbox ExecutionAdapter;
-- real-account execution отсутствует.
+## Денежный контур v3.10
 
-## Qualification boundary
+- CL1 задаёт exact `Money`, identity и append-only CashLedger semantics;
+- CL2 владеет durable append-only persistence и OperationInbox;
+- CL3 преобразует read-only provider observations в deterministic inputs;
+- CL4 создаёт opening proof и shadow reconciliation без execution authority;
+- CL5 вычисляет immutable CashAvailability proof без владения деньгами;
+- CL6 передаёт cash context только в Reporting и Portfolio Risk;
+- CL7 владеет durable runtime cutover/recovery state machine и запрещает
+  automatic resubmit после ambiguous provider outcome;
+- accepted Issue #72 связывает GUI/runtime с account-level configured set,
+  Central, Risk и exact-cash authority без второго mutation owner.
 
-M5.3 persistence/restore/support/structural-layout review и post-merge CI уже
-пройдены. Это не заменяет M6: actual standalone build/launch, clean install,
-upgrade/rollback, restart/disconnect/partial-fill matrix, manual kill switches и
-24–48-часовой burn-in на 2–3 инструментах пока не приняты.
+`MATCHED`, `READY` или `EXACT_CASH_ARMED` сами по себе не являются приказом на
+сделку. Provider POST остаётся за существующим Sandbox execution boundary после
+всех Central/Risk/CL7 проверок. Real-account endpoint отсутствует.
 
-`build_manifest.json` намеренно сохраняет `status=candidate`,
-`user_acceptance=false` и все ручные M6 flags в `false`. Tag/release и
-real-account permission этой веткой не создаются.
+## Текущий qualification gate
 
-Автоматический M6 source gate выполнен: targeted группы `27 + 112 + 46`, full
-regression `780 passed`, pip check, release hygiene, critical/strict Ruff,
-compileall и candidate safety boundary — PASS.
+Q0 принят на exact Issue #72 `e27204ad110db36b8ace540bd0738874fab69565`.
+Qualification infrastructure принята и интегрирована. Q1–Q7, artifact hashes,
+Q8 independent release review и Q9 explicit Stable acceptance для нового exact
+release candidate пока не зафиксированы. Controlled-clock и Sandbox действия
+запускаются только после отдельных Preparation Stage и `START EXPERIMENT`.
 
-Два deterministic source ZIP прошли byte/hash, root/path, sorted member,
-timestamp/mode, `ZIP_CONTENTS.txt`, manifest и private/runtime scan. Exact
-artifact hashes хранятся во внешнем evidence index.
-
-## Быстрый запуск Windows
+## Быстрый локальный запуск Windows
 
 ```bat
-install_and_verify_v3_9_0.bat
+install_and_verify_v3_10_0.bat
 run_gui.bat
 ```
 
-Portable-кандидат создаётся `BUILD_STANDALONE.bat`; запускать его нужно из новой
-папки через `MOEX Research Robot.bat`. До Sandbox Execution проверьте точный
-Sandbox account, свежий canonical snapshot, пустые pending/uncertain и Risk
-`READY/ENFORCED` без `risk_resync_required`.
+Portable candidate создаётся `BUILD_STANDALONE.bat`. До любого Sandbox execution
+проверьте exact account scope, отсутствие unresolved pending/uncertain outcome,
+fresh broker proof, `MATCHED` reconciliation, CashAvailability, Portfolio Risk,
+Central reservation/dispatch proof и CL7 final freshness gate.
 
 ## Документация
 
-- `V3_9_0_STABLE_ARCHITECTURE_RU.md` — frozen ownership/safety boundary;
-- `V3_9_0_STABLE_TEST_PLAN_RU.md` — M6 qualification matrix;
-- `V3_9_0_STABLE_RECOVERY_RUNBOOK_RU.md` — restart/restore/rollback;
-- `UPDATE_TO_V3_9_0_STABLE.md` — clean install и upgrade;
-- `RELEASE_MANIFEST_V3_9_0_STABLE.txt` — честный статус candidate gates.
+- `V3_10_0_STABLE_ARCHITECTURE_RU.md` — ownership и authority boundaries;
+- `V3_10_0_STABLE_TEST_PLAN_RU.md` — Q0–Q9 qualification matrix;
+- `V3_10_0_STABLE_RECOVERY_RUNBOOK_RU.md` — restart/recovery/rollback;
+- `UPDATE_TO_V3_10_0_STABLE.md` — clean install и upgrade;
+- `RELEASE_MANIFEST_V3_10_0_STABLE.txt` — candidate custody и открытые gates.

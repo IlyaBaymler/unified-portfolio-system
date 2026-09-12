@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
-title MOEX Research Robot v3.9.0
+title MOEX Research Robot v3.10.0
 if not exist ".venv\Scripts\python.exe" (
     call install_and_run_gui.bat
     exit /b %errorlevel%

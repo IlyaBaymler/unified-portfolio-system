@@ -1,0 +1,56 @@
+MOEX Research Robot v3.10.0 Stable Release Candidate
+Python package: 0.3.10
+Release channel: stable
+Prepared: 2026-09-12
+
+Release-cut predecessor:
+- commit: 7a569eadfb2a99c5314ae43d24da0dee47819d6c
+- tree: d4f6bf5d1b00f4b944ac0aece669a00cd72b5847
+
+Accepted CL8 contract:
+- commit: 711508e369d23bd6670d5697403fb824b3ea293d
+- tree: 49fa21dbf8fb228a7a0f8165e1a407cc7a07896f
+
+Q0 accepted Issue #72:
+- commit: e27204ad110db36b8ace540bd0738874fab69565
+- tree: a38d38617dcfa7e15dd1b8ce1f838aeec72c35f1
+- status: PASS
+
+Qualification infrastructure:
+- adoption commit: 7a569eadfb2a99c5314ae43d24da0dee47819d6c
+- adoption tree: d4f6bf5d1b00f4b944ac0aece669a00cd72b5847
+- acceptance: PASS / APPROVE / material findings 0
+- regression: 1181 passed / exact six inherited custody failures
+
+Permanent safety boundary:
+- sandbox_only=true
+- real_account_execution=false
+- automatic_position_adoption=false
+- provider observation is not economic posting authority
+- CashAvailability is a derived proof, not owned cash
+- MATCHED reconciliation is not execution authority
+- ambiguous POST outcome is never automatically resubmitted
+
+Release-candidate gates:
+- bounded release-cut implementation: LOCAL CANDIDATE
+- independent release-cut review: PENDING
+- Q1 regression and GUI/runtime qualification: NOT RUN FOR THIS CANDIDATE
+- Q2 corruption/recovery matrix: NOT RUN FOR THIS CANDIDATE
+- Q3 install/upgrade/rollback: NOT RUN FOR THIS CANDIDATE
+- Q4 deterministic source/standalone artifacts: NOT BUILT
+- Q5 privacy/support-bundle review: NOT RUN FOR THIS CANDIDATE
+- Q6 controlled-clock qualification: NOT AUTHORIZED / NOT RUN
+- Q7 Sandbox burn-in: NOT AUTHORIZED / NOT RUN
+- Sandbox-account final disposition: PENDING FOR THIS CANDIDATE
+- Q8 independent release review: NOT RUN
+- Q9 explicit Stable acceptance: NOT GRANTED
+
+Frozen artifact names:
+- moex_trading_robot_source_v3_10_0.zip
+- moex_trading_robot_standalone_v3_10_0.zip
+- V3_10_0_RELEASE_SHA256.txt
+
+Publication:
+- Git tag v3.10.0: NOT AUTHORIZED
+- GitHub Release: NOT AUTHORIZED
+- real-account execution: NOT IMPLEMENTED / NOT AUTHORIZED
