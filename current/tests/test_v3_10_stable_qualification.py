@@ -115,8 +115,14 @@ CL8_RELEASE_CUT_PREDECESSOR = "7a569eadfb2a99c5314ae43d24da0dee47819d6c"
 CL8_RELEASE_CUT_PREDECESSOR_TREE = "d4f6bf5d1b00f4b944ac0aece669a00cd72b5847"
 CL8_RELEASE_REVIEW_PARENT = "58fc85f26d089da677d68bf3ded6a7cca05fb035"
 CL8_RELEASE_REVIEW_PARENT_TREE = "9036c7f8d943720a47cbec3c1b68e0444e721458"
+CL8_RELEASE_REVIEW_ACCEPTED_HEAD = "b1ccc10ff5c548815d049ea7081cb27b49307390"
+CL8_RELEASE_REVIEW_ACCEPTED_TREE = "5729ed32a94a813905e14a868fe3edd73fe4a814"
 CL8_RELEASE_REVIEW_EXPECTED_PATHS = RELEASE_REVIEW_CORRECTION_ALLOWLIST - {
     "current/install_and_run_gui.bat"
+}
+CL8_RELEASE_PR180_RESCOPE_PATHS = {
+    "current/tests/test_v3_10_issue72_gui_runtime.py",
+    "current/tests/test_v3_10_stable_qualification.py",
 }
 
 
@@ -1176,8 +1182,41 @@ def test_v310_cl8_046_missing_failure_never_compensates_for_new_failure() -> Non
 
 def test_exact_qualification_delta_and_predecessor_immutability() -> None:
     branch = _git("branch", "--show-current", text=True).stdout.strip()
-    if branch == CL8_RELEASE_CUT_BRANCH:
+    release_cut_pr: dict[str, object] | None = None
+    if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+        event_path = os.environ.get("GITHUB_EVENT_PATH")
+        assert event_path is not None
+        pull_request = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))[
+            "pull_request"
+        ]
+        if pull_request["head"]["ref"] == CL8_RELEASE_CUT_BRANCH:
+            release_cut_pr = pull_request
+
+    if branch == CL8_RELEASE_CUT_BRANCH or release_cut_pr is not None:
         head = _git("rev-parse", "HEAD", text=True).stdout.strip()
+        if release_cut_pr is not None:
+            assert release_cut_pr["base"]["ref"] == (
+                "program/v3-10-v4-stable-line"
+            )
+            assert release_cut_pr["base"]["sha"] == CL8_RELEASE_CUT_PREDECESSOR
+            head = str(release_cut_pr["head"]["sha"])
+            assert _git("cat-file", "-e", f"{head}^{{commit}}").returncode == 0
+            checked_out_head = _git("rev-parse", "HEAD", text=True).stdout.strip()
+            assert checked_out_head == os.environ.get("GITHUB_SHA")
+            commit_text = _git(
+                "cat-file", "-p", checked_out_head, text=True
+            ).stdout
+            parents = [
+                line.removeprefix("parent ")
+                for line in commit_text.splitlines()
+                if line.startswith("parent ")
+            ]
+            assert parents == [CL8_RELEASE_CUT_PREDECESSOR, head]
+            assert _git(
+                "rev-parse", f"{checked_out_head}^{{tree}}", text=True
+            ).stdout.strip() == _git(
+                "rev-parse", f"{head}^{{tree}}", text=True
+            ).stdout.strip()
         assert _git(
             "rev-parse", f"{CL8_RELEASE_CUT_PREDECESSOR}^{{tree}}", text=True
         ).stdout.strip() == CL8_RELEASE_CUT_PREDECESSOR_TREE
@@ -1188,12 +1227,39 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
             "rev-parse", f"{CL8_RELEASE_REVIEW_PARENT}^", text=True
         ).stdout.strip() == CL8_RELEASE_CUT_PREDECESSOR
         assert _git(
+            "rev-parse", f"{CL8_RELEASE_REVIEW_ACCEPTED_HEAD}^{{tree}}", text=True
+        ).stdout.strip() == CL8_RELEASE_REVIEW_ACCEPTED_TREE
+        assert _git(
+            "rev-parse", f"{CL8_RELEASE_REVIEW_ACCEPTED_HEAD}^", text=True
+        ).stdout.strip() == CL8_RELEASE_REVIEW_PARENT
+        assert _git(
             "merge-base", CL8_RELEASE_CUT_PREDECESSOR, head, text=True
         ).stdout.strip() == CL8_RELEASE_CUT_PREDECESSOR
-        if head != CL8_RELEASE_REVIEW_PARENT:
+        if head not in {
+            CL8_RELEASE_REVIEW_PARENT,
+            CL8_RELEASE_REVIEW_ACCEPTED_HEAD,
+        }:
             assert _git("rev-parse", f"{head}^", text=True).stdout.strip() == (
-                CL8_RELEASE_REVIEW_PARENT
+                CL8_RELEASE_REVIEW_ACCEPTED_HEAD
             )
+        if head != CL8_RELEASE_REVIEW_PARENT:
+            rescope_changed = set(
+                _git(
+                    "diff",
+                    "--name-only",
+                    f"{CL8_RELEASE_REVIEW_ACCEPTED_HEAD}..{head}",
+                    text=True,
+                ).stdout.splitlines()
+            )
+            rescope_changed.update(
+                _git("diff", "--name-only", text=True).stdout.splitlines()
+            )
+            rescope_changed.update(
+                _git(
+                    "ls-files", "--others", "--exclude-standard", text=True
+                ).stdout.splitlines()
+            )
+            assert rescope_changed == CL8_RELEASE_PR180_RESCOPE_PATHS
         correction_changed = set(
             _git(
                 "diff",
