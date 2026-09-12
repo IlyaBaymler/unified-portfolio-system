@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,6 +44,11 @@ SCOPE = "15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3"
 T0 = datetime(2026, 9, 12, 10, 0, tzinfo=timezone.utc)
 ACCEPTED_CONTRACT = "5bb7569992a93817fad939a7fc8919444001b8c0"
 ACCEPTED_CONTRACT_TREE = "6e843c504ea91033c1226a0223ea0578256b80b4"
+ACCEPTED_IMPLEMENTATION = "e27204ad110db36b8ace540bd0738874fab69565"
+ACCEPTED_IMPLEMENTATION_TREE = "a38d38617dcfa7e15dd1b8ce1f838aeec72c35f1"
+CL8_ADOPTION_BRANCH = "agent/v3-10-clean-cl8-qualification-adoption"
+CL8_ADOPTION_MECHANICAL_COMMIT = "70589366d3c34ede0cb0aba2a43f988c9f91fbd9"
+CL8_ADOPTION_MECHANICAL_TREE = "cfb1f9ea602316da30152a6f6c89b5f2018cf015"
 IMPLEMENTATION_PATHS = {
     "ROADMAP.md",
     "current/README.md",
@@ -58,6 +64,24 @@ IMPLEMENTATION_PATHS = {
     "docs/plans/V3_10_ISSUE72_SANDBOX_ACCOUNT_CLEANUP_RUNBOOK_RU.md",
     "docs/project/V3_10_ISSUE72_GUI_RUNTIME_REVIEW_RU.md",
     "docs/project/V3_10_ISSUE72_RISK_POLICY_GUI_ADR_RU.md",
+}
+CL8_ADOPTION_PATHS = {
+    ".github/workflows/ci.yml",
+    "current/rc_tool.py",
+    "current/runtime_tool.py",
+    "current/tests/fixtures/v3_10_stable_qualification_vectors.json",
+    "current/tests/test_v3_10_issue72_gui_runtime.py",
+    "current/tests/test_v3_10_stable_qualification.py",
+    "current/tools/build_release.py",
+    "current/tools/release_cleanup.py",
+    "current/tools/v3_10_stable_qualification.py",
+    "current/tools/verify_standalone_layout.py",
+    "current/trading_robot/readiness.py",
+    "current/trading_robot/runtime_backup.py",
+    "current/trading_robot/runtime_bootstrap.py",
+    "current/trading_robot/runtime_integrity.py",
+    "current/trading_robot/support_bundle.py",
+    "docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md",
 }
 
 
@@ -83,19 +107,70 @@ def _git(*args: str) -> str:
 
 
 def test_exact_contract_branch_and_fourteen_path_custody():
-    head = _git("rev-parse", "HEAD")
+    checked_out_head = _git("rev-parse", "HEAD")
+    head = checked_out_head
     assert _git("rev-parse", f"{ACCEPTED_CONTRACT}^{{tree}}") == ACCEPTED_CONTRACT_TREE
     assert _git("merge-base", ACCEPTED_CONTRACT, head) == ACCEPTED_CONTRACT
-    assert _git("branch", "--show-current") == (
-        "agent/v3-10-issue72-gui-runtime-implementation"
-    )
-    if head == ACCEPTED_CONTRACT:
-        status = _git("status", "--porcelain=v1").splitlines()
-        changed = {line[3:].replace("\\", "/") for line in status}
+    branch = _git("branch", "--show-current")
+    if branch == "agent/v3-10-issue72-gui-runtime-implementation":
+        if head == ACCEPTED_CONTRACT:
+            status = _git("status", "--porcelain=v1").splitlines()
+            changed = {line[3:].replace("\\", "/") for line in status}
+        else:
+            changed = set(
+                _git("diff", "--name-only", f"{ACCEPTED_CONTRACT}..{head}").splitlines()
+            )
+            changed.update(
+                _git("ls-files", "--others", "--exclude-standard").splitlines()
+            )
+        assert changed == IMPLEMENTATION_PATHS
+        return
+
+    if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+        event_path = os.environ.get("GITHUB_EVENT_PATH")
+        assert event_path is not None
+        pull_request = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))[
+            "pull_request"
+        ]
+        assert pull_request["base"]["ref"] == "program/v3-10-v4-stable-line"
+        assert pull_request["base"]["sha"] == ACCEPTED_IMPLEMENTATION
+        assert pull_request["head"]["ref"] == CL8_ADOPTION_BRANCH
+        head = pull_request["head"]["sha"]
+        assert checked_out_head == os.environ.get("GITHUB_SHA")
+        commit_text = _git("cat-file", "-p", checked_out_head)
+        parents = [
+            line.removeprefix("parent ")
+            for line in commit_text.splitlines()
+            if line.startswith("parent ")
+        ]
+        assert parents == [ACCEPTED_IMPLEMENTATION, head]
     else:
-        changed = set(_git("diff", "--name-only", f"{ACCEPTED_CONTRACT}..{head}").splitlines())
-        changed.update(_git("ls-files", "--others", "--exclude-standard").splitlines())
-    assert changed == IMPLEMENTATION_PATHS
+        assert branch == CL8_ADOPTION_BRANCH
+    assert _git("rev-parse", f"{ACCEPTED_IMPLEMENTATION}^{{tree}}") == (
+        ACCEPTED_IMPLEMENTATION_TREE
+    )
+    assert _git("rev-parse", f"{CL8_ADOPTION_MECHANICAL_COMMIT}^{{tree}}") == (
+        CL8_ADOPTION_MECHANICAL_TREE
+    )
+    assert _git("rev-parse", f"{CL8_ADOPTION_MECHANICAL_COMMIT}^") == (
+        ACCEPTED_IMPLEMENTATION
+    )
+    assert _git("rev-parse", f"{head}^") == CL8_ADOPTION_MECHANICAL_COMMIT
+    assert _git("merge-base", ACCEPTED_IMPLEMENTATION, head) == (
+        ACCEPTED_IMPLEMENTATION
+    )
+    changed = set(
+        _git("diff", "--name-only", f"{ACCEPTED_IMPLEMENTATION}..{head}").splitlines()
+    )
+    changed.update(_git("diff", "--name-only").splitlines())
+    changed.update(_git("ls-files", "--others", "--exclude-standard").splitlines())
+    assert changed == CL8_ADOPTION_PATHS
+    for path in IMPLEMENTATION_PATHS - {
+        "current/tests/test_v3_10_issue72_gui_runtime.py"
+    }:
+        assert _git("rev-parse", f"{ACCEPTED_IMPLEMENTATION}:{path}") == _git(
+            "rev-parse", f"{head}:{path}"
+        )
 
 
 def _profile(ticker: str, interval: str) -> MultiInstrumentProfile:

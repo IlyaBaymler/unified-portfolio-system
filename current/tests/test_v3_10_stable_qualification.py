@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import zipfile
@@ -88,6 +89,24 @@ CL2_FIXTURE = (
     CURRENT / "tests" / "fixtures" / "v3_10_cash_ledger_persistence_vectors.json"
 )
 
+CL8_ADOPTION_BRANCH = "agent/v3-10-clean-cl8-qualification-adoption"
+CL8_ADOPTION_PREDECESSOR_COMMIT = "e27204ad110db36b8ace540bd0738874fab69565"
+CL8_ADOPTION_PREDECESSOR_TREE = "a38d38617dcfa7e15dd1b8ce1f838aeec72c35f1"
+CL8_ADOPTION_MECHANICAL_COMMIT = "70589366d3c34ede0cb0aba2a43f988c9f91fbd9"
+CL8_ADOPTION_MECHANICAL_TREE = "cfb1f9ea602316da30152a6f6c89b5f2018cf015"
+CL8_ADOPTION_SOURCE_COMMIT = "a11cfc1f90055ef29d86606fe8377b4ddc2c10f0"
+CL8_ADOPTION_SOURCE_TREE = "bd92e233ab11f8576e7540d33dfbe9c589b1a13e"
+CL8_ADOPTION_SOURCE_BASE = "ef2eba758bbffb587dbe237a96372b2273fdee03"
+CL8_ADOPTION_CONTRACT_PATH = (
+    "docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md"
+)
+CL8_ADOPTION_ISSUE72_TEST_PATH = "current/tests/test_v3_10_issue72_gui_runtime.py"
+CL8_ADOPTION_CORRECTION_PATHS = {
+    CL8_ADOPTION_CONTRACT_PATH,
+    "current/tests/test_v3_10_stable_qualification.py",
+    CL8_ADOPTION_ISSUE72_TEST_PATH,
+}
+
 
 @pytest.fixture(scope="module")
 def vectors() -> dict[str, object]:
@@ -161,6 +180,35 @@ def _git(*args: str, text: bool = False) -> subprocess.CompletedProcess:
         capture_output=True,
         text=text,
     )
+
+
+def _cl8_adoption_candidate_head() -> str:
+    checked_out_head = _git("rev-parse", "HEAD", text=True).stdout.strip()
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+        assert _git("branch", "--show-current", text=True).stdout.strip() == (
+            CL8_ADOPTION_BRANCH
+        )
+        return checked_out_head
+
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    assert event_path is not None
+    pull_request = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))[
+        "pull_request"
+    ]
+    assert pull_request["base"]["ref"] == "program/v3-10-v4-stable-line"
+    assert pull_request["base"]["sha"] == CL8_ADOPTION_PREDECESSOR_COMMIT
+    assert pull_request["head"]["ref"] == CL8_ADOPTION_BRANCH
+    candidate_head = pull_request["head"]["sha"]
+    assert _git("cat-file", "-e", f"{candidate_head}^{{commit}}").returncode == 0
+    assert checked_out_head == os.environ.get("GITHUB_SHA")
+    commit_text = _git("cat-file", "-p", checked_out_head, text=True).stdout
+    parents = [
+        line.removeprefix("parent ")
+        for line in commit_text.splitlines()
+        if line.startswith("parent ")
+    ]
+    assert parents == [CL8_ADOPTION_PREDECESSOR_COMMIT, candidate_head]
+    return candidate_head
 
 
 def _run_exact_nodes(tmp_path: Path, *nodes: str) -> None:
@@ -1050,33 +1098,76 @@ def test_v310_cl8_046_missing_failure_never_compensates_for_new_failure() -> Non
 
 
 def test_exact_qualification_delta_and_predecessor_immutability() -> None:
-    head = _git("rev-parse", "HEAD", text=True).stdout.strip()
-    assert (
-        _git(
-            "merge-base",
-            ACCEPTED_CONTRACT_RESCOPE_COMMIT,
-            head,
-            text=True,
-        ).stdout.strip()
-        == ACCEPTED_CONTRACT_RESCOPE_COMMIT
+    head = _cl8_adoption_candidate_head()
+    assert _git(
+        "rev-parse", f"{CL8_ADOPTION_PREDECESSOR_COMMIT}^{{tree}}", text=True
+    ).stdout.strip() == CL8_ADOPTION_PREDECESSOR_TREE
+    assert _git(
+        "rev-parse", f"{CL8_ADOPTION_MECHANICAL_COMMIT}^{{tree}}", text=True
+    ).stdout.strip() == CL8_ADOPTION_MECHANICAL_TREE
+    assert _git(
+        "rev-parse", f"{CL8_ADOPTION_SOURCE_COMMIT}^{{tree}}", text=True
+    ).stdout.strip() == CL8_ADOPTION_SOURCE_TREE
+    assert _git(
+        "rev-parse", f"{CL8_ADOPTION_MECHANICAL_COMMIT}^", text=True
+    ).stdout.strip() == CL8_ADOPTION_PREDECESSOR_COMMIT
+    assert _git("rev-parse", f"{head}^", text=True).stdout.strip() == (
+        CL8_ADOPTION_MECHANICAL_COMMIT
     )
-    changed = set(
+    assert _git(
+        "merge-base", CL8_ADOPTION_PREDECESSOR_COMMIT, head, text=True
+    ).stdout.strip() == CL8_ADOPTION_PREDECESSOR_COMMIT
+    assert _git(
+        "merge-base", CL8_ADOPTION_MECHANICAL_COMMIT, head, text=True
+    ).stdout.strip() == CL8_ADOPTION_MECHANICAL_COMMIT
+
+    correction_changed = set(
         _git(
             "diff",
             "--name-only",
-            f"{ACCEPTED_CONTRACT_RESCOPE_COMMIT}..{head}",
+            f"{CL8_ADOPTION_MECHANICAL_COMMIT}..{head}",
             text=True,
         ).stdout.splitlines()
     )
-    changed.update(_git("diff", "--name-only", text=True).stdout.splitlines())
-    changed.update(
+    correction_changed.update(
+        _git("diff", "--name-only", text=True).stdout.splitlines()
+    )
+    correction_changed.update(
         _git(
             "ls-files", "--others", "--exclude-standard", text=True
         ).stdout.splitlines()
     )
-    if changed <= QUALIFICATION_IMPLEMENTATION_ALLOWLIST:
-        assert changed == QUALIFICATION_IMPLEMENTATION_ALLOWLIST
-    else:
-        assert QUALIFICATION_IMPLEMENTATION_ALLOWLIST <= changed
-        assert changed <= QUALIFICATION_IMPLEMENTATION_ALLOWLIST | RELEASE_CUT_ALLOWLIST
-    assert ACTUAL_CONTRACT.relative_to(ROOT).as_posix() not in changed
+    assert correction_changed == CL8_ADOPTION_CORRECTION_PATHS
+
+    adopted_changed = set(
+        _git(
+            "diff",
+            "--name-only",
+            f"{CL8_ADOPTION_PREDECESSOR_COMMIT}..{head}",
+            text=True,
+        ).stdout.splitlines()
+    )
+    assert adopted_changed == (
+        set(QUALIFICATION_IMPLEMENTATION_ALLOWLIST)
+        | {CL8_ADOPTION_CONTRACT_PATH, CL8_ADOPTION_ISSUE72_TEST_PATH}
+    )
+
+    source_changed = set(
+        _git(
+            "diff",
+            "--name-only",
+            f"{CL8_ADOPTION_SOURCE_BASE}..{CL8_ADOPTION_SOURCE_COMMIT}",
+            text=True,
+        ).stdout.splitlines()
+    )
+    assert source_changed == (
+        set(QUALIFICATION_IMPLEMENTATION_ALLOWLIST) | {CL8_ADOPTION_CONTRACT_PATH}
+    )
+    for path in source_changed:
+        source_blob = _git(
+            "rev-parse", f"{CL8_ADOPTION_SOURCE_COMMIT}:{path}", text=True
+        ).stdout.strip()
+        adopted_blob = _git(
+            "rev-parse", f"{CL8_ADOPTION_MECHANICAL_COMMIT}:{path}", text=True
+        ).stdout.strip()
+        assert adopted_blob == source_blob

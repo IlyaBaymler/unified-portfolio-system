@@ -2321,3 +2321,86 @@ The exact rescope successor commit/tree is assigned by Git after this file is
 committed. Before amended-contract acceptance, a read-only
 `REGRESSION-RESCOPE CLOSURE REVIEW` must prove the exact one-file range and the
 single node-ID substitution above.
+
+---
+
+# PART AB — QUALIFICATION ADOPTION ORACLE RESCOPE
+
+## 113. Exact adoption custody
+
+Issue #72 was accepted and integrated after the original CL8 qualification
+snapshot. The only authorized adoption line is:
+
+```text
+accepted Issue #72 predecessor = e27204ad110db36b8ace540bd0738874fab69565
+accepted Issue #72 predecessor tree = a38d38617dcfa7e15dd1b8ce1f838aeec72c35f1
+adoption branch = agent/v3-10-clean-cl8-qualification-adoption
+accepted qualification source = a11cfc1f90055ef29d86606fe8377b4ddc2c10f0
+accepted qualification source tree = bd92e233ab11f8576e7540d33dfbe9c589b1a13e
+mechanical adoption commit = 70589366d3c34ede0cb0aba2a43f988c9f91fbd9
+mechanical adoption tree = cfb1f9ea602316da30152a6f6c89b5f2018cf015
+mechanical adoption parent = e27204ad110db36b8ace540bd0738874fab69565
+source patch range = ef2eba758bbffb587dbe237a96372b2273fdee03..a11cfc1f90055ef29d86606fe8377b4ddc2c10f0
+source patch bytes = 262597
+source patch SHA-256 = d296fc39183dedc1bbcd3d10dd1b64dfc3b947e2f9e9f9341fb92d681331f560
+mechanically adopted paths = 15
+source blob mismatches = 0
+Issue #72 blob mismatches before oracle correction = 0
+```
+
+The accepted Issue #72 commit is an ancestor of every CL8 adoption candidate.
+Q0 binds review evidence SHA-256
+`12ce5163e3cb041a2592439866882879bff5cfbe8e9c5f01b985778966e1e28b`
+and explicit acceptance record SHA-256
+`c1870a7ecb7c92a297314a5d3942b92a387e0daa68c6c1af8312de17eb9cd169`.
+
+## 114. Bounded correction allowlist
+
+The fixed finding set is:
+
+```text
+CL8-QA-ADOPT-R1-01
+CL8-QA-ADOPT-R1-02
+```
+
+Exactly one adoption-oracle correction commit is authorized from the mechanical
+adoption commit. Its complete changed-path set is:
+
+```text
+docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md
+current/tests/test_v3_10_stable_qualification.py
+current/tests/test_v3_10_issue72_gui_runtime.py
+```
+
+All production modules, qualification implementation, fixtures, workflows,
+release metadata and other tests are immutable in this correction.
+
+## 115. Allowed oracle evolution
+
+`CL8-QA-ADOPT-R1-01` replaces the old side-branch ancestry assertion with exact
+proof of the topology above, exact 15-path source adoption, blob equality with
+`a11cfc1f...`, and the exact three-path correction delta.
+
+`CL8-QA-ADOPT-R1-02` permits the Issue #72 custody test to recognize only this
+named CL8 adoption branch in a local checkout or the same exact head ref in a
+GitHub `pull_request` event. The PR form must additionally bind the exact
+stable-line base SHA and synthetic-merge parent pair. Both forms must prove the
+accepted Issue #72 commit/tree, the exact mechanical adoption parent/tree, the
+exact cumulative adoption path set, and byte identity of every Issue #72
+implementation path other than the custody test itself. The original Issue #72
+implementation-branch oracle remains unchanged.
+
+The `PRE_RELEASE_CUT` expected failure set remains exactly the frozen six-node
+CL2-CL7 custody baseline. Neither finding may be closed by adding an expected
+failure, weakening path equality, accepting arbitrary descendant branches or
+removing a semantic test.
+
+## 116. Closure and authority
+
+The adoption-oracle correction budget is one commit and is exhausted after this
+batch. Closure review is limited to `CL8-QA-ADOPT-R1-01..02` and must bind the
+exact successor commit/tree. Any surviving or new material failure produces
+`REQUEST_CHANGES / RESCOPE / DEFER`.
+
+This rescope grants no Ready, release-cut, provider, experiment, Stable
+acceptance, publication or merge authority.
