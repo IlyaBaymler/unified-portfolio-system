@@ -93,12 +93,13 @@ release metadata, documentation вне этого файла и любых runti
 разрешается создать отдельную implementation branch непосредственно от exact accepted
 contract head.
 
-Implementation delta ограничен ровно 13 paths:
+Implementation delta ограничен ровно 14 paths:
 
 ```text
 current/desktop_gui.py
 current/trading_robot/dashboard_view.py
 current/trading_robot/global_scheduler.py
+current/trading_robot/instrument_runtime.py
 current/trading_robot/gui_runtime_controller.py
 
 current/tools/v3_10_issue72_q0_evidence.py
@@ -115,8 +116,9 @@ current/README.md
 ROADMAP.md
 ```
 
-Count must equal `13`. A fourth source/runtime path, an eighth evidence/test path, or any
-other path is a scope expansion and requires a new explicit `RESCOPE`.
+Normative allowlist identity is exact set membership plus exact total count `14`. Any path
+outside the listed set is a scope expansion and requires a new explicit `RESCOPE`.
+Ordinal descriptions of source, test or documentation groups are non-normative and forbidden.
 
 The following accepted owners are immutable in this milestone:
 
@@ -130,7 +132,8 @@ current/trading_robot/risk.py
 current/trading_robot/risk_runtime.py
 current/trading_robot/portfolio.py
 current/trading_robot/portfolio_repository.py
-current/trading_robot/cash_ledger.py
+current/trading_robot/cash_ledger_domain.py
+current/trading_robot/cash_ledger_persistence.py
 current/trading_robot/cash_availability.py
 ```
 
@@ -242,6 +245,22 @@ the main account-level workflow. Issue #72 does not delete or rewrite it.
 No UI control may create a second proposal, Central intent, reservation or provider call for
 the same canonical scheduler decision.
 
+All provider-mutating diagnostic controls inherited by `desktop_gui.py` are removed from the
+active GUI or hard-disabled with no command callback. The forbidden transitive sinks are:
+
+```text
+SandboxOrderDiagnostics.execute
+SandboxOrderDiagnostics.close_unattributed_position
+TBankSandboxClient.post_order
+TBankSandboxClient.post_order_once
+```
+
+Read-only diagnostic snapshots and recovery-only surfaces may remain when they cannot submit,
+close or cancel an order. Q0 must inspect Tk command bindings and the committed Python call
+graph from every active GUI callback to these sinks. Absence of the literal text
+`post_order` in `desktop_gui.py` is insufficient. The immutable
+`current/trading_robot/diagnostics.py` remains historical code and receives no new authority.
+
 ---
 
 ## 7. ConfiguredExecutionSet identity
@@ -287,14 +306,39 @@ Central state readable
 no incompatible Central blocker
 no unresolved account-scope mismatch
 Risk policy/state readable and ready
+non-null same-account PortfolioRiskRuntime bound to coordinator and adapter
 no kill-switch/resync blocker
-CL7 authority record readable
-authority state compatible with requested mode
+CL7 authority record readable and account scope exact
+CL7 authority state = EXACT_CASH_ARMED
+CL7 pending_dispatch_proof_sha256 = null
 recovery-first obligations resolved
 all runtime revisions unchanged
 ```
 
 Prevalidation is side-effect free.
+
+The compatibility matrix for the main account-level economic
+`SANDBOX_EXECUTION` Start is closed:
+
+| CL7 state | Start result |
+|---|---|
+| `EXACT_CASH_ARMED` with exact account scope and no pending proof | MAY CONTINUE |
+| `LEGACY_ACTIVE` | BLOCK: `CL7_EXACT_AUTHORITY_REQUIRED` |
+| `CUTOVER_PREPARED` | BLOCK: `CL7_CUTOVER_INCOMPLETE` |
+| `CUTOVER_CONFIRMED` | BLOCK: `CL7_CUTOVER_INCOMPLETE` |
+| `EXACT_CASH_DISARMED` | BLOCK: `CL7_EXACT_AUTHORITY_DISARMED` |
+| `EXACT_CASH_DISPATCH_PENDING` | BLOCK: `CL7_RECOVERY_REQUIRED` |
+
+Issue #72 cannot prepare, confirm, activate, arm, disarm, cancel or roll back CL7 authority.
+`EXACT_CASH_ARMED` must already have been established under a separate accepted CL7 gate.
+
+The GUI controller must construct both `CentralOrderCoordinator` and
+`SandboxExecutionAdapter` with the same non-null accepted `PortfolioRiskRuntime` instance.
+Its account ID must equal the configured set, Central manager, Portfolio repository and
+adapter policy account scope. Missing runtime, stale/mismatched identity or unavailable
+authoritative quote blocks before proposal admission; dispatch-time mismatch blocks before
+the attempt marker and provider call. Optional predecessor constructor parameters do not
+make Portfolio Risk optional for this GUI workflow.
 
 The controller then requests one bounded group transition from
 `GlobalScheduler.start_configured_set(...)`.
@@ -315,28 +359,58 @@ proposal or provider call. Start for a different set while one set is active fai
 
 ---
 
-## 9. Atomic group transition in GlobalScheduler
+## 9. Atomic group transition and runtime-store CAS
 
 `GlobalScheduler.start_configured_set` and `stop_configured_set` may extend the existing
-execution-agnostic scheduler only.
+execution-agnostic scheduler only. The implementation allowlist opens
+`current/trading_robot/instrument_runtime.py` solely for one same-lock CAS boundary.
 
-The group transition algorithm is frozen:
+The public store API is frozen conceptually as:
 
-1. read and retain the exact ordered before-set;
-2. validate membership, account scope and expected revisions for every member;
-3. derive every immutable successor runtime in memory;
-4. validate the complete successor set;
-5. persist the complete registry once through the existing store boundary;
-6. read back the complete registry;
-7. compare exact runtime keys, revisions, statuses and configuration hashes;
-8. publish lifecycle events only after exact committed read-back.
+```python
+InstrumentRuntimeStore.compare_and_swap_all(
+    *,
+    expected: Sequence[InstrumentRuntime],
+    successor: Sequence[InstrumentRuntime],
+    expected_account_id: str,
+) -> tuple[InstrumentRuntime, ...]
+```
 
-Before step 5, any failure leaves both memory and persistence unchanged.
+Equivalent naming is allowed only if the semantics and dedicated tests remain exact.
 
-A persistence failure at step 5 returns the in-memory scheduler to the exact before-set and
-reports `GROUP_COMMIT_FAILED`. The store's own atomic replacement semantics determine
-whether the persisted write committed. The controller must read back before reporting a
-result and must never guess.
+Inside one `InterProcessFileLock` critical section the store must:
+
+1. load and checksum-verify the current complete registry without releasing or reacquiring
+   the lock;
+2. normalize `expected`, serialize the complete expected/current registry documents with
+   the accepted canonical encoder and require byte-for-value equality; account ID, every
+   runtime field, ordered runtime keys, revisions, statuses and configuration hashes are
+   therefore inside the comparison;
+3. return `GROUP_CAS_MISMATCH` without writing when any value differs;
+4. validate the complete `successor` collection and its account scope;
+5. perform one accepted atomic full-document replacement;
+6. load and checksum-verify the committed registry while the same lock is still held;
+7. compare it byte-semantically with the normalized successor set;
+8. return the exact committed read-back.
+
+The implementation may factor private unlocked load/write helpers inside
+`InstrumentRuntimeStore`; public `save()` compatibility remains intact. Nested acquisition
+of the same file lock is forbidden.
+
+The scheduler algorithm is frozen:
+
+1. retain the exact in-memory before-set;
+2. prevalidate all members and derive the complete immutable successor set;
+3. call `compare_and_swap_all` exactly once with the complete before/successor sets;
+4. replace in-memory state only with the exact committed read-back;
+5. publish lifecycle events only after successful exact read-back.
+
+A concurrent writer between controller prevalidation and store entry is detected by the
+inside-lock expected-set comparison and cannot be overwritten. CAS mismatch yields zero
+writes and zero in-memory transition.
+
+A store/write failure reports `GROUP_COMMIT_FAILED`; the scheduler retains its before-set
+and performs a fresh read before any retry. It does not guess whether persistence committed.
 
 Any non-exact committed read-back returns `GROUP_POSTCONDITION_FAILED`, blocks scheduling,
 and requires recovery. It may not apply a compensating economic action.
@@ -509,7 +583,7 @@ The ADR records this decision and maps each displayed Risk field to its accepted
 
 ---
 
-## 15. Sandbox-account disposition
+## 15. Sandbox-account disposition and private observation gate
 
 Issue #72 implementation receives no provider-account deletion authority.
 
@@ -521,43 +595,142 @@ or
 REDUNDANT_ACCOUNT_CLEANUP_COMPLETED
 ```
 
-`REDUNDANT_ACCOUNT_RETAINED_WITH_REASON` may be established from separately authorized,
-fresh, sanitized operator-supplied account evidence. It must prove:
+Any fresh private Sandbox account-list observation requires a separately announced
+`Preparation Stage` and the user's literal command `START EXPERIMENT`. The implementation,
+tests, review and contract acceptance authorize no provider read.
 
-- active account scope is unchanged;
-- redundant account scope is distinct;
-- redundant account is absent from runtime/configuration/backup/acceptance references;
-- retention reason is explicit and reviewed;
-- only masked/hash references enter repository evidence.
+Observation-only disposition uses:
 
-`REDUNDANT_ACCOUNT_CLEANUP_COMPLETED` requires a separate future experiment:
+```text
+experiment_id =
+ISSUE72-SANDBOX-ACCOUNT-DISPOSITION-V1
+```
+
+Cleanup uses a different experiment:
 
 ```text
 experiment_id =
 ISSUE72-SANDBOX-ACCOUNT-CLEANUP-V1
-
-required operator gate =
-START EXPERIMENT
 ```
 
-The cleanup sequence must be:
+Cleanup additionally requires a masked/hash preview, one exact operator confirmation for the
+specific redundant scope, one supported provider action and fresh post-action read-back.
+Authorization for the observation-only experiment never authorizes cleanup.
+
+### 15.1. SanitizedSandboxAccountListV1
+
+The canonical sanitized account-list preimage has exact keys:
 
 ```text
-fresh account list
-→ active/redundant proof
-→ reference and open-state checks
-→ masked/hash preview
-→ separate exact operator confirmation
-→ one supported provider action
-→ fresh post-action account list
-→ proof active account unchanged
+version
+experiment_id
+observed_at
+fresh_until
+account_count
+accounts
+provider_response_sha256
+raw_identifiers_absent
 ```
 
-No cleanup occurs during GUI startup, bootstrap, implementation tests, review or Q0 evidence
-generation. Raw Account ID is forbidden in Git, logs, reports, screenshots and support
-bundles.
+Required constants and constraints:
 
-A synthetic fixture cannot establish either terminal real-account disposition.
+```text
+version = 1
+raw_identifiers_absent = true
+fresh_until - observed_at <= 300 seconds
+provider_response_sha256 = identity calculated outside shareable evidence handling
+```
+
+`accounts` is ordered by `account_scope_sha256`. Each entry has exact keys:
+
+```text
+account_scope_sha256
+status
+is_active
+is_redundant_candidate
+```
+
+No raw Account ID, token, account name or provider payload is permitted.
+
+### 15.2. SandboxAccountDispositionEvidenceV1
+
+The disposition record has exact common keys:
+
+```text
+version
+disposition
+experiment_id
+preparation_record_sha256
+start_experiment_record_sha256
+observed_at
+fresh_until
+account_list_evidence_sha256
+active_account_scope_sha256
+redundant_account_scope_sha256
+runtime_reference_scan_sha256
+configuration_reference_scan_sha256
+backup_reference_scan_sha256
+acceptance_reference_scan_sha256
+open_positions_status
+open_orders_status
+pending_uncertain_status
+raw_identifiers_absent
+variant
+record_sha256
+```
+
+Required invariants:
+
+```text
+version = 1
+active_account_scope_sha256 != redundant_account_scope_sha256
+raw_identifiers_absent = true
+all SHA fields = lowercase 64-hex
+observed_at/fresh_until = exact values from SanitizedSandboxAccountListV1
+record_sha256 = SHA-256 of canonical record with record_sha256 omitted
+```
+
+For `REDUNDANT_ACCOUNT_RETAINED_WITH_REASON`, `variant` has exact keys:
+
+```text
+reason_code
+reason_text_sha256
+review_record_sha256
+provider_mutation_performed
+```
+
+and `provider_mutation_performed = false`. All four reference scans must prove the
+redundant scope is unreferenced. The reason code comes from the closed set:
+
+```text
+PROVIDER_CLEANUP_UNAVAILABLE
+CLEANUP_DEFERRED_BY_OPERATOR
+ACCOUNT_RETAINED_FOR_AUDIT
+```
+
+For `REDUNDANT_ACCOUNT_CLEANUP_COMPLETED`, `variant` has exact keys:
+
+```text
+masked_preview_sha256
+operator_confirmation_sha256
+provider_action_receipt_sha256
+post_action_observed_at
+post_account_list_evidence_sha256
+active_account_unchanged
+redundant_account_absent
+review_record_sha256
+```
+
+Both booleans must be `true`. The post-action list must independently satisfy
+`SanitizedSandboxAccountListV1` and bind the same active scope.
+
+No cleanup occurs during GUI startup, bootstrap, implementation tests, review or Q0 evidence
+generation. The Q0 generator consumes and verifies a separately produced disposition record;
+it performs no provider call itself.
+
+Raw Account ID is forbidden in Git, logs, reports, screenshots and support bundles. A
+synthetic fixture, free-form statement or hash of an untyped text claim cannot establish
+either terminal disposition.
 
 ---
 
@@ -567,7 +740,7 @@ The final Issue #72 review evaluates this closed set:
 
 ```text
 I72-01 exact accepted rescope contract commit/tree
-I72-02 implementation delta == exact 13-path allowlist
+I72-02 implementation delta == exact 14-path allowlist
 I72-03 GUI Start operates on complete ConfiguredExecutionSet
 I72-04 one failing runtime => zero partial account-level start
 I72-05 GUI Stop operates on whole configured set
@@ -579,11 +752,11 @@ I72-10 reconciliation state visible per instrument
 I72-11 Portfolio Risk / Risk halt-resync status visible
 I72-12 two simultaneous non-zero canonical positions render correctly
 I72-13 GUI economic path does not instantiate SandboxTradingBot
-I72-14 GUI/controller contains zero direct post_order calls
+I72-14 GUI/controller has zero direct or transitive reachability to forbidden provider-mutation sinks
 I72-15 Strategy proposal reaches CentralOrderCoordinator
 I72-16 provider mutation reachable only through SandboxExecutionAdapter
-I72-17 exact mode requires CL7 dispatch-proof path
-I72-18 Central/account blocker prevents new configured-set dispatch
+I72-17 main economic Start requires pre-existing EXACT_CASH_ARMED and CL7 dispatch-proof path
+I72-18 Central/account/missing-or-mismatched PortfolioRisk blocker prevents proposal and dispatch
 I72-19 restart restores configured runtime set without duplicate proposal
 I72-20 restart with pending/uncertain performs recovery-first
 I72-21 disconnect does not duplicate proposal/intent/provider call
@@ -597,7 +770,7 @@ I72-28 cleanup runbook contains masked preview + confirmation + read-back
 I72-29 no raw Account ID/token in GUI/export/Q0 evidence
 I72-30 no stale hard-coded v3.6/v3.7/v3.8/v3.9 active GUI labels
 I72-31 full predecessor regression has no new semantic failure
-I72-32 Q0 evidence is generated from repository/runtime checks, not prefilled PASS
+I72-32 Q0 evidence binds verified case records/payloads from committed checks, not prefilled PASS
 ```
 
 Every case is mandatory. There are no wildcards, optional cases, score thresholds or
@@ -619,13 +792,26 @@ It must:
 - resolve implementation commit and tree from Git;
 - prove accepted contract ancestry;
 - compute exact implementation changed paths;
-- execute or consume independently produced case results;
+- execute every repository/behavioral producer against the exact committed tree;
+- consume external evidence only for the separately gated account disposition;
 - verify required documents by bytes and SHA-256;
 - verify source-call-graph invariants;
 - bind the exact regression result;
+- recompute every case-record, payload, manifest and summary hash;
 - reject unknown/missing/duplicate fields and case IDs;
-- reject self-declared PASS without underlying evidence identity;
+- reject self-declared PASS without the exact underlying record and payload;
 - never access provider credentials or accounts.
+
+The generator has two modes:
+
+```text
+generate = execute committed repository checks and emit case records
+verify   = verify exact records/manifest and independently rerun all non-external producers
+```
+
+For `EXTERNAL_ACCOUNT_DISPOSITION`, verify mode requires the trusted expected disposition
+record SHA-256 as an external argument. It never learns that expected value from the
+candidate report.
 
 ---
 
@@ -665,6 +851,116 @@ hashing. Duplicate or unknown IDs fail closed.
 `acceptance_case_summary_sha256` is SHA-256 of the canonical ordered array containing all
 32 case results.
 
+### 18.1. Q0CaseEvidenceV1
+
+Every `evidence_sha256` references one full canonical record with exact keys:
+
+```text
+version
+case_id
+candidate_commit
+candidate_tree
+accepted_contract_commit
+accepted_contract_tree
+producer_kind
+producer_id
+producer_command_sha256
+input_identities
+started_at
+completed_at
+exit_code
+result_payload
+result_payload_sha256
+status
+```
+
+Required constants and constraints:
+
+```text
+version = 1
+case_id = matching I72-xx
+candidate commit/tree = exact reviewed implementation
+accepted contract commit/tree = trusted external expected values
+status = PASS or FAIL
+result_payload_sha256 = SHA-256 of canonical result_payload
+evidence_sha256 = SHA-256 of the complete Q0CaseEvidenceV1 record
+```
+
+Allowed `producer_kind` values are closed:
+
+```text
+GIT_CUSTODY
+COMMITTED_AST_REACHABILITY
+PYTEST_NODE
+DOCUMENT_SCHEMA
+FULL_REGRESSION
+EXTERNAL_ACCOUNT_DISPOSITION
+```
+
+`producer_id` is an exact pytest node ID or a frozen tool check name; wildcards and
+free-form labels are forbidden. `input_identities` is an ordered array of exact
+`{"name": string, "sha256": lowercase-64-hex}` objects.
+
+For repository and behavioral cases, the generator itself executes the producer from the
+exact committed tree and constructs `result_payload` from observed counters, identities and
+outputs. `result_payload` has exact keys:
+
+```text
+assertions
+artifact_identities
+counters
+observations
+```
+
+`assertions` is an ordered array of exact
+`{"actual": value, "expected": value, "name": string, "passed": boolean}` objects.
+`artifact_identities` is an ordered array of exact
+`{"name": string, "sha256": lowercase-64-hex}` objects. `counters` and
+`observations` use the closed per-case keysets declared by the tool's immutable
+`I72-01..32` producer table; unknown or missing keys fail. Behavioral producer schemas must
+include the applicable call counters for proposal, Central intent, Risk admission, Risk
+dispatch validation, adapter dispatch, provider mutation, active runtimes and popup events.
+
+A fixture-provided `status`, a payload equal to `"PASS"`, a manually supplied success
+boolean, or a record whose producer did not execute against the bound commit/tree is invalid.
+
+For `EXTERNAL_ACCOUNT_DISPOSITION`, `result_payload` contains the complete verified
+`SandboxAccountDispositionEvidenceV1`; its record hash must equal the trusted external
+argument.
+
+### 18.2. Q0CaseEvidenceManifestV1
+
+The manifest has exact keys:
+
+```text
+version
+candidate_commit
+candidate_tree
+accepted_contract_commit
+accepted_contract_tree
+records
+manifest_sha256
+```
+
+`records` contains exactly 32 entries sorted by case ID. Each entry has exact keys:
+
+```text
+case_id
+evidence_sha256
+producer_kind
+producer_id
+result_payload_sha256
+```
+
+`manifest_sha256` is SHA-256 of the canonical manifest with that field omitted. The
+verifier receives the manifest and all 32 complete records, recomputes every hash, checks
+candidate/contract bindings and reruns every producer except the externally gated account
+observation/action.
+
+`acceptance_case_results[].evidence_sha256` must equal the corresponding manifest and
+record identity. Missing record bytes, inaccessible payload, substitution, cross-candidate
+reuse or producer mismatch fails closed.
+
 ---
 
 ## 19. Q0 candidate schema
@@ -685,6 +981,7 @@ multi_instrument_runbook_sha256
 account_cleanup_runbook_sha256
 acceptance_case_results
 acceptance_case_summary_sha256
+case_evidence_manifest_sha256
 account_disposition
 full_regression_result
 provider_calls_performed
@@ -708,8 +1005,13 @@ provider_mutations_performed = false
 `q0_candidate_sha256` field omitted. The field is then inserted without changing any
 other value.
 
-`account_disposition` contains exactly one accepted enum from section 15 and the SHA-256
-of its sanitized evidence. It contains no raw account identifier.
+`case_evidence_manifest_sha256` binds the exact verified
+`Q0CaseEvidenceManifestV1`.
+
+`account_disposition` contains exact keys `disposition` and
+`disposition_evidence_sha256`. The hash must identify a verified
+`SandboxAccountDispositionEvidenceV1` supplied under the external trust rule. It contains
+no raw account identifier.
 
 ---
 
@@ -724,6 +1026,8 @@ Minimum static invariants:
 desktop_gui.py:
   SandboxTradingBot constructor in main account-level path = 0
   post_order/post_order_once calls = 0
+  active command reachability to SandboxOrderDiagnostics.execute = 0
+  active command reachability to SandboxOrderDiagnostics.close_unattributed_position = 0
   authoritative JSON direct writes from widgets = 0
 
 gui_runtime_controller.py:
@@ -732,15 +1036,29 @@ gui_runtime_controller.py:
   direct provider client construction = 0
   CentralOrderCoordinator binding = exactly 1 accepted boundary
   SandboxExecutionAdapter binding = exactly 1 accepted boundary
+  PortfolioRiskRuntime binding = non-null and same exact instance in both boundaries
+  accepted CL7 Start state = EXACT_CASH_ARMED only
 
 global_scheduler.py:
   provider imports/calls = 0
   Risk/Cash calculation ownership = 0
+  group persistence calls per transition = exactly 1 CAS call
+
+instrument_runtime.py:
+  expected-set comparison occurs inside the same lock as write
+  CAS mismatch writes = 0
+  exact successor read-back occurs before lock release
 ```
 
-Static checks supplement behavioral tests. Text matching alone cannot prove the call graph;
-the dedicated test must exercise injected fakes and count proposal, intent, dispatch and
-provider-boundary calls.
+The tool parses the committed Python AST, resolves Tk `command=` bindings and follows
+bounded calls through methods in the 14-path implementation set plus the named immutable
+diagnostic/provider sinks. A disabled button with a reachable mutation callback still fails.
+Removing only the literal text `post_order` does not pass.
+
+Static checks supplement behavioral tests. The dedicated test must exercise injected fakes
+and count proposal, Central intent, Risk admission/dispatch validation, adapter dispatch and
+provider-boundary calls. Missing or mismatched `PortfolioRiskRuntime` must produce zero
+proposal admission and zero dispatch.
 
 ---
 
@@ -808,15 +1126,17 @@ remaining provider/experiment/release gates only after implementation exists.
 
 The one dedicated test file and fixture must cover:
 
-- exact branch/contract/13-path custody;
+- exact branch/contract/14-path custody;
 - group start success for three instruments;
 - each prevalidation failure with zero partial start;
+- concurrent-writer CAS mismatch with zero lost update and zero partial start;
 - group stop and unresolved custody preservation;
 - exact committed read-back and non-exact read-back failure;
 - two non-zero canonical positions;
 - complete dashboard owner bindings and missing-owner fail-closed cases;
 - Central lifecycle states;
-- Risk halt/resync and CL7 modes;
+- non-null same-instance PortfolioRisk binding and missing/mismatched failure;
+- every CL7 state in the closed Start compatibility matrix;
 - restart, pending/uncertain recovery-first and disconnect;
 - account-wide `OPEN → MARKET_IDLE → OPEN`;
 - duplicate proposal/intent/provider counters;
@@ -825,8 +1145,8 @@ The one dedicated test file and fixture must cover:
 - read-only Risk ADR;
 - account-disposition validation;
 - privacy/redaction;
-- committed-source call-graph checks;
-- Q0 evidence tamper/substitution tests;
+- committed AST/Tk callback reachability checks for transitive diagnostic sinks;
+- Q0 case-record, payload, manifest and cross-candidate substitution tests;
 - full exact oracle `I72-01..32`.
 
 Fixtures provide inputs and negative vectors. They may not contain a prefilled object whose
@@ -852,7 +1172,7 @@ Implementation sequence:
 ```text
 isolated implementation branch from exact accepted contract head
 → HEAD = merge-base / 0 ahead / 0 behind / clean
-→ implementation only in 13 paths
+→ implementation only in 14 paths
 → local deterministic tests and full regression
 → one implementation commit or coherent bounded series
 → independent/adversarial exact-range review
@@ -914,7 +1234,44 @@ contract.
 
 ---
 
-## 26. Frozen disposition
+## 26. Contract correction custody
+
+The independent contract review of exact candidate
+`51e9f98864b11dbe4e99142c268c421fd5069c1a` fixed the closed finding set:
+
+```text
+I72-C-R1-01 GROUP_RUNTIME_CAS_BOUNDARY_MISSING
+I72-C-R1-02 TRANSITIVE_GUI_PROVIDER_BYPASS_NOT_CLOSED
+I72-C-R1-03 MAIN_GUI_CL7_AUTHORITY_STATE_MATRIX_UNFROZEN
+I72-C-R1-04 PORTFOLIO_RISK_BINDING_REMAINS_OPTIONAL
+I72-C-R1-05 SANDBOX_ACCOUNT_DISPOSITION_EVIDENCE_UNBOUND
+I72-C-R1-06 PER_CASE_Q0_EVIDENCE_SUBSTITUTION_GAP
+I72-C-R1-07 IMPLEMENTATION_ALLOWLIST_CARDINALITY_CONTRADICTION
+```
+
+One bounded contract-only correction batch is permitted with:
+
+```text
+correction parent =
+51e9f98864b11dbe4e99142c268c421fd5069c1a
+
+allowed changed path =
+docs/project/V3_10_ISSUE72_GUI_RUNTIME_RESCOPE_CONTRACT_RU.md
+
+all other paths =
+IMMUTABLE
+```
+
+This batch also corrects the non-material CashLedger filename inventory. It grants no
+implementation/provider/experiment/GitHub authority.
+
+After the correction commit, contract correction budget is exhausted. Review is limited to
+finding-scoped closure `I72-C-R1-01..07`. A surviving material finding produces
+`RESCOPE / ABORT / DEFER`; it does not open a recursive correction loop.
+
+---
+
+## 27. Frozen disposition
 
 Until all later gates are separately completed:
 
