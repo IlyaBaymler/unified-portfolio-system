@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+import ctypes
 import json
+import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +12,7 @@ import pytest
 
 import desktop_gui
 from tools import v3_10_q7_prepare_runtime as q7
+from trading_robot import secret_provider as secret_provider_module
 from trading_robot.bot import BotConfig
 from trading_robot.config_persistence import bot_config_to_profile
 from trading_robot.gui_runtime_controller import GuiRuntimeController
@@ -36,6 +39,19 @@ VECTORS = json.loads(FIXTURE.read_text(encoding="utf-8"))
 ACCOUNT = VECTORS["synthetic_secrets"]["TBANK_SANDBOX_ACCOUNT_ID"]
 COMMIT = VECTORS["candidate"]["commit"]
 TREE = VECTORS["candidate"]["tree"]
+
+
+def _synthetic_source_verifier(commit: str, tree: str) -> None:
+    assert commit == COMMIT
+    assert tree == TREE
+
+
+REAL_SOURCE_VERIFIER = q7._verify_source_candidate
+
+
+@pytest.fixture(autouse=True)
+def _use_synthetic_source_custody(monkeypatch):
+    monkeypatch.setattr(q7, "_verify_source_candidate", _synthetic_source_verifier)
 
 
 class FakeSecretProvider:
@@ -206,7 +222,7 @@ def test_q7r_01_03_production_composition_success_missing_and_duplication(
 
     monkeypatch.setattr(desktop_gui, "_PRODUCTION_COMPOSITION", None)
     incomplete = _provider(V310_CL_IDENTITY_KEY_HEX="")
-    with pytest.raises(Q7SecretError, match="IDENTITY_CUSTODY_PARTIAL"):
+    with pytest.raises(Q7SecretError, match="IDENTITY_KEY_INVALID"):
         desktop_gui._compose_production_gui_runtime(
             runtime,
             secret_provider=incomplete,
@@ -236,6 +252,77 @@ def test_q7r_04_confirmed_provisioning_is_metadata_only_and_idempotent():
     assert len(provider.writes) == 2
     serialized = json.dumps(first.to_dict(), sort_keys=True)
     assert "42" * 32 not in serialized
+
+
+def test_q7r_04_credential_manager_distinguishes_absence_from_read_failure():
+    class Credential(ctypes.Structure):
+        _fields_ = [("unused", ctypes.c_int)]
+
+    class Api:
+        @staticmethod
+        def CredReadW(*_args):
+            ctypes.set_last_error(5)
+            return 0
+
+    provider = object.__new__(secret_provider_module.WindowsCredentialManagerProvider)
+    provider.namespace = "synthetic"
+    provider._ctypes = ctypes
+    provider._credential_type = Credential
+    provider._advapi = Api()
+    with pytest.raises(OSError):
+        provider.get("V310_CL_IDENTITY_KEY_HEX")
+
+    provider._advapi.CredReadW = lambda *_args: (
+        ctypes.set_last_error(1168) or 0
+    )
+    assert provider.get("V310_CL_IDENTITY_KEY_HEX") is None
+
+
+def test_q7r_04_credential_manager_preserves_present_empty_record():
+    class Credential(ctypes.Structure):
+        _fields_ = [
+            ("CredentialBlobSize", ctypes.c_ulong),
+            ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
+        ]
+
+    credential = Credential(0, ctypes.POINTER(ctypes.c_ubyte)())
+
+    class Api:
+        @staticmethod
+        def CredReadW(_target, _kind, _flags, destination):
+            typed = ctypes.cast(
+                destination, ctypes.POINTER(ctypes.POINTER(Credential))
+            )
+            typed[0] = ctypes.pointer(credential)
+            return 1
+
+        @staticmethod
+        def CredFree(_pointer):
+            return None
+
+    provider = object.__new__(secret_provider_module.WindowsCredentialManagerProvider)
+    provider.namespace = "synthetic"
+    provider._ctypes = ctypes
+    provider._credential_type = Credential
+    provider._advapi = Api()
+    assert provider.get("V310_CL_IDENTITY_KEY_HEX") == ""
+
+
+def test_q7r_04_present_empty_identity_custody_is_never_overwritten():
+    provider = FakeSecretProvider(
+        {
+            "V310_CL_IDENTITY_KEY_HEX": "",
+            "V310_CL_IDENTITY_KEY_ID": "Q7R_SYNTHETIC_V1",
+        }
+    )
+    with pytest.raises(Q7SecretError, match="IDENTITY_KEY_INVALID"):
+        provision_q7_identity(
+            identity_key_id="Q7R_SYNTHETIC_V1",
+            confirmation=Q7_IDENTITY_CONFIRMATION,
+            provider=provider,
+            mutex_factory=threading.Lock,
+        )
+    assert provider.writes == []
 
 
 @pytest.mark.parametrize(
@@ -435,6 +522,35 @@ def test_q7r_13_requires_two_or_three_instruments(tmp_path):
         )
 
 
+def test_q7r_13_source_candidate_must_be_exact_and_clean(tmp_path):
+    repository = tmp_path / "source"
+    repository.mkdir()
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.email", "q7@example.invalid")
+    git("config", "user.name", "Q7 Synthetic")
+    (repository / "candidate.txt").write_text("exact\n", encoding="utf-8")
+    git("add", "candidate.txt")
+    git("commit", "-q", "-m", "candidate")
+    commit = git("rev-parse", "HEAD")
+    tree = git("rev-parse", "HEAD^{tree}")
+    REAL_SOURCE_VERIFIER(commit, tree, repository=repository)
+    with pytest.raises(q7.Q7PreparationError, match="CANDIDATE_COMMIT_MISMATCH"):
+        REAL_SOURCE_VERIFIER("a" * 40, tree, repository=repository)
+    (repository / "candidate.txt").write_text("dirty\n", encoding="utf-8")
+    with pytest.raises(q7.Q7PreparationError, match="SOURCE_TREE_DIRTY"):
+        REAL_SOURCE_VERIFIER(commit, tree, repository=repository)
+
+
 def test_q7r_13_profile_runtime_account_and_orphan_checks(tmp_path):
     root = tmp_path / "runtime"
     _save_profiles(root, 2)
@@ -459,6 +575,36 @@ def test_q7r_16_17_legacy_state_never_transitions_during_stage_a(tmp_path):
     assert record["authority_state"] == RuntimeCashAuthorityState.LEGACY_ACTIVE.value
     assert record["authority_revision"] == 0
     assert record["overall_status"] == "ACTIVATION_REQUIRED"
+
+
+def test_q7r_16_stage_a_rejects_nonlegacy_or_previously_activated_authority(
+    tmp_path, monkeypatch
+):
+    invalid = SimpleNamespace(
+        state=RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+        record_revision=4,
+        ever_exact_activated=True,
+        identity_key_id=None,
+        account_scope_sha256=None,
+        sha256="a" * 64,
+    )
+    monkeypatch.setattr(
+        q7,
+        "RuntimeCashAuthorityStore",
+        lambda _root: SimpleNamespace(bootstrap=lambda **_kwargs: invalid),
+    )
+    root = tmp_path / "runtime"
+    _save_profiles(root)
+    with pytest.raises(q7.Q7PreparationError, match="STAGE_A_AUTHORITY_STATE_INVALID"):
+        q7.materialize_stage_a(
+            runtime_dir=root,
+            output_record=tmp_path / "stage-a.json",
+            backup_output=tmp_path / "b0.zip",
+            candidate_commit=COMMIT,
+            candidate_tree=TREE,
+            provider=_provider(),
+        )
+    assert not (tmp_path / "b0.zip").exists()
 
 
 def test_q7r_19_23_activation_preparation_is_separate_and_exact(tmp_path):
@@ -486,6 +632,30 @@ def test_q7r_19_23_activation_preparation_is_separate_and_exact(tmp_path):
         "ACTIVATE V3.10 CL7 EXACT CASH AUTHORITY",
         "ARM V3.10 CL7 SANDBOX EXACT CASH EXECUTION",
     ]
+    assert record["stage_a_record_sha256"] == q7.verify_record_bytes(
+        stage_a.read_bytes()
+    )["record_sha256"]
+    assert record["stage_a_canonical_summary_sha256"] == q7._sha256_file(stage_a)
+    substituted = dict(record)
+    substituted.pop("record_sha256")
+    substituted["ignored_extra_field"] = True
+    with pytest.raises(q7.Q7PreparationError, match="EVIDENCE_SCHEMA_INVALID"):
+        q7.verify_record_bytes(q7.build_record(substituted))
+
+
+def test_q7r_23_known_evidence_domains_use_closed_schemas():
+    minimal = q7.build_record(
+        {
+            "version": 1,
+            "domain": "v3.10-cl8-q7-cl7-activation-preparation",
+            "candidate_commit": COMMIT,
+            "candidate_tree": TREE,
+            "runtime_instance_id": "1" * 64,
+            "configured_set_sha256": "2" * 64,
+        }
+    )
+    with pytest.raises(q7.Q7PreparationError, match="EVIDENCE_SCHEMA_INVALID"):
+        q7.verify_record_bytes(minimal)
 
 
 def test_q7r_20_22_activation_authorization_never_implies_burnin(tmp_path):
@@ -583,19 +753,19 @@ def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
         identity_key=secrets.identity_key,
         identity_key_id=secrets.identity_key_id,
     )
+    runtime = tmp_path / "runtime"
+    _result, stage_a, b0 = _materialize(runtime, provider)
     activation = tmp_path / "activation.json"
-    activation.write_bytes(
-        q7.build_record(
-            {
-                "version": 1,
-                "domain": "v3.10-cl8-q7-cl7-activation-preparation",
-                "candidate_commit": COMMIT,
-                "candidate_tree": TREE,
-                "runtime_instance_id": "1" * 64,
-                "configured_set_sha256": "2" * 64,
-            }
-        )
+    q7.prepare_activation(
+        runtime_dir=runtime,
+        stage_a_record=stage_a,
+        b0_backup=b0,
+        output_record=activation,
+        candidate_commit=COMMIT,
+        candidate_tree=TREE,
+        provider=provider,
     )
+    activation_value = q7.verify_record_bytes(activation.read_bytes())
     authority = SimpleNamespace(
         state=RuntimeCashAuthorityState.EXACT_CASH_ARMED,
         post_attempt_count=0,
@@ -604,6 +774,9 @@ def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
         account_scope_sha256=account_scope,
         record_revision=7,
         sha256="3" * 64,
+        activation_context_sha256="a" * 64,
+        ledger_revision=6,
+        ledger_head_sha256="5" * 64,
     )
     monkeypatch.setattr(
         q7,
@@ -616,7 +789,7 @@ def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
         q7,
         "_configured_set",
         lambda *_args, **_kwargs: SimpleNamespace(
-            identity_sha256="2" * 64,
+            identity_sha256=activation_value["configured_set_sha256"],
             bindings=(object(), object()),
         ),
     )
@@ -643,6 +816,29 @@ def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
         close=lambda: None,
     )
     monkeypatch.setattr(q7, "_open_ledger", lambda *_args, **_kwargs: ledger)
+    fresh_evidence = SimpleNamespace(
+        reconciliation=SimpleNamespace(
+            status=SimpleNamespace(value="MATCHED"),
+            discrepancy_kind=SimpleNamespace(value="NONE"),
+        ),
+        availability=SimpleNamespace(status=SimpleNamespace(value="READY")),
+        context=SimpleNamespace(
+            status=SimpleNamespace(value="READY_FOR_LOCKED_REVALIDATION"),
+            sha256="b" * 64,
+            ledger_revision=6,
+            ledger_head_sha256="5" * 64,
+            account_scope_sha256=account_scope,
+            identity_key_id=secrets.identity_key_id,
+            central_order_revision=4,
+            portfolio_revision=8,
+            risk_policy_hash="4" * 64,
+            risk_state_guard_hash="c" * 64,
+        ),
+    )
+    monkeypatch.setattr(q7, "risk_state_guard_hash", lambda _state: "c" * 64)
+    monkeypatch.setattr(
+        q7, "_fresh_runtime_context", lambda _root: (authority, fresh_evidence)
+    )
     monkeypatch.setattr(
         q7,
         "_backup_binding",
@@ -654,7 +850,7 @@ def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
         },
     )
     result = q7.finalize_preparation(
-        runtime_dir=tmp_path / "runtime",
+        runtime_dir=runtime,
         activation_record=activation,
         output_record=tmp_path / "final.json",
         backup_output=tmp_path / "b1.zip",
@@ -672,6 +868,42 @@ def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
     assert record["post_attempt_count"] == 0
     assert record["pending_dispatch_proof_sha256"] is None
     assert record["preparation_provider_order_mutations"] == 0
+    assert record["reconciliation_status"] == "MATCHED"
+    assert record["availability_status"] == "READY"
+    assert record["cash_context_status"] == "READY_FOR_LOCKED_REVALIDATION"
+
+    fresh_evidence.availability.status.value = "MANUAL_REVIEW_REQUIRED"
+    with pytest.raises(q7.Q7PreparationError, match="FRESH_CASH_CONTEXT_NOT_READY"):
+        q7.finalize_preparation(
+            runtime_dir=runtime,
+            activation_record=activation,
+            output_record=tmp_path / "final-blocked.json",
+            backup_output=tmp_path / "b1-blocked.zip",
+            candidate_commit=COMMIT,
+            candidate_tree=TREE,
+            q4_artifact_identity_sha256="8" * 64,
+            q5_privacy_summary_sha256="9" * 64,
+            provider=provider,
+        )
+    assert not (tmp_path / "b1-blocked.zip").exists()
+
+    fresh_evidence.availability.status.value = "READY"
+    fresh_evidence.context.ledger_revision = 7
+    with pytest.raises(
+        q7.Q7PreparationError, match="LEDGER_AUTHORITY_BINDING_MISMATCH"
+    ):
+        q7.finalize_preparation(
+            runtime_dir=runtime,
+            activation_record=activation,
+            output_record=tmp_path / "final-ledger-drift.json",
+            backup_output=tmp_path / "b1-ledger-drift.zip",
+            candidate_commit=COMMIT,
+            candidate_tree=TREE,
+            q4_artifact_identity_sha256="8" * 64,
+            q5_privacy_summary_sha256="9" * 64,
+            provider=provider,
+        )
+    assert not (tmp_path / "b1-ledger-drift.zip").exists()
 
 
 @pytest.mark.parametrize("field", VECTORS["evidence_tamper_fields"])

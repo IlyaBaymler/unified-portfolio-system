@@ -199,7 +199,7 @@ class WindowsCredentialManagerProvider:
 
         self._ctypes = ctypes
         self._credential_type = CREDENTIALW
-        self._advapi = ctypes.WinDLL("Advapi32.dll")
+        self._advapi = ctypes.WinDLL("Advapi32.dll", use_last_error=True)
         self._advapi.CredReadW.argtypes = [
             wintypes.LPCWSTR,
             wintypes.DWORD,
@@ -227,19 +227,24 @@ class WindowsCredentialManagerProvider:
     def get(self, key: str) -> str | None:
         ctypes = self._ctypes
         pointer = ctypes.POINTER(self._credential_type)()
+        ctypes.set_last_error(0)
         ok = self._advapi.CredReadW(
             self._target(key), self.CRED_TYPE_GENERIC, 0, ctypes.byref(pointer)
         )
         if not ok:
-            return None
+            error = ctypes.get_last_error()
+            if error == 1168:  # ERROR_NOT_FOUND is the only absence signal.
+                return None
+            raise ctypes.WinError(error)
         try:
             credential = pointer.contents
             if not credential.CredentialBlob or not credential.CredentialBlobSize:
-                return None
+                # A present empty credential is malformed custody, not absence.
+                return ""
             data = ctypes.string_at(
                 credential.CredentialBlob, credential.CredentialBlobSize
             )
-            return data.decode("utf-16-le").rstrip("\x00") or None
+            return data.decode("utf-16-le").rstrip("\x00")
         finally:
             self._advapi.CredFree(pointer)
 
@@ -489,10 +494,12 @@ def resolve_tbank_token(
 def _strict_identity_pair(key_hex: str | None, key_id: str | None) -> tuple[bytes, str]:
     key_text = str(key_hex or "").strip()
     id_text = str(key_id or "").strip()
-    if not key_text and not id_text:
+    if key_hex is None and key_id is None:
         raise Q7SecretError("IDENTITY_KEY_REQUIRED")
-    if not key_text or not id_text:
+    if (key_hex is None) != (key_id is None):
         raise Q7SecretError("IDENTITY_CUSTODY_PARTIAL")
+    if not key_text or not id_text:
+        raise Q7SecretError("IDENTITY_KEY_INVALID")
     if _IDENTITY_HEX_RE.fullmatch(key_text) is None or len(key_text) % 2:
         raise Q7SecretError("IDENTITY_KEY_INVALID")
     if _IDENTITY_ID_RE.fullmatch(id_text) is None:
@@ -626,12 +633,7 @@ def provision_q7_identity(
             except Exception as exc:
                 raise Q7SecretError("SECRET_PROVIDER_UNAVAILABLE") from exc
             if existing_key is not None or existing_id is not None:
-                try:
-                    _strict_identity_pair(existing_key, existing_id)
-                except Q7SecretError:
-                    if bool(existing_key) != bool(existing_id):
-                        raise Q7SecretError("IDENTITY_CUSTODY_PARTIAL")
-                    raise
+                _strict_identity_pair(existing_key, existing_id)
                 if existing_id != requested_id:
                     raise Q7SecretError("IDENTITY_KEY_MISMATCH")
                 return IdentityProvisioningResult(

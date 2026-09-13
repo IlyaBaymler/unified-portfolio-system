@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
 import zipfile
 from collections.abc import Mapping
@@ -35,6 +36,7 @@ from trading_robot.multi_instrument_config import MultiInstrumentProfileStore
 from trading_robot.portfolio_model import PortfolioState, SnapshotFreshness
 from trading_robot.portfolio_repository import PortfolioRepository
 from trading_robot.risk_persistence import RiskProfileStore, RiskStateStore
+from trading_robot.risk_runtime import risk_state_guard_hash
 from trading_robot.runtime_backup import RuntimeBackupManager
 from trading_robot.runtime_bootstrap import bootstrap_runtime
 from trading_robot.runtime_cash_authority import (
@@ -60,7 +62,67 @@ BURNIN_EXPERIMENT_ID = "CL8-SANDBOX-BURNIN-V1"
 
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
+_KEY_ID = re.compile(r"[A-Z0-9][A-Z0-9_.:-]{2,63}")
 _CODECS = (CL4_OPENING_CODEC, TBANK_OPERATION_CODEC)
+
+_PLANNED_COMMANDS = [
+    {"command": "prepare", "confirmation": RuntimeCashAuthorityManager.PREPARE_PHRASE},
+    {"command": "confirm", "confirmation": RuntimeCashAuthorityManager.CONFIRM_PHRASE},
+    {"command": "activate", "confirmation": RuntimeCashAuthorityManager.ACTIVATE_PHRASE},
+    {"command": "arm", "confirmation": RuntimeCashAuthorityManager.ARM_PHRASE},
+]
+
+_RECORD_FIELDS = {
+    "v3.10-cl8-q7-offline-materialization": {
+        "version", "domain", "candidate_commit", "candidate_tree",
+        "contract_commit", "contract_tree", "contract_sha256",
+        "runtime_instance_id", "account_scope_sha256", "configured_set_sha256",
+        "configured_instrument_count", "secret_provider", "secret_provider_secure",
+        "token_present", "account_present", "identity_key_present", "identity_key_id",
+        "authority_state", "authority_revision", "authority_record_sha256",
+        "ledger_present", "central_present", "portfolio_present", "risk_present",
+        "b0_backup_sha256", "b0_backup_size_bytes", "b0_manifest_sha256",
+        "b0_verification_status", "provider_calls_performed",
+        "provider_mutations_performed", "overall_status", "generated_at",
+        "record_sha256",
+    },
+    "v3.10-cl8-q7-cl7-activation-preparation": {
+        "version", "domain", "experiment_id", "candidate_commit", "candidate_tree",
+        "implementation_commit", "implementation_tree", "contract_commit",
+        "contract_tree", "contract_sha256", "stage_a_record_sha256",
+        "stage_a_canonical_summary_sha256", "stage_a_overall_status",
+        "runtime_instance_id", "b0_backup_sha256", "b0_backup_size_bytes",
+        "b0_manifest_sha256", "configured_set_sha256",
+        "account_scope_nomination_sha256", "identity_key_id", "secret_provider",
+        "secret_provider_secure", "token_present", "account_present",
+        "identity_key_present", "pre_authority_state", "pre_authority_revision",
+        "pre_authority_sha256", "central_quiescent", "portfolio_valid",
+        "risk_valid", "ledger_valid", "sandbox_environment_proven",
+        "provider_calls_before_authorization", "provider_mutations_before_authorization",
+        "planned_commands", "overall_status", "generated_at", "record_sha256",
+    },
+    "v3.10-cl8-q7-final-preparation": {
+        "version", "domain", "candidate_commit", "candidate_tree",
+        "implementation_commit", "implementation_tree", "contract_commit",
+        "contract_tree", "contract_sha256", "activation_preparation_sha256",
+        "activation_preparation_record_sha256", "activation_experiment_id",
+        "activation_overall_status", "runtime_instance_id",
+        "q4_artifact_identity_sha256", "q5_privacy_summary_sha256",
+        "configured_set_sha256", "configured_instrument_count",
+        "account_scope_sha256", "identity_key_id", "authority_state",
+        "authority_revision", "authority_record_sha256", "activation_context_sha256",
+        "fresh_context_sha256", "reconciliation_status", "availability_status",
+        "cash_context_status", "ledger_revision", "ledger_head_sha256",
+        "central_revision", "portfolio_revision", "risk_policy_hash",
+        "risk_state_revision", "b1_backup_sha256", "b1_backup_size_bytes",
+        "b1_manifest_sha256", "secret_provider", "secret_provider_secure",
+        "token_present", "account_present", "identity_key_present",
+        "post_attempt_count", "pending_dispatch_proof_sha256",
+        "preparation_provider_read_rebuild_performed",
+        "preparation_provider_order_mutations", "overall_status", "generated_at",
+        "record_sha256",
+    },
+}
 
 
 class Q7PreparationError(RuntimeError):
@@ -106,6 +168,111 @@ def build_record(payload: Mapping[str, Any]) -> bytes:
     return _canonical_bytes(clean)
 
 
+def _record_schema(value: Mapping[str, Any]) -> None:
+    domain = value.get("domain")
+    expected = _RECORD_FIELDS.get(domain)
+    if expected is None:
+        return
+    if set(value) != expected:
+        raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
+    if value.get("version") != 1:
+        raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
+    for field in ("candidate_commit", "candidate_tree", "contract_commit", "contract_tree"):
+        if _HEX40.fullmatch(str(value.get(field, ""))) is None:
+            raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
+    for field, item in value.items():
+        if (
+            field.endswith(("sha256", "_hash"))
+            and field != "pending_dispatch_proof_sha256"
+            and (type(item) is not str or _HEX64.fullmatch(item) is None)
+        ):
+            raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
+    for field in (
+        "secret_provider_secure", "token_present", "account_present",
+        "identity_key_present", "central_present", "portfolio_present",
+        "risk_present", "ledger_present", "provider_calls_performed",
+        "provider_mutations_performed", "central_quiescent", "portfolio_valid",
+        "risk_valid", "ledger_valid", "sandbox_environment_proven",
+        "preparation_provider_read_rebuild_performed",
+    ):
+        if field in value and type(value[field]) is not bool:
+            raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
+    for field in (
+        "configured_instrument_count", "authority_revision", "pre_authority_revision",
+        "provider_calls_before_authorization", "provider_mutations_before_authorization",
+        "ledger_revision", "central_revision", "portfolio_revision",
+        "risk_state_revision", "b0_backup_size_bytes", "b1_backup_size_bytes",
+        "post_attempt_count", "preparation_provider_order_mutations",
+    ):
+        if field in value and (type(value[field]) is not int or value[field] < 0):
+            raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
+    if _KEY_ID.fullmatch(str(value.get("identity_key_id", ""))) is None:
+        raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
+    if value.get("contract_commit") != CONTRACT_COMMIT or value.get("contract_tree") != CONTRACT_TREE:
+        raise Q7PreparationError("EVIDENCE_CONTRACT_MISMATCH")
+    if value.get("contract_sha256") != CONTRACT_SHA256:
+        raise Q7PreparationError("EVIDENCE_CONTRACT_MISMATCH")
+    if not isinstance(value.get("generated_at"), str) or not value["generated_at"].strip():
+        raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
+    if domain == "v3.10-cl8-q7-offline-materialization":
+        if (
+            value["configured_instrument_count"] not in {2, 3}
+            or value["authority_state"] != "LEGACY_ACTIVE"
+            or value["authority_revision"] != 0
+            or value["b0_verification_status"] != "VERIFIED"
+            or value["secret_provider_secure"] is not True
+            or any(value[field] is not True for field in (
+                "token_present", "account_present", "identity_key_present",
+                "ledger_present", "central_present", "portfolio_present", "risk_present",
+            ))
+            or value["provider_calls_performed"] is not False
+            or value["provider_mutations_performed"] is not False
+            or value["overall_status"] != "ACTIVATION_REQUIRED"
+        ):
+            raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
+    elif domain == "v3.10-cl8-q7-cl7-activation-preparation":
+        if (
+            value["experiment_id"] != ACTIVATION_EXPERIMENT_ID
+            or value["implementation_commit"] != value["candidate_commit"]
+            or value["implementation_tree"] != value["candidate_tree"]
+            or value["stage_a_overall_status"] != "ACTIVATION_REQUIRED"
+            or value["pre_authority_state"] != "LEGACY_ACTIVE"
+            or value["pre_authority_revision"] != 0
+            or value["planned_commands"] != _PLANNED_COMMANDS
+            or value["secret_provider_secure"] is not True
+            or any(value[field] is not True for field in (
+                "token_present", "account_present", "identity_key_present",
+                "central_quiescent", "portfolio_valid", "risk_valid", "ledger_valid",
+                "sandbox_environment_proven",
+            ))
+            or value["provider_calls_before_authorization"] != 0
+            or value["provider_mutations_before_authorization"] != 0
+            or value["overall_status"] != "READY_FOR_SEPARATE_ACTIVATION_AUTHORIZATION"
+        ):
+            raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
+    else:
+        if (
+            value["implementation_commit"] != value["candidate_commit"]
+            or value["implementation_tree"] != value["candidate_tree"]
+            or value["activation_experiment_id"] != ACTIVATION_EXPERIMENT_ID
+            or value["activation_overall_status"] != "READY_FOR_SEPARATE_ACTIVATION_AUTHORIZATION"
+            or value["authority_state"] != "EXACT_CASH_ARMED"
+            or value["reconciliation_status"] != "MATCHED"
+            or value["availability_status"] != "READY"
+            or value["cash_context_status"] != "READY_FOR_LOCKED_REVALIDATION"
+            or value["secret_provider_secure"] is not True
+            or any(value[field] is not True for field in (
+                "token_present", "account_present", "identity_key_present",
+                "preparation_provider_read_rebuild_performed",
+            ))
+            or value["post_attempt_count"] != 0
+            or value["pending_dispatch_proof_sha256"] is not None
+            or value["preparation_provider_order_mutations"] != 0
+            or value["overall_status"] != "PASS"
+        ):
+            raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
+
+
 def verify_record_bytes(
     raw: bytes,
     *,
@@ -128,6 +295,7 @@ def verify_record_bytes(
         raise Q7PreparationError("EVIDENCE_RECORD_SHA256_MISMATCH")
     if expected_domain is not None and value.get("domain") != expected_domain:
         raise Q7PreparationError("EVIDENCE_DOMAIN_MISMATCH")
+    _record_schema(value)
     return value
 
 
@@ -150,6 +318,41 @@ def _identity(value: str, length: int) -> str:
     if matcher.fullmatch(normalized) is None:
         raise Q7PreparationError("CANDIDATE_IDENTITY_INVALID")
     return normalized
+
+
+def _verify_source_candidate(
+    candidate_commit: str,
+    candidate_tree: str,
+    *,
+    repository: Path | None = None,
+) -> None:
+    """Bind the declared candidate to the exact clean checkout before I/O."""
+
+    commit = _identity(candidate_commit, 40)
+    tree = _identity(candidate_tree, 40)
+    repository = (repository or CURRENT.parent).resolve()
+
+    def git(*args: str) -> str:
+        try:
+            return subprocess.run(
+                ["git", "-c", f"safe.directory={repository.as_posix()}", *args],
+                cwd=repository,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise Q7PreparationError("SOURCE_CUSTODY_UNAVAILABLE") from exc
+
+    head = git("rev-parse", "HEAD")
+    if head != commit:
+        raise Q7PreparationError("CANDIDATE_COMMIT_MISMATCH")
+    if git("rev-parse", f"{commit}^{{tree}}") != tree:
+        raise Q7PreparationError("CANDIDATE_TREE_MISMATCH")
+    if git("rev-parse", "HEAD^{tree}") != tree:
+        raise Q7PreparationError("CANDIDATE_TREE_MISMATCH")
+    if git("status", "--porcelain=v1", "--untracked-files=all"):
+        raise Q7PreparationError("SOURCE_TREE_DIRTY")
 
 
 def _selected_provider(provider: SecretProvider | None) -> SecretProvider:
@@ -291,6 +494,18 @@ def _verified_backup_binding(root: Path, path: Path) -> dict[str, Any]:
     }
 
 
+def _fresh_runtime_context(root: Path) -> tuple[Any, Any]:
+    """Run the accepted CL7 READ/sync/rebuild boundary without an order adapter."""
+
+    from tools.v3_10_runtime_cash_cutover import _open_runtime
+
+    live = _open_runtime(root, create_ledger=False, require_provider=True)
+    try:
+        return live.authority.sync_runtime(**live.inputs())
+    finally:
+        live.ledger.close()
+
+
 def _backup_binding(root: Path, output: Path) -> dict[str, Any]:
     manager = RuntimeBackupManager(root, app_version=__version__)
     path = manager.create_backup(output)
@@ -311,6 +526,7 @@ def materialize_stage_a(
 
     commit = _identity(candidate_commit, 40)
     tree = _identity(candidate_tree, 40)
+    _verify_source_candidate(commit, tree)
     root = Path(runtime_dir).resolve()
     selected, secrets = _resolve(provider)
     report = bootstrap_runtime(root, secret_provider=selected)
@@ -342,6 +558,16 @@ def materialize_stage_a(
     authority = RuntimeCashAuthorityStore(root).bootstrap(transition_at=_now())
     if authority.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING:
         raise Q7PreparationError("RECOVERY_REQUIRED")
+    if authority.identity_key_id not in {None, secrets.identity_key_id}:
+        raise Q7PreparationError("IDENTITY_KEY_MISMATCH")
+    if authority.account_scope_sha256 not in {None, account_scope}:
+        raise Q7PreparationError("ACCOUNT_SCOPE_MISMATCH")
+    if (
+        authority.state is not RuntimeCashAuthorityState.LEGACY_ACTIVE
+        or authority.record_revision != 0
+        or authority.ever_exact_activated
+    ):
+        raise Q7PreparationError("STAGE_A_AUTHORITY_STATE_INVALID")
     backup = _backup_binding(root, Path(backup_output))
     runtime_instance_id = _sha256_bytes(
         _canonical_bytes(
@@ -375,6 +601,7 @@ def materialize_stage_a(
         "identity_key_id": secrets.identity_key_id,
         "authority_state": authority.state.value,
         "authority_revision": authority.record_revision,
+        "authority_record_sha256": authority.sha256,
         "ledger_present": True,
         "central_present": central.account_id == secrets.account_id,
         "portfolio_present": portfolio.account_id == secrets.account_id,
@@ -385,11 +612,7 @@ def materialize_stage_a(
         "b0_verification_status": backup["status"],
         "provider_calls_performed": False,
         "provider_mutations_performed": False,
-        "overall_status": (
-            "ACTIVATION_REQUIRED"
-            if authority.state is RuntimeCashAuthorityState.LEGACY_ACTIVE
-            else "MATERIALIZED"
-        ),
+        "overall_status": "ACTIVATION_REQUIRED",
         "generated_at": generated_at or _now(),
     }
     record_sha, file_sha = write_record_immutable(Path(output_record), payload)
@@ -417,12 +640,13 @@ def prepare_activation(
 ) -> dict[str, Any]:
     """Freeze Stage-B inputs without opening a provider transport."""
 
+    commit = _identity(candidate_commit, 40)
+    tree = _identity(candidate_tree, 40)
+    _verify_source_candidate(commit, tree)
     stage_a = verify_record_bytes(
         Path(stage_a_record).read_bytes(),
         expected_domain="v3.10-cl8-q7-offline-materialization",
     )
-    commit = _identity(candidate_commit, 40)
-    tree = _identity(candidate_tree, 40)
     if stage_a["candidate_commit"] != commit or stage_a["candidate_tree"] != tree:
         raise Q7PreparationError("CANDIDATE_SUBSTITUTION")
     root = Path(runtime_dir).resolve()
@@ -434,6 +658,12 @@ def prepare_activation(
     ):
         raise Q7PreparationError("B0_BACKUP_SUBSTITUTION")
     _selected, secrets = _resolve(provider)
+    if (
+        stage_a["secret_provider"] != secrets.provider
+        or stage_a["secret_provider_secure"] is not secrets.secure
+        or stage_a["identity_key_id"] != secrets.identity_key_id
+    ):
+        raise Q7PreparationError("SECRET_CUSTODY_SUBSTITUTION")
     authority = RuntimeCashAuthorityStore(root).load(allow_missing_legacy=False)
     if authority.identity_key_id not in {None, secrets.identity_key_id}:
         raise Q7PreparationError("IDENTITY_KEY_MISMATCH")
@@ -444,6 +674,13 @@ def prepare_activation(
     )
     if stage_a.get("account_scope_sha256") != account_scope:
         raise Q7PreparationError("ACCOUNT_SCOPE_SUBSTITUTION")
+    if (
+        authority.state is not RuntimeCashAuthorityState.LEGACY_ACTIVE
+        or authority.record_revision != 0
+        or authority.ever_exact_activated
+        or authority.sha256 != stage_a["authority_record_sha256"]
+    ):
+        raise Q7PreparationError("AUTHORITY_STATE_SUBSTITUTION")
     configured = _configured_set(
         root,
         account_id=secrets.account_id,
@@ -472,11 +709,17 @@ def prepare_activation(
         "experiment_id": ACTIVATION_EXPERIMENT_ID,
         "candidate_commit": commit,
         "candidate_tree": tree,
+        "implementation_commit": commit,
+        "implementation_tree": tree,
         "contract_commit": CONTRACT_COMMIT,
         "contract_tree": CONTRACT_TREE,
         "contract_sha256": CONTRACT_SHA256,
+        "stage_a_record_sha256": stage_a["record_sha256"],
+        "stage_a_canonical_summary_sha256": _sha256_file(Path(stage_a_record)),
+        "stage_a_overall_status": stage_a["overall_status"],
         "runtime_instance_id": stage_a["runtime_instance_id"],
         "b0_backup_sha256": stage_a["b0_backup_sha256"],
+        "b0_backup_size_bytes": stage_a["b0_backup_size_bytes"],
         "b0_manifest_sha256": stage_a["b0_manifest_sha256"],
         "configured_set_sha256": configured.identity_sha256,
         "account_scope_nomination_sha256": account_scope,
@@ -496,24 +739,7 @@ def prepare_activation(
         "sandbox_environment_proven": True,
         "provider_calls_before_authorization": 0,
         "provider_mutations_before_authorization": 0,
-        "planned_commands": [
-            {
-                "command": "prepare",
-                "confirmation": RuntimeCashAuthorityManager.PREPARE_PHRASE,
-            },
-            {
-                "command": "confirm",
-                "confirmation": RuntimeCashAuthorityManager.CONFIRM_PHRASE,
-            },
-            {
-                "command": "activate",
-                "confirmation": RuntimeCashAuthorityManager.ACTIVATE_PHRASE,
-            },
-            {
-                "command": "arm",
-                "confirmation": RuntimeCashAuthorityManager.ARM_PHRASE,
-            },
-        ],
+        "planned_commands": _PLANNED_COMMANDS,
         "overall_status": "READY_FOR_SEPARATE_ACTIVATION_AUTHORIZATION",
         "generated_at": generated_at or _now(),
     }
@@ -544,18 +770,25 @@ def finalize_preparation(
 ) -> dict[str, Any]:
     """Create B1 and final evidence only from an already armed exact runtime."""
 
+    commit = _identity(candidate_commit, 40)
+    tree = _identity(candidate_tree, 40)
+    _verify_source_candidate(commit, tree)
     activation = verify_record_bytes(
         Path(activation_record).read_bytes(),
         expected_domain="v3.10-cl8-q7-cl7-activation-preparation",
     )
-    commit = _identity(candidate_commit, 40)
-    tree = _identity(candidate_tree, 40)
     q4 = _identity(q4_artifact_identity_sha256, 64)
     q5 = _identity(q5_privacy_summary_sha256, 64)
     if activation["candidate_commit"] != commit or activation["candidate_tree"] != tree:
         raise Q7PreparationError("CANDIDATE_SUBSTITUTION")
     root = Path(runtime_dir).resolve()
     _selected, secrets = _resolve(provider)
+    if (
+        activation["secret_provider"] != secrets.provider
+        or activation["secret_provider_secure"] is not secrets.secure
+        or activation["identity_key_id"] != secrets.identity_key_id
+    ):
+        raise Q7PreparationError("SECRET_CUSTODY_SUBSTITUTION")
     authority = RuntimeCashAuthorityStore(root).load(allow_missing_legacy=False)
     if (
         authority.state is not RuntimeCashAuthorityState.EXACT_CASH_ARMED
@@ -572,6 +805,8 @@ def finalize_preparation(
     )
     if authority.account_scope_sha256 != account_scope:
         raise Q7PreparationError("ACCOUNT_SCOPE_MISMATCH")
+    if activation["account_scope_nomination_sha256"] != account_scope:
+        raise Q7PreparationError("ACCOUNT_SCOPE_SUBSTITUTION")
     configured = _configured_set(
         root,
         account_id=secrets.account_id,
@@ -596,16 +831,65 @@ def finalize_preparation(
         ledger_snapshot = ledger.validate()
     finally:
         ledger.close()
+    fresh_authority, fresh_evidence = _fresh_runtime_context(root)
+    if (
+        fresh_authority.sha256 != authority.sha256
+        or fresh_authority.state is not RuntimeCashAuthorityState.EXACT_CASH_ARMED
+    ):
+        raise Q7PreparationError("FRESH_AUTHORITY_SUBSTITUTION")
+    reconciliation_status = getattr(
+        getattr(fresh_evidence.reconciliation, "status", None), "value", None
+    )
+    reconciliation_kind = getattr(
+        getattr(fresh_evidence.reconciliation, "discrepancy_kind", None), "value", None
+    )
+    availability_status = getattr(
+        getattr(fresh_evidence.availability, "status", None), "value", None
+    )
+    context_status = getattr(
+        getattr(fresh_evidence.context, "status", None), "value", None
+    )
+    if (
+        reconciliation_status != "MATCHED"
+        or reconciliation_kind != "NONE"
+        or availability_status != "READY"
+        or context_status != "READY_FOR_LOCKED_REVALIDATION"
+    ):
+        raise Q7PreparationError("FRESH_CASH_CONTEXT_NOT_READY")
+    if (
+        authority.ledger_revision != ledger_snapshot.ledger_revision
+        or authority.ledger_head_sha256 != ledger_snapshot.ledger_head_sha256
+        or fresh_evidence.context.ledger_revision != ledger_snapshot.ledger_revision
+        or fresh_evidence.context.ledger_head_sha256
+        != ledger_snapshot.ledger_head_sha256
+    ):
+        raise Q7PreparationError("LEDGER_AUTHORITY_BINDING_MISMATCH")
+    if (
+        fresh_evidence.context.account_scope_sha256 != account_scope
+        or fresh_evidence.context.identity_key_id != secrets.identity_key_id
+        or fresh_evidence.context.central_order_revision != central.revision
+        or fresh_evidence.context.portfolio_revision != portfolio.revision
+        or fresh_evidence.context.risk_policy_hash
+        != str(risk_profile["policy_hash"])
+        or fresh_evidence.context.risk_state_guard_hash
+        != risk_state_guard_hash(risk_state)
+    ):
+        raise Q7PreparationError("FRESH_OWNER_BINDING_MISMATCH")
     backup = _backup_binding(root, Path(backup_output))
     payload = {
         "version": 1,
         "domain": "v3.10-cl8-q7-final-preparation",
         "candidate_commit": commit,
         "candidate_tree": tree,
+        "implementation_commit": commit,
+        "implementation_tree": tree,
         "contract_commit": CONTRACT_COMMIT,
         "contract_tree": CONTRACT_TREE,
         "contract_sha256": CONTRACT_SHA256,
         "activation_preparation_sha256": _sha256_file(Path(activation_record)),
+        "activation_preparation_record_sha256": activation["record_sha256"],
+        "activation_experiment_id": activation["experiment_id"],
+        "activation_overall_status": activation["overall_status"],
         "runtime_instance_id": activation["runtime_instance_id"],
         "q4_artifact_identity_sha256": q4,
         "q5_privacy_summary_sha256": q5,
@@ -616,6 +900,11 @@ def finalize_preparation(
         "authority_state": authority.state.value,
         "authority_revision": authority.record_revision,
         "authority_record_sha256": authority.sha256,
+        "activation_context_sha256": authority.activation_context_sha256,
+        "fresh_context_sha256": fresh_evidence.context.sha256,
+        "reconciliation_status": reconciliation_status,
+        "availability_status": availability_status,
+        "cash_context_status": context_status,
         "ledger_revision": ledger_snapshot.ledger_revision,
         "ledger_head_sha256": ledger_snapshot.ledger_head_sha256,
         "central_revision": central.revision,
@@ -632,6 +921,7 @@ def finalize_preparation(
         "identity_key_present": True,
         "post_attempt_count": authority.post_attempt_count,
         "pending_dispatch_proof_sha256": authority.pending_dispatch_proof_sha256,
+        "preparation_provider_read_rebuild_performed": True,
         "preparation_provider_order_mutations": 0,
         "overall_status": "PASS",
         "generated_at": generated_at or _now(),

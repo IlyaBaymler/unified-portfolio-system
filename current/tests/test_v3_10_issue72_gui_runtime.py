@@ -84,6 +84,9 @@ CL8_Q7R_IMPLEMENTATION_BRANCH = (
 )
 CL8_Q7R_ACCEPTED_CONTRACT = "1b87316a310e094c8c1c0d2bd3790221b49f60b4"
 CL8_Q7R_ACCEPTED_CONTRACT_TREE = "610e544f802cea599fbfce56ede0a72a7e14c945"
+CL8_Q7R_CONTRACT_BRANCH = "agent/v3-10-clean-cl8-q7-preparation-rescope-contract-freeze"
+CL8_Q7R_REVIEWED_HEAD = "1bdcb7bbb383d2640cd942bff41993fb4975fddb"
+CL8_Q7R_REVIEWED_TREE = "c4ebc10a3b4d148b566c005c00bb8d11d1cd201b"
 CL8_Q7R_IMPLEMENTATION_PATHS = {
     "current/desktop_gui.py",
     "current/trading_robot/gui_runtime_controller.py",
@@ -159,7 +162,24 @@ def test_exact_contract_branch_and_fourteen_path_custody():
     assert _git("rev-parse", f"{ACCEPTED_CONTRACT}^{{tree}}") == ACCEPTED_CONTRACT_TREE
     assert _git("merge-base", ACCEPTED_CONTRACT, head) == ACCEPTED_CONTRACT
     branch = _git("branch", "--show-current")
-    if branch == CL8_Q7R_IMPLEMENTATION_BRANCH:
+    q7r_pr = None
+    if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+        event_path = os.environ.get("GITHUB_EVENT_PATH")
+        assert event_path is not None
+        pull_request = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))[
+            "pull_request"
+        ]
+        if pull_request["head"]["ref"] == CL8_Q7R_IMPLEMENTATION_BRANCH:
+            q7r_pr = pull_request
+            assert pull_request["base"]["ref"] == CL8_Q7R_CONTRACT_BRANCH
+            assert pull_request["base"]["sha"] == CL8_Q7R_ACCEPTED_CONTRACT
+            head = pull_request["head"]["sha"]
+            parents = set(_git("show", "-s", "--format=%P", checked_out_head).split())
+            assert {head, CL8_Q7R_ACCEPTED_CONTRACT}.issubset(parents)
+            assert _git("rev-parse", f"{checked_out_head}^{{tree}}") == _git(
+                "rev-parse", f"{head}^{{tree}}"
+            )
+    if branch == CL8_Q7R_IMPLEMENTATION_BRANCH or q7r_pr is not None:
         assert _git(
             "rev-parse", f"{CL8_Q7R_ACCEPTED_CONTRACT}^{{tree}}"
         ) == CL8_Q7R_ACCEPTED_CONTRACT_TREE
@@ -167,14 +187,18 @@ def test_exact_contract_branch_and_fourteen_path_custody():
             CL8_Q7R_ACCEPTED_CONTRACT
         )
         if head != CL8_Q7R_ACCEPTED_CONTRACT:
-            assert _git("rev-parse", f"{head}^") == CL8_Q7R_ACCEPTED_CONTRACT
+            parent = _git("rev-parse", f"{head}^")
+            assert parent in {CL8_Q7R_ACCEPTED_CONTRACT, CL8_Q7R_REVIEWED_HEAD}
+            if parent == CL8_Q7R_REVIEWED_HEAD:
+                assert _git("rev-parse", f"{parent}^{{tree}}") == CL8_Q7R_REVIEWED_TREE
         changed = set(
             _git(
                 "diff", "--name-only", f"{CL8_Q7R_ACCEPTED_CONTRACT}..{head}"
             ).splitlines()
         )
-        changed.update(_git("diff", "--name-only").splitlines())
-        changed.update(_git("ls-files", "--others", "--exclude-standard").splitlines())
+        if q7r_pr is None:
+            changed.update(_git("diff", "--name-only").splitlines())
+            changed.update(_git("ls-files", "--others", "--exclude-standard").splitlines())
         assert changed == CL8_Q7R_IMPLEMENTATION_PATHS
         return
     release_cut_pr = None

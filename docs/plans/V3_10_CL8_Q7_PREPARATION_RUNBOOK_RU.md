@@ -41,8 +41,9 @@ python tools/v3_10_q7_prepare_runtime.py provision-identity `
 
 ## 3. Stage A — offline materialization
 
-До запуска оператор фиксирует exact candidate commit/tree и проверяет clean
-source tree. В private runtime уже должны находиться ровно 2–3 проверенных
+До запуска оператор фиксирует exact candidate commit/tree. Tool сам проверяет,
+что commit существует, является текущим `HEAD`, его tree совпадает с declared
+tree, а source worktree clean. В private runtime уже должны находиться ровно 2–3 проверенных
 `SANDBOX_EXECUTION` profiles. Tool не придумывает instrument profile.
 
 ```powershell
@@ -115,6 +116,14 @@ Portfolio = FRESH / coherent
 CashLedger/Risk/configured set = valid and exact
 provider order mutations during activation = 0
 ```
+
+`finalize` выполняет один authenticated provider READ sync через принятый CL7
+boundary и под contract lock order заново строит CL4 reconciliation, CL5
+availability и CL6 cash context. Допустимы только `MATCHED / READY /
+READY_FOR_LOCKED_REVALIDATION` и exact совпадение текущего CashLedger revision/head
+с authority binding. Этот read-only rebuild не содержит order adapter и не может
+выполнить provider POST. Он допустим только внутри уже отдельно авторизованного
+Stage B; до `START EXPERIMENT` эту команду не выполнять.
 
 ```powershell
 python tools/v3_10_q7_prepare_runtime.py finalize `
