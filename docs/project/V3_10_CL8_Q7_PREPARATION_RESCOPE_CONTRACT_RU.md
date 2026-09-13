@@ -2,7 +2,7 @@
 
 Status:
 
-`CL8 Q7 PREPARATION RESCOPE CONTRACT CANDIDATE / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
+`CL8 Q7 PREPARATION RESCOPE CONTRACT CORRECTION SUCCESSOR CANDIDATE / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
 
 Parent program:
 
@@ -178,7 +178,7 @@ No provider/private-account state is touched by contract work.
 
 ## 6. Frozen implementation allowlist
 
-Only after exact contract acceptance may a dedicated implementation branch change these eight paths:
+Only after exact contract acceptance may the dedicated implementation branch change these ten paths:
 
 ```text
 current/desktop_gui.py
@@ -190,18 +190,44 @@ current/tools/v3_10_q7_prepare_runtime.py
 current/tests/test_v3_10_q7_preparation_runtime.py
 current/tests/fixtures/v3_10_q7_preparation_vectors.json
 
+current/tests/test_v3_10_issue72_gui_runtime.py
+current/tests/test_v3_10_stable_qualification.py
+
 docs/plans/V3_10_CL8_Q7_PREPARATION_RUNBOOK_RU.md
 ```
 
 Exact count:
 
 ```text
-8
+10
 ```
 
 An allowlisted path is permission, not a requirement.
 
 Any path outside this exact set requires a new explicit rescope.
+
+The implementation branch name is frozen as:
+
+```text
+agent/v3-10-clean-cl8-q7-preparation-rescope-implementation
+```
+
+The two inherited custody-oracle test paths are allowlisted only to recognize:
+
+```text
+the exact accepted Q7 rescope contract commit/tree
+the exact implementation branch above
+the implementation parent = exact accepted contract head
+the implementation merge-base = exact accepted contract head
+the exact ten-path implementation allowlist
+at most one later separately authorized direct correction successor
+```
+
+Their expected regression-failure node set, product assertions, GUI semantics and
+runtime assertions are immutable. They MUST NOT accept an arbitrary branch,
+descendant, merge-base or changed-path set. A correction successor is recognized
+only after its exact parent/head/tree and bounded correction paths have received a
+separate governance record.
 
 ---
 
@@ -392,9 +418,100 @@ not derived from runtime state
 
 ## 15. Provisioning boundary
 
-Identity provisioning is an explicit local operator action exposed only by the bounded Q7 preparation tool or an accepted helper in the existing secret-provider module.
+Identity provisioning is an explicit local operator action exposed only by the
+bounded Q7 preparation tool. Its implementation may delegate protected-store
+operations to a bounded helper in the existing secret-provider module, but that
+helper is not a second operator entrypoint.
 
-Normal GUI startup MUST NOT:
+The only contract-owned provisioning entrypoint is:
+
+```text
+python tools/v3_10_q7_prepare_runtime.py provision-identity \
+  --identity-key-id <ID> \
+  --confirmation "PROVISION V3.10 CL7 IDENTITY"
+```
+
+`<ID>` is non-secret operator input and must satisfy section 14. Identity-key
+plaintext is generated inside the process and MUST NOT be accepted through a
+command-line argument, environment variable, stdin, clipboard, log or report.
+Generation uses a cryptographically secure operating-system RNG equivalent to:
+
+```text
+secrets.token_bytes(32)
+```
+
+and stores its exact lowercase 64-character hexadecimal encoding under
+`V310_CL_IDENTITY_KEY_HEX`.
+
+Provisioning first acquires the Windows per-user named mutex:
+
+```text
+Local\MOEXResearchRobot.V310CLIdentityProvisioning.v1
+timeout = 5000 ms
+```
+
+The mutex is held from the first protected read through final read-back or
+compensation. Timeout or mutex abandonment returns
+`IDENTITY_PROVISIONING_LOCK_FAILED`, performs zero secret write and blocks Stage
+A. Every accepted product path capable of provisioning these logical keys MUST
+use this mutex; no second writer exists in the product.
+
+This mutex is the frozen concurrency boundary for accepted product writers.
+Out-of-band mutation through Credential Manager UI or an unrelated process while
+provisioning holds the mutex is forbidden operator interference and is outside
+the product's serializable writer set. The implementation MUST NOT claim native
+Credential Manager compare-and-swap against such an external writer; any
+resulting read-back mismatch still fails closed through the guarded compensation
+rules below.
+
+After acquiring the mutex and before generating any bytes, the tool reads both
+protected logical keys. The finite pre-write states are:
+
+```text
+both absent:
+  eligible for create-once provisioning
+
+both present and valid:
+  ALREADY_PROVISIONED
+  zero writes; requested key ID must exactly match the stored key ID,
+  otherwise IDENTITY_KEY_MISMATCH
+
+exactly one present:
+  IDENTITY_CUSTODY_PARTIAL / MANUAL_RECOVERY_REQUIRED
+  zero generation and zero writes
+
+either present but malformed:
+  IDENTITY_KEY_INVALID
+  zero generation and zero writes
+```
+
+Create-once provisioning is a lock-serialized logical transaction over the two
+Credential Manager records. Immediately before each write it re-reads the target
+and requires it to remain absent. Before the second write it additionally
+requires the protected key read-back to equal the just-created value. Any
+compare failure performs no overwrite and enters the compensation path.
+
+The transaction writes the newly generated key first, then the operator supplied
+key ID, and performs an exact protected read-back of both values before reporting
+success. Because Windows Credential Manager does not provide a cross-record
+transaction, any write/read failure triggers compensation. Compensation deletes
+a target only after an exact protected comparison proves that its current value
+equals the value created by this invocation; it MUST NOT delete a missing,
+different or pre-existing value.
+
+Successful compensation returns `IDENTITY_PROVISIONING_FAILED` only after a
+read-back proves both records absent. Any failed comparison, failed deletion or
+non-absent post-compensation state returns
+`IDENTITY_CUSTODY_PARTIAL / MANUAL_RECOVERY_REQUIRED`. Neither outcome may
+continue Stage A. A first-write failure also verifies both records remain absent;
+otherwise it returns the partial/manual-recovery result.
+
+An exact read-back mismatch is handled by the same compensation path. A
+successful provisioning result is emitted only when both read-back values are
+byte-for-value exact. The output contains metadata only: provider, presence,
+`identity_key_id` and a finite status token.
+
+Normal GUI startup and every command other than the exact provisioning entrypoint MUST NOT:
 
 ```text
 generate identity key material
@@ -415,6 +532,11 @@ and the economic Q7 path remains blocked.
 ---
 
 ## 16. Existing-authority protection
+
+Provisioning is strictly create-once. Any existing protected identity-key or
+identity-key-ID record, including while CL7 authority is `LEGACY_ACTIVE`, blocks
+generation and replacement. A valid complete pair is an idempotent metadata-only
+`ALREADY_PROVISIONED` result; it is never rewritten.
 
 If any non-bootstrap CL7 authority custody already exists, provisioning MUST NOT silently replace or regenerate the identity material expected by that authority lineage.
 
@@ -454,7 +576,7 @@ Credential Manager blob
 DPAPI plaintext
 ```
 
-A support bundle, backup manifest or qualification summary may contain:
+A support bundle, Q7 B0 evidence binding or qualification summary may contain:
 
 ```text
 provider name
@@ -586,6 +708,8 @@ Allowed work:
 ```text
 read local protected-secret metadata
 validate secret presence/format
+perform the exact section-15 create-once provisioning action only when invoked
+with its exact operator confirmation
 validate local configuration
 initialize accepted local stores where their accepted APIs allow it
 create/open an empty CL2 ledger using accepted codecs
@@ -684,7 +808,11 @@ Credential Manager blobs
 locks as authoritative state
 ```
 
-The backup manifest records metadata-only secret prerequisites.
+The accepted Q3 backup ZIP and its `manifest.json` schema remain byte-for-contract
+unchanged. Secret-prerequisite metadata MUST NOT be injected into that immutable
+backup manifest. It is recorded exclusively in the canonical Stage-A
+materialization record from section 48, which binds both the verified backup
+artifact SHA-256 and the exact B0 `manifest.json` SHA-256.
 
 ---
 
@@ -696,7 +824,7 @@ Shareable B0 evidence binds:
 runtime_instance_id
 candidate commit/tree
 configured-set identity/hash
-runtime custody manifest SHA-256
+b0 manifest SHA-256
 backup artifact SHA-256
 backup byte size
 verification result
@@ -1086,10 +1214,10 @@ Q7R-03
 repeated refresh/start actions create no second controller/owner composition
 
 Q7R-04
-Windows Credential Manager resolves V310_CL_IDENTITY_KEY_HEX metadata/value for the trusted caller
+the exact provision-identity entrypoint holds the frozen named mutex and performs 32-byte CSPRNG create-once provisioning, compare-before-write, exact protected read-back, metadata-only output, no overwrite for every existing-custody state and compare-before-delete compensation after a partial write
 
 Q7R-05
-missing identity key fails closed with zero provider call
+missing identity key outside the exact confirmed provisioning entrypoint fails closed with zero write and zero provider call
 
 Q7R-06
 malformed identity key fails closed with zero provider call
@@ -1098,7 +1226,7 @@ Q7R-07
 identity key ID mismatch fails closed with zero CL7 transition
 
 Q7R-08
-normal GUI startup never auto-generates or rotates identity key material
+normal GUI startup never auto-generates, replaces or rotates identity key material; complete, partial and malformed existing custody is never overwritten
 
 Q7R-09
 identity plaintext absent from logs, reports, support bundles, backups and shareable evidence
@@ -1128,7 +1256,7 @@ Q7R-17
 offline preparation tool exposes no prepare/confirm/activate/arm/dispatch side effect
 
 Q7R-18
-B0 backup covers the complete materialized runtime custody and excludes secret plaintext
+B0 backup covers the complete materialized runtime custody, excludes secret plaintext, preserves the accepted Q3 backup-manifest schema and binds secret-prerequisite metadata only in Stage-A evidence
 
 Q7R-19
 activation preparation binds exact candidate/runtime/B0/config/account-scope/identity metadata
@@ -1193,6 +1321,15 @@ missing
 malformed
 ID mismatch
 normal-start no generation
+confirmed create-once generation with injected deterministic CSPRNG
+lock timeout and abandoned mutex produce zero write
+two concurrent accepted provisioning calls yield one exact pair and one idempotent no-write result
+complete existing pair idempotent no-write
+partial existing pair no-write
+second-write failure with successful compensation
+two accepted concurrent writers never overwrite or delete the completed pair
+read-back mismatch with successful compensation
+failed compensation produces MANUAL_RECOVERY_REQUIRED
 
 secret leakage canaries
 
@@ -1210,7 +1347,7 @@ LEGACY_ACTIVE accepted only as ACTIVATION_REQUIRED
 
 offline provider-call counter = 0
 
-B0 manifest and secret exclusion
+B0 accepted-manifest schema immutability, Stage-A metadata binding and secret exclusion
 
 activation-preparation schema/tamper checks
 
@@ -1285,6 +1422,8 @@ portfolio_present
 risk_present
 b0_backup_sha256
 b0_backup_size_bytes
+b0_manifest_sha256
+b0_verification_status
 provider_calls_performed
 provider_mutations_performed
 overall_status
@@ -1414,10 +1553,30 @@ separators "," and ":"
 insignificant whitespace none
 NaN / Infinity forbidden
 terminal newline none
-SHA-256 lowercase hex over exact canonical bytes
+record_sha256 = SHA-256 lowercase hex over the exact canonical preimage bytes defined below
 ```
 
 Secret plaintext is forbidden before serialization.
+
+For each schema in sections 48–50, the `record_sha256` preimage is the exact
+canonical JSON object with the top-level `record_sha256` member omitted. The
+producer MUST:
+
+```text
+1. reject any caller-supplied record_sha256
+2. canonicalize the complete validated object without that member
+3. calculate SHA-256 over those exact preimage bytes
+4. insert the lowercase digest as record_sha256
+5. canonicalize the final object once and write it immutably
+```
+
+Verification removes exactly the top-level `record_sha256` member, reconstructs
+the canonical preimage and requires an exact digest match. Missing, duplicate,
+non-lowercase or non-64-hex values fail closed.
+
+The SHA-256 of the final serialized file bytes is a separate external custody
+identity. Any CL8 `canonical_summary_sha256` binding uses that final-file digest,
+not the internal `record_sha256`. Thus neither digest is self-referential.
 
 ---
 
@@ -1436,6 +1595,11 @@ Q5 privacy/release hygiene
 ```
 
 Q4/Q5 artifacts used later by Q7 must be built from the new exact candidate.
+
+The Q1 rerun includes both inherited custody-oracle nodes added to the ten-path
+allowlist. They must recognize only the exact topology frozen in section 6 and
+must leave the accepted PRE_RELEASE_CUT/POST_RELEASE_CUT failure-node sets
+unchanged. Either oracle failure is an unexpected Q1 failure and blocks Stage A.
 
 ---
 
@@ -1665,7 +1829,7 @@ Q3 = ACCEPTED
 Q6 = DEFERRED / NOT WAIVED
 
 Q7 PREPARATION =
-BLOCKED / RESCOPE CONTRACT CANDIDATE
+BLOCKED / RESCOPE CONTRACT CORRECTION SUCCESSOR CANDIDATE
 
 CL8-Q7-PREP-01..05 =
 OPEN
@@ -1699,3 +1863,69 @@ FORBIDDEN
 ```
 
 Any future authority must name the exact accepted commit/tree, exact runtime/evidence identity and exact bounded action.
+
+---
+
+# PART S — R1 CONTRACT CORRECTION CUSTODY
+
+## 63. Fixed correction authority
+
+This successor changes contract semantics only for the fixed independent-review
+finding set:
+
+```text
+CL8-Q7R-C-R1-01
+CL8-Q7R-C-R1-02
+CL8-Q7R-C-R1-03
+CL8-Q7R-C-R1-04
+```
+
+The exact correction parent is:
+
+```text
+a0ac11cac7d7b63355272f4daf365d4452097805
+tree = 4ce96ca736de26326f0a8fe13a155a482e1db3ee
+```
+
+The correction delta is exactly one direct successor commit and exactly the
+contract path in section 5. Every other repository path remains immutable.
+
+## 64. Closed correction semantics
+
+The correction is limited to:
+
+```text
+CL8-Q7R-C-R1-01:
+exact create-once identity provisioning protocol and failure states
+
+CL8-Q7R-C-R1-02:
+metadata-only secret prerequisites moved to the Stage-A evidence binding;
+accepted Q3 backup manifest remains unchanged
+
+CL8-Q7R-C-R1-03:
+non-self-referential record_sha256 preimage and final-file custody distinction
+
+CL8-Q7R-C-R1-04:
+two exact inherited custody-oracle paths added with topology-only authority;
+implementation allowlist count changes from 8 to 10
+```
+
+No other semantic correction is authorized. After this commit the single
+contract correction budget is exhausted. Review is finding-scoped only to the
+four IDs above. A surviving material finding yields `RESCOPE / DEFER`; it does
+not open another correction batch.
+
+## 65. Authority after correction
+
+Until a separate explicit acceptance binds the exact successor commit/tree:
+
+```text
+CONTRACT = CORRECTION SUCCESSOR CANDIDATE
+IMPLEMENTATION = BLOCKED
+PROVIDER ACCESS = NOT AUTHORIZED
+CL7 ACTIVATION = NOT AUTHORIZED
+CL8-SANDBOX-BURNIN-V1 = NOT AUTHORIZED
+START EXPERIMENT = INELIGIBLE
+STABLE ACCEPTANCE = BLOCKED
+PUBLICATION = NOT AUTHORIZED
+```
