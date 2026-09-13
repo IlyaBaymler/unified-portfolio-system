@@ -127,8 +127,13 @@ CL8_Q7R_IMPLEMENTATION_BRANCH = (
 CL8_Q7R_ACCEPTED_CONTRACT = "1b87316a310e094c8c1c0d2bd3790221b49f60b4"
 CL8_Q7R_ACCEPTED_CONTRACT_TREE = "610e544f802cea599fbfce56ede0a72a7e14c945"
 CL8_Q7R_CONTRACT_BRANCH = "agent/v3-10-clean-cl8-q7-preparation-rescope-contract-freeze"
+CL8_Q7R_INTEGRATION_BRANCH = "program/v3-10-v4-stable-line"
+CL8_Q7R_INTEGRATION_BASE = "ebd68c7d71929ca194dbcdb9685a140a9eb319d5"
+CL8_Q7R_INTEGRATION_BASE_TREE = "170b959512e0a911ee7189d8b4ec1fa398892192"
 CL8_Q7R_REVIEWED_HEAD = "1bdcb7bbb383d2640cd942bff41993fb4975fddb"
 CL8_Q7R_REVIEWED_TREE = "c4ebc10a3b4d148b566c005c00bb8d11d1cd201b"
+CL8_Q7R_ACCEPTED_IMPLEMENTATION = "0a896154e9b8419151181767811de0e1682d0485"
+CL8_Q7R_ACCEPTED_IMPLEMENTATION_TREE = "a7d8aabeeeec2f58d42633e071078426d407b599"
 CL8_Q7R_IMPLEMENTATION_PATHS = {
     "current/desktop_gui.py",
     "current/trading_robot/gui_runtime_controller.py",
@@ -1900,15 +1905,27 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
         ]
         if pull_request["head"]["ref"] == CL8_Q7R_IMPLEMENTATION_BRANCH:
             q7r_pr = pull_request
-            assert pull_request["base"]["ref"] == CL8_Q7R_CONTRACT_BRANCH
-            assert pull_request["base"]["sha"] == CL8_Q7R_ACCEPTED_CONTRACT
+            base = (
+                pull_request["base"]["ref"],
+                pull_request["base"]["sha"],
+            )
+            assert base in {
+                (CL8_Q7R_CONTRACT_BRANCH, CL8_Q7R_ACCEPTED_CONTRACT),
+                (CL8_Q7R_INTEGRATION_BRANCH, CL8_Q7R_INTEGRATION_BASE),
+            }
+            if base[0] == CL8_Q7R_INTEGRATION_BRANCH:
+                assert (
+                    _git("rev-parse", f"{base[1]}^{{tree}}", text=True)
+                    .stdout.strip()
+                    == CL8_Q7R_INTEGRATION_BASE_TREE
+                )
             head = pull_request["head"]["sha"]
-            parents = set(
+            parents = (
                 _git("show", "-s", "--format=%P", checked_out_head, text=True)
                 .stdout.strip()
                 .split()
             )
-            assert {head, CL8_Q7R_ACCEPTED_CONTRACT}.issubset(parents)
+            assert parents == [base[1], head]
             assert (
                 _git("rev-parse", f"{checked_out_head}^{{tree}}", text=True)
                 .stdout.strip()
@@ -1931,11 +1948,20 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
         )
         if head != CL8_Q7R_ACCEPTED_CONTRACT:
             parent = _git("rev-parse", f"{head}^", text=True).stdout.strip()
-            assert parent in {CL8_Q7R_ACCEPTED_CONTRACT, CL8_Q7R_REVIEWED_HEAD}
+            assert parent in {
+                CL8_Q7R_ACCEPTED_CONTRACT,
+                CL8_Q7R_REVIEWED_HEAD,
+                CL8_Q7R_ACCEPTED_IMPLEMENTATION,
+            }
             if parent == CL8_Q7R_REVIEWED_HEAD:
                 assert (
                     _git("rev-parse", f"{parent}^{{tree}}", text=True).stdout.strip()
                     == CL8_Q7R_REVIEWED_TREE
+                )
+            elif parent == CL8_Q7R_ACCEPTED_IMPLEMENTATION:
+                assert (
+                    _git("rev-parse", f"{parent}^{{tree}}", text=True).stdout.strip()
+                    == CL8_Q7R_ACCEPTED_IMPLEMENTATION_TREE
                 )
         changed = set(
             _git(
