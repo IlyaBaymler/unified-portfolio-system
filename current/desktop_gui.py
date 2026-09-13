@@ -20,9 +20,14 @@ import pandas as pd
 from dotenv import dotenv_values, set_key
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+
 from trading_robot import __version__
 from trading_robot.backtest import BacktestConfig, BacktestResult, run_backtest
 from trading_robot.bot import BotConfig
+from trading_robot.broker_read_adapters import TBANK_OPERATION_CODEC
+from trading_robot.cash_ledger_opening_reconciliation import CL4_OPENING_CODEC
+from trading_robot.cash_ledger_persistence import CashLedgerStore
+from trading_robot.central_order_manager import CentralOrderManager, CentralOrderStore
 from trading_robot.config_persistence import (
     PROFILE_MODES,
     StrategyProfileError,
@@ -50,17 +55,22 @@ from trading_robot.gui_resilience import (
 from trading_robot.gui_runtime_controller import (
     GuiRuntimeBlockedError,
     GuiRuntimeController,
+    ProductionGuiCycleSource,
 )
+from trading_robot.instrument_runtime import InstrumentRuntimeStore
 from trading_robot.journal import EventJournal, JournalEvent
 from trading_robot.locking import InterProcessFileLock, LockUnavailableError
 from trading_robot.logging_setup import RedactingFormatter, configure_file_logging
 from trading_robot.moex_iss import MoexISSClient
+from trading_robot.multi_instrument_config import MultiInstrumentProfileStore
 from trading_robot.paths import resolve_app_paths
 from trading_robot.portfolio import (
     ExternalCloseAcknowledgementRequest,
     OwnershipRecoveryRequest,
 )
 from trading_robot.portfolio_manager import CanonicalPortfolioManager
+from trading_robot.portfolio_repository import PortfolioRepository
+from trading_robot.portfolio_risk_runtime import PortfolioRiskRuntime
 from trading_robot.portfolio_snapshot import PortfolioSnapshotBuilder
 from trading_robot.readiness import (
     ProductionReadinessEvaluator,
@@ -79,16 +89,28 @@ from trading_robot.risk_reporting import (
     write_burn_in_report,
     write_dashboard_snapshot,
 )
+from trading_robot.risk_runtime import RiskRuntimeAdapter
 from trading_robot.runtime_backup import (
     RuntimeBackupError,
     RuntimeBackupManager,
     format_backup_verification_summary,
 )
 from trading_robot.runtime_bootstrap import RuntimeSetupReport, bootstrap_runtime
+from trading_robot.runtime_cash_authority import (
+    RuntimeCashAuthorityManager,
+    RuntimeCashAuthorityStore,
+    derive_account_scope,
+)
+from trading_robot.sandbox_execution_adapter import (
+    SANDBOX_EXECUTION_CONFIRMATION,
+    SandboxExecutionPolicy,
+)
 from trading_robot.secret_provider import (
     EnvFileSecretProvider,
+    SecretProvider,
     preferred_secret_provider,
     probe_secret_provider,
+    resolve_q7_protected_secrets,
 )
 from trading_robot.strategy import SmaCrossoverConfig, generate_sma_signals
 from trading_robot.strategy_runtime import (
@@ -123,6 +145,9 @@ DISPLAY_VERSION = display_version_from_manifest(
     package_version=__version__,
 )
 
+_PRODUCTION_COMPOSITION_LOCK = threading.Lock()
+_PRODUCTION_COMPOSITION: tuple[Path, GuiRuntimeController] | None = None
+
 _INERT_PREDECESSOR_SOURCE_ORACLE = """
 RiskRuntimeAdapter.from_directory(
     RUNTIME_DIR,
@@ -138,6 +163,110 @@ def _reports_initial_dir() -> str:
     """Return the reports directory for this exact source/portable runtime."""
 
     return str(ensure_export_directory(REPORTS_DIR))
+
+
+def _compose_production_gui_runtime(
+    runtime_dir: str | Path = RUNTIME_DIR,
+    *,
+    secret_provider: SecretProvider | None = None,
+    transport_factory: Callable[..., Any] = TBankSandboxClient,
+) -> GuiRuntimeController:
+    """Build the shipped account-level owner graph once, without provider calls."""
+
+    global _PRODUCTION_COMPOSITION
+    root = Path(runtime_dir).resolve()
+    with _PRODUCTION_COMPOSITION_LOCK:
+        if _PRODUCTION_COMPOSITION is not None:
+            previous_root, controller = _PRODUCTION_COMPOSITION
+            if previous_root != root:
+                raise GuiRuntimeBlockedError(
+                    "GUI_RUNTIME_COMPOSITION_REQUIRED",
+                    "Stop the existing runtime composition before selecting another runtime.",
+                )
+            return controller
+
+        selected_provider = secret_provider or preferred_secret_provider(root)
+        protected = resolve_q7_protected_secrets(provider=selected_provider)
+        account_scope = derive_account_scope(
+            protected.account_id,
+            identity_key=protected.identity_key,
+            identity_key_id=protected.identity_key_id,
+        )
+        transport = transport_factory(token=protected.token, max_retries=0)
+        profile_store = MultiInstrumentProfileStore(
+            root / "multi_instrument_profiles.json"
+        )
+        runtime_store = InstrumentRuntimeStore(root / "instrument_runtimes.json")
+        portfolio_manager = CanonicalPortfolioManager(
+            transport,
+            protected.account_id,
+            robot_state_file=root / "robot_state.json",
+            portfolio_state_file=root / "portfolio_state.json",
+            journal_file=root / "trading_events.db",
+        )
+        portfolio_repository: PortfolioRepository = portfolio_manager.repository
+        central = CentralOrderManager(
+            CentralOrderStore(root / "central_order_state.json"),
+            account_id=protected.account_id,
+        )
+        risk_profiles = RiskProfileStore(root / "risk_profiles.json")
+        risk_state = RiskStateStore(root / "risk_state.json")
+        risk = RiskRuntimeAdapter(
+            account_id=protected.account_id,
+            mode="SANDBOX_EXECUTION",
+            profile_store=risk_profiles,
+            state_store=risk_state,
+            auto_create_dry_run_profile=False,
+        )
+        portfolio_risk = PortfolioRiskRuntime(
+            account_id=protected.account_id,
+            profile_store=risk_profiles,
+            state_store=risk_state,
+        )
+        authority = RuntimeCashAuthorityManager(RuntimeCashAuthorityStore(root))
+        ledger = CashLedgerStore.open(
+            root / "cash_ledger_v3_10.sqlite3",
+            (CL4_OPENING_CODEC, TBANK_OPERATION_CODEC),
+            busy_timeout_ms=5_000,
+        )
+        cycle_source = ProductionGuiCycleSource(
+            provider=transport,
+            profile_store=profile_store,
+            runtime_store=runtime_store,
+            risk_runtime=risk,
+            portfolio_refresher=portfolio_manager.refresh,
+            account_id=protected.account_id,
+        )
+        try:
+            controller = GuiRuntimeController.compose(
+                profile_store=profile_store,
+                runtime_store=runtime_store,
+                portfolio_repository=portfolio_repository,
+                central_manager=central,
+                risk_runtime=risk,
+                portfolio_risk_runtime=portfolio_risk,
+                execution_transport=transport,
+                execution_policy=SandboxExecutionPolicy(
+                    account_id=protected.account_id,
+                    enabled=True,
+                    confirmation=SANDBOX_EXECUTION_CONFIRMATION,
+                ),
+                cash_authority=authority,
+                account_id=protected.account_id,
+                account_scope_sha256=account_scope,
+                cl7_identity_key=protected.identity_key,
+                cl7_identity_key_id=protected.identity_key_id,
+                cl7_ledger_store=ledger,
+                cycle_source=cycle_source,
+            )
+        except BaseException:
+            ledger.close()
+            close = getattr(transport, "close", None)
+            if callable(close):
+                close()
+            raise
+        _PRODUCTION_COMPOSITION = (root, controller)
+        return controller
 
 
 def _safe_file_mtime_ns(path: Path) -> int:
@@ -6280,10 +6409,15 @@ def main(*, gui_runtime_controller: GuiRuntimeController | None = None) -> None:
 
     try:
         bootstrap_report = bootstrap_runtime(RUNTIME_DIR)
-        controller = gui_runtime_controller or GuiRuntimeController.blocked(
-            "GUI_RUNTIME_COMPOSITION_REQUIRED",
-            "Launch through an accepted owner composition root before account-level Start.",
-        )
+        controller = gui_runtime_controller
+        if controller is None:
+            try:
+                controller = _compose_production_gui_runtime(RUNTIME_DIR)
+            except Exception:  # noqa: BLE001 - privacy-safe fail-closed boundary
+                controller = GuiRuntimeController.blocked(
+                    "GUI_RUNTIME_COMPOSITION_REQUIRED",
+                    "Protected custody or accepted owner composition is unavailable.",
+                )
         app = TradingRobotGUI(
             bootstrap_report=bootstrap_report,
             gui_runtime_controller=controller,

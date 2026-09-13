@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 import time
@@ -43,6 +42,10 @@ from trading_robot.sandbox_execution_adapter import (
     SandboxExecutionPolicy,
     SandboxInspectionResult,
 )
+from trading_robot.secret_provider import (
+    Q7SecretError,
+    resolve_q7_protected_secrets,
+)
 from trading_robot.tbank_sandbox import TBankSandboxClient
 
 COMMANDS = (
@@ -77,27 +80,15 @@ def _parser() -> argparse.ArgumentParser:
         default="",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--allow-environment-secrets",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     return parser
 
 
-def _identity() -> tuple[str, bytes, str]:
-    raw_account = os.getenv("TBANK_SANDBOX_ACCOUNT_ID", "")
-    key_hex = os.getenv("V310_CL_IDENTITY_KEY_HEX", "")
-    key_id = os.getenv("V310_CL_IDENTITY_KEY_ID", "")
-    try:
-        key = bytes.fromhex(key_hex)
-    except ValueError:
-        key = b""
-    return raw_account, key, key_id
-
-
-def _provider() -> TBankSandboxClient:
-    token = os.getenv("TBANK_SANDBOX_TOKEN", "").strip()
-    if not token:
-        raise CL7RuntimeError(
-            CL7RuntimeReason.BROKER_READ_FAILED,
-            stage="PROVIDER_CREDENTIALS",
-        )
+def _provider(token: str) -> TBankSandboxClient:
     return TBankSandboxClient(token=token, max_retries=0)
 
 
@@ -175,10 +166,16 @@ def _open_runtime(
     *,
     create_ledger: bool,
     require_provider: bool,
+    allow_environment_secrets: bool = False,
 ) -> _Runtime:
     selected = root.resolve()
     selected.mkdir(parents=True, exist_ok=True)
-    raw_account, key, key_id = _identity()
+    resolved = resolve_q7_protected_secrets(
+        allow_environment=allow_environment_secrets,
+    )
+    raw_account = resolved.account_id
+    key = resolved.identity_key
+    key_id = resolved.identity_key_id
     authority = RuntimeCashAuthorityManager(RuntimeCashAuthorityStore(selected))
     ledger_root = selected / "cash_ledger_v3_10.sqlite3"
     codecs = (CL4_OPENING_CODEC, TBANK_OPERATION_CODEC)
@@ -202,7 +199,7 @@ def _open_runtime(
         profiles=profiles,
         risk_state=risk_state,
         central=central,
-        provider=_provider() if require_provider else None,
+        provider=_provider(resolved.token) if require_provider else None,
         raw_account=raw_account,
         identity_key=key,
         identity_key_id=key_id,
@@ -291,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
             args.runtime_dir,
             create_ledger=args.command == "prepare",
             require_provider=require_provider,
+            allow_environment_secrets=args.allow_environment_secrets,
         )
         if args.command == "prepare":
             inputs = runtime.inputs()
@@ -451,6 +449,16 @@ def main(argv: list[str] | None = None) -> int:
                 "reason": exc.reason.value,
                 "retryable": exc.retryable,
                 "stage": exc.stage,
+                "status": "BLOCKED",
+            }
+        )
+        return 2
+    except Q7SecretError as exc:
+        _print(
+            {
+                "reason": exc.reason,
+                "retryable": False,
+                "stage": "PROTECTED_SECRET_RESOLUTION",
                 "status": "BLOCKED",
             }
         )

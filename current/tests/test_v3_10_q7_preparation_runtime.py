@@ -1,0 +1,706 @@
+from __future__ import annotations
+
+import ast
+import json
+import threading
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+import desktop_gui
+from tools import v3_10_q7_prepare_runtime as q7
+from trading_robot.bot import BotConfig
+from trading_robot.config_persistence import bot_config_to_profile
+from trading_robot.gui_runtime_controller import GuiRuntimeController
+from trading_robot.instrument_runtime import (
+    InstrumentRuntimeStateError,
+    InstrumentRuntimeStore,
+)
+from trading_robot.multi_instrument_config import (
+    MultiInstrumentProfile,
+    MultiInstrumentProfileStore,
+)
+from trading_robot.runtime_cash_authority import RuntimeCashAuthorityState
+from trading_robot.secret_provider import (
+    Q7_IDENTITY_CONFIRMATION,
+    Q7SecretError,
+    provision_q7_identity,
+    resolve_q7_protected_secrets,
+)
+
+ROOT = Path(__file__).resolve().parents[2]
+CURRENT = ROOT / "current"
+FIXTURE = CURRENT / "tests" / "fixtures" / "v3_10_q7_preparation_vectors.json"
+VECTORS = json.loads(FIXTURE.read_text(encoding="utf-8"))
+ACCOUNT = VECTORS["synthetic_secrets"]["TBANK_SANDBOX_ACCOUNT_ID"]
+COMMIT = VECTORS["candidate"]["commit"]
+TREE = VECTORS["candidate"]["tree"]
+
+
+class FakeSecretProvider:
+    name = "Synthetic Credential Manager"
+    secure = True
+
+    def __init__(
+        self,
+        values=None,
+        *,
+        fail_set_at=None,
+        mismatch_key=None,
+        fail_delete=False,
+    ) -> None:
+        self.values = dict(values or {})
+        self.writes: list[tuple[str, str]] = []
+        self.deletes: list[str] = []
+        self.fail_set_at = fail_set_at
+        self.mismatch_key = mismatch_key
+        self.fail_delete = fail_delete
+
+    def get(self, key: str):
+        value = self.values.get(key)
+        if key == self.mismatch_key and value is not None:
+            return value + "0"
+        return value
+
+    def set(self, key: str, value: str) -> None:
+        if self.fail_set_at == len(self.writes) + 1:
+            raise OSError("synthetic write failure")
+        self.values[key] = value
+        self.writes.append((key, value))
+
+    def delete(self, key: str) -> None:
+        if self.fail_delete:
+            raise OSError("synthetic delete failure")
+        self.values.pop(key, None)
+        self.deletes.append(key)
+
+
+class FailedMutex:
+    def __enter__(self):
+        raise Q7SecretError("IDENTITY_PROVISIONING_LOCK_FAILED")
+
+    def __exit__(self, *_args):
+        return False
+
+
+def _provider(**overrides) -> FakeSecretProvider:
+    values = dict(VECTORS["synthetic_secrets"])
+    values.update(overrides)
+    return FakeSecretProvider(values)
+
+
+def _profile(ticker: str, interval: str) -> MultiInstrumentProfile:
+    config = BotConfig(
+        ticker=ticker,
+        class_code="TQBR",
+        candle_interval=interval,
+        primary_strategy="sma",
+        shadow_strategies=(),
+        fast_window=2,
+        slow_window=5,
+        volatility_window=5,
+        lookback_days=5,
+        max_order_lots=1,
+    )
+    return MultiInstrumentProfile(
+        instrument_id=f"q7r-{ticker.lower()}",
+        strategy_profile=bot_config_to_profile(
+            config,
+            connect_timeout_seconds=8,
+            read_timeout_seconds=25,
+        ),
+        scheduler_cadence_seconds=1,
+        decision_cadence_seconds=1,
+        risk_refresh_cadence_seconds=1,
+        reconciliation_cadence_seconds=1,
+        market_status_cadence_seconds=1,
+    )
+
+
+def _profiles(count: int = 2) -> tuple[MultiInstrumentProfile, ...]:
+    return (
+        _profile("SBER", "CANDLE_INTERVAL_HOUR"),
+        _profile("LKOH", "CANDLE_INTERVAL_30_MIN"),
+        _profile("YDEX", "CANDLE_INTERVAL_15_MIN"),
+    )[:count]
+
+
+def _save_profiles(root: Path, count: int = 2) -> None:
+    MultiInstrumentProfileStore(root / "multi_instrument_profiles.json").save_mode(
+        "SANDBOX_EXECUTION", _profiles(count)
+    )
+
+
+def _materialize(root: Path, provider=None):
+    _save_profiles(root)
+    evidence = root.parent / f"{root.name}-stage-a.json"
+    backup = root.parent / f"{root.name}-b0.zip"
+    result = q7.materialize_stage_a(
+        runtime_dir=root,
+        output_record=evidence,
+        backup_output=backup,
+        candidate_commit=COMMIT,
+        candidate_tree=TREE,
+        provider=provider or _provider(),
+        generated_at="2026-09-13T00:00:00+00:00",
+    )
+    return result, evidence, backup
+
+
+def test_q7r_01_03_shipped_composition_is_once_and_cached(monkeypatch):
+    source = (CURRENT / "desktop_gui.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    compose_helper = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_compose_production_gui_runtime"
+    )
+    calls = [
+        node
+        for node in ast.walk(compose_helper)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "compose"
+    ]
+    assert len(calls) == 1
+    assert "SandboxTradingBot" not in source
+    cached = GuiRuntimeController.blocked("SYNTHETIC")
+    monkeypatch.setattr(desktop_gui, "_PRODUCTION_COMPOSITION", (Path.cwd(), cached))
+    assert desktop_gui._compose_production_gui_runtime(Path.cwd()) is cached
+    assert desktop_gui._compose_production_gui_runtime(Path.cwd()) is cached
+
+
+def test_q7r_01_03_production_composition_success_missing_and_duplication(
+    tmp_path, monkeypatch
+):
+    runtime = tmp_path / "runtime"
+    provider = _provider()
+    _materialize(runtime, provider)
+    transports: list[object] = []
+
+    class Transport:
+        def __init__(self, *, token, max_retries):
+            assert token == VECTORS["synthetic_secrets"]["TBANK_SANDBOX_TOKEN"]
+            assert max_retries == 0
+            transports.append(self)
+
+        def get_candles(self, *_args, **_kwargs):
+            raise AssertionError("composition must not perform provider reads")
+
+    monkeypatch.setattr(desktop_gui, "_PRODUCTION_COMPOSITION", None)
+    first = desktop_gui._compose_production_gui_runtime(
+        runtime,
+        secret_provider=provider,
+        transport_factory=Transport,
+    )
+    second = desktop_gui._compose_production_gui_runtime(
+        runtime,
+        secret_provider=provider,
+        transport_factory=Transport,
+    )
+    assert first is second
+    assert first.service_ready is True
+    assert len(transports) == 1
+
+    monkeypatch.setattr(desktop_gui, "_PRODUCTION_COMPOSITION", None)
+    incomplete = _provider(V310_CL_IDENTITY_KEY_HEX="")
+    with pytest.raises(Q7SecretError, match="IDENTITY_CUSTODY_PARTIAL"):
+        desktop_gui._compose_production_gui_runtime(
+            runtime,
+            secret_provider=incomplete,
+            transport_factory=Transport,
+        )
+    assert len(transports) == 1
+
+
+def test_q7r_04_confirmed_provisioning_is_metadata_only_and_idempotent():
+    provider = FakeSecretProvider()
+    first = provision_q7_identity(
+        identity_key_id="Q7R_SYNTHETIC_V1",
+        confirmation=Q7_IDENTITY_CONFIRMATION,
+        provider=provider,
+        random_bytes=lambda count: b"\x42" * count,
+        mutex_factory=threading.Lock,
+    )
+    second = provision_q7_identity(
+        identity_key_id="Q7R_SYNTHETIC_V1",
+        confirmation=Q7_IDENTITY_CONFIRMATION,
+        provider=provider,
+        random_bytes=lambda count: b"\xff" * count,
+        mutex_factory=threading.Lock,
+    )
+    assert first.status == "PROVISIONED"
+    assert second.status == "ALREADY_PROVISIONED"
+    assert len(provider.writes) == 2
+    serialized = json.dumps(first.to_dict(), sort_keys=True)
+    assert "42" * 32 not in serialized
+
+
+@pytest.mark.parametrize(
+    ("values", "reason"),
+    [
+        ({"V310_CL_IDENTITY_KEY_HEX": "11" * 32}, "IDENTITY_CUSTODY_PARTIAL"),
+        (
+            {
+                "V310_CL_IDENTITY_KEY_HEX": "not-hex",
+                "V310_CL_IDENTITY_KEY_ID": "Q7R_SYNTHETIC_V1",
+            },
+            "IDENTITY_KEY_INVALID",
+        ),
+        (
+            {
+                "V310_CL_IDENTITY_KEY_HEX": "11" * 32,
+                "V310_CL_IDENTITY_KEY_ID": "OTHER_ID",
+            },
+            "IDENTITY_KEY_MISMATCH",
+        ),
+    ],
+)
+def test_q7r_04_08_existing_custody_never_overwritten(values, reason):
+    provider = FakeSecretProvider(values)
+    with pytest.raises(Q7SecretError, match=reason):
+        provision_q7_identity(
+            identity_key_id="Q7R_SYNTHETIC_V1",
+            confirmation=Q7_IDENTITY_CONFIRMATION,
+            provider=provider,
+            mutex_factory=threading.Lock,
+        )
+    assert provider.writes == []
+    assert provider.deletes == []
+
+
+def test_q7r_04_lock_failure_and_second_write_compensation():
+    locked = FakeSecretProvider()
+    with pytest.raises(Q7SecretError, match="IDENTITY_PROVISIONING_LOCK_FAILED"):
+        provision_q7_identity(
+            identity_key_id="Q7R_SYNTHETIC_V1",
+            confirmation=Q7_IDENTITY_CONFIRMATION,
+            provider=locked,
+            mutex_factory=FailedMutex,
+        )
+    assert locked.writes == []
+
+    failing = FakeSecretProvider(fail_set_at=2)
+    with pytest.raises(Q7SecretError, match="IDENTITY_PROVISIONING_FAILED"):
+        provision_q7_identity(
+            identity_key_id="Q7R_SYNTHETIC_V1",
+            confirmation=Q7_IDENTITY_CONFIRMATION,
+            provider=failing,
+            random_bytes=lambda count: b"\x44" * count,
+            mutex_factory=threading.Lock,
+        )
+    assert failing.values == {}
+
+
+@pytest.mark.parametrize(
+    ("mismatch_key", "write_count"),
+    [
+        ("V310_CL_IDENTITY_KEY_HEX", 1),
+        ("V310_CL_IDENTITY_KEY_ID", 2),
+    ],
+)
+def test_q7r_04_readback_mismatch_requires_manual_recovery(mismatch_key, write_count):
+    provider = FakeSecretProvider(mismatch_key=mismatch_key)
+    with pytest.raises(Q7SecretError, match="IDENTITY_CUSTODY_PARTIAL"):
+        provision_q7_identity(
+            identity_key_id="Q7R_SYNTHETIC_V1",
+            confirmation=Q7_IDENTITY_CONFIRMATION,
+            provider=provider,
+            random_bytes=lambda count: b"\x33" * count,
+            mutex_factory=threading.Lock,
+        )
+    assert len(provider.writes) == write_count
+
+
+def test_q7r_04_failed_compensation_requires_manual_recovery():
+    provider = FakeSecretProvider(fail_set_at=2, fail_delete=True)
+    with pytest.raises(Q7SecretError, match="IDENTITY_CUSTODY_PARTIAL"):
+        provision_q7_identity(
+            identity_key_id="Q7R_SYNTHETIC_V1",
+            confirmation=Q7_IDENTITY_CONFIRMATION,
+            provider=provider,
+            random_bytes=lambda count: b"\x22" * count,
+            mutex_factory=threading.Lock,
+        )
+    assert provider.values["V310_CL_IDENTITY_KEY_HEX"] == "22" * 32
+
+
+def test_q7r_04_concurrent_writers_create_one_pair():
+    provider = FakeSecretProvider()
+    gate = threading.Lock()
+    results: list[str] = []
+
+    def run() -> None:
+        result = provision_q7_identity(
+            identity_key_id="Q7R_SYNTHETIC_V1",
+            confirmation=Q7_IDENTITY_CONFIRMATION,
+            provider=provider,
+            random_bytes=lambda count: b"\x55" * count,
+            mutex_factory=lambda: gate,
+        )
+        results.append(result.status)
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(results) == ["ALREADY_PROVISIONED", "PROVISIONED"]
+    assert len(provider.writes) == 2
+
+
+@pytest.mark.parametrize(
+    ("missing", "reason"),
+    [
+        ("V310_CL_IDENTITY_KEY_HEX", "IDENTITY_CUSTODY_PARTIAL"),
+        ("TBANK_SANDBOX_TOKEN", "SANDBOX_TOKEN_REQUIRED"),
+        ("TBANK_SANDBOX_ACCOUNT_ID", "SANDBOX_ACCOUNT_REQUIRED"),
+    ],
+)
+def test_q7r_05_07_resolver_fails_closed_without_writes(missing, reason):
+    values = dict(VECTORS["synthetic_secrets"])
+    values.pop(missing)
+    provider = FakeSecretProvider(values)
+    with pytest.raises(Q7SecretError, match=reason):
+        resolve_q7_protected_secrets(provider=provider)
+    assert provider.writes == []
+
+
+def test_q7r_07_identity_id_mismatch_is_explicit():
+    provider = _provider()
+    with pytest.raises(Q7SecretError, match="IDENTITY_KEY_MISMATCH"):
+        resolve_q7_protected_secrets(
+            provider=provider,
+            expected_identity_key_id="OTHER_ID",
+        )
+    assert provider.writes == []
+
+
+def test_q7r_09_12_secret_boundary_and_tools_do_not_export_or_call_provider():
+    q7_source = (CURRENT / "tools/v3_10_q7_prepare_runtime.py").read_text(
+        encoding="utf-8"
+    )
+    cutover_source = (CURRENT / "tools/v3_10_runtime_cash_cutover.py").read_text(
+        encoding="utf-8"
+    )
+    assert "resolve_q7_protected_secrets" in cutover_source
+    assert "os.getenv" not in cutover_source
+    assert "TBankSandboxClient" not in q7_source
+    command_choices = set(q7._parser()._subparsers._group_actions[0].choices)
+    assert command_choices == {
+        "provision-identity",
+        "materialize",
+        "prepare-activation",
+        "finalize",
+    }
+    assert command_choices.isdisjoint(
+        {"prepare", "confirm", "activate", "arm", "dispatch"}
+    )
+
+
+def test_q7r_13_18_stage_a_materializes_two_instruments_and_verified_b0(tmp_path):
+    runtime = tmp_path / "private-runtime"
+    result, evidence, backup = _materialize(runtime)
+    record = q7.verify_record_bytes(
+        evidence.read_bytes(),
+        expected_domain="v3.10-cl8-q7-offline-materialization",
+    )
+    assert result["status"] == "ACTIVATION_REQUIRED"
+    assert record["configured_instrument_count"] == 2
+    assert record["authority_state"] == "LEGACY_ACTIVE"
+    assert record["provider_calls_performed"] is False
+    assert record["provider_mutations_performed"] is False
+    assert record["b0_verification_status"] == "VERIFIED"
+    assert record["b0_backup_sha256"] == q7._sha256_file(backup)
+    raw = backup.read_bytes()
+    for secret in VECTORS["synthetic_secrets"].values():
+        assert secret.encode() not in raw
+
+
+def test_q7r_13_requires_two_or_three_instruments(tmp_path):
+    root = tmp_path / "runtime"
+    _save_profiles(root, 1)
+    with pytest.raises(
+        q7.Q7PreparationError, match="CONFIGURED_INSTRUMENT_COUNT_INVALID"
+    ):
+        q7.materialize_stage_a(
+            runtime_dir=root,
+            output_record=tmp_path / "record.json",
+            backup_output=tmp_path / "b0.zip",
+            candidate_commit=COMMIT,
+            candidate_tree=TREE,
+            provider=_provider(),
+        )
+
+
+def test_q7r_13_profile_runtime_account_and_orphan_checks(tmp_path):
+    root = tmp_path / "runtime"
+    _save_profiles(root, 2)
+    store = MultiInstrumentProfileStore(root / "multi_instrument_profiles.json")
+    runtime_store = InstrumentRuntimeStore(root / "instrument_runtimes.json")
+    store.bootstrap_runtime_registry(
+        mode="SANDBOX_EXECUTION", account_id=ACCOUNT, runtime_store=runtime_store
+    )
+    with pytest.raises(InstrumentRuntimeStateError):
+        q7._configured_set(
+            root,
+            account_id="different-account",
+            account_scope_sha256="a" * 64,
+            bootstrap_missing=False,
+        )
+
+
+def test_q7r_16_17_legacy_state_never_transitions_during_stage_a(tmp_path):
+    runtime = tmp_path / "runtime"
+    _result, evidence, _backup = _materialize(runtime)
+    record = q7.verify_record_bytes(evidence.read_bytes())
+    assert record["authority_state"] == RuntimeCashAuthorityState.LEGACY_ACTIVE.value
+    assert record["authority_revision"] == 0
+    assert record["overall_status"] == "ACTIVATION_REQUIRED"
+
+
+def test_q7r_19_23_activation_preparation_is_separate_and_exact(tmp_path):
+    runtime = tmp_path / "runtime"
+    _result, stage_a, backup = _materialize(runtime)
+    output = tmp_path / "activation.json"
+    result = q7.prepare_activation(
+        runtime_dir=runtime,
+        stage_a_record=stage_a,
+        b0_backup=backup,
+        output_record=output,
+        candidate_commit=COMMIT,
+        candidate_tree=TREE,
+        provider=_provider(),
+        generated_at="2026-09-13T00:01:00+00:00",
+    )
+    record = q7.verify_record_bytes(output.read_bytes())
+    assert result["experiment_id"] == q7.ACTIVATION_EXPERIMENT_ID
+    assert result["burnin_authorized"] is False
+    assert record["provider_calls_before_authorization"] == 0
+    assert record["provider_mutations_before_authorization"] == 0
+    assert [item["confirmation"] for item in record["planned_commands"]] == [
+        "PREPARE V3.10 CL7 EXACT CASH CUTOVER",
+        "CONFIRM V3.10 CL7 EXACT CASH CUTOVER",
+        "ACTIVATE V3.10 CL7 EXACT CASH AUTHORITY",
+        "ARM V3.10 CL7 SANDBOX EXACT CASH EXECUTION",
+    ]
+
+
+def test_q7r_20_22_activation_authorization_never_implies_burnin(tmp_path):
+    runtime = tmp_path / "runtime"
+    _result, stage_a, backup = _materialize(runtime)
+    output = tmp_path / "activation.json"
+    result = q7.prepare_activation(
+        runtime_dir=runtime,
+        stage_a_record=stage_a,
+        b0_backup=backup,
+        output_record=output,
+        candidate_commit=COMMIT,
+        candidate_tree=TREE,
+        provider=_provider(),
+    )
+    serialized = output.read_text(encoding="utf-8")
+    assert "dispatch" not in serialized.lower()
+    assert q7.BURNIN_EXPERIMENT_ID not in serialized
+    assert result["provider_calls_before_authorization"] == 0
+
+
+def test_q7r_18_30_b0_and_stage_a_substitution_fail_closed(tmp_path):
+    runtime = tmp_path / "runtime"
+    _result, stage_a, backup = _materialize(runtime)
+    tampered_backup = tmp_path / "tampered-b0.zip"
+    tampered_backup.write_bytes(backup.read_bytes() + b"tamper")
+    with pytest.raises(
+        q7.Q7PreparationError,
+        match="BACKUP_VERIFICATION_FAILED|B0_BACKUP_SUBSTITUTION",
+    ):
+        q7.prepare_activation(
+            runtime_dir=runtime,
+            stage_a_record=stage_a,
+            b0_backup=tampered_backup,
+            output_record=tmp_path / "activation-a.json",
+            candidate_commit=COMMIT,
+            candidate_tree=TREE,
+            provider=_provider(),
+        )
+
+    substituted = json.loads(stage_a.read_bytes())
+    substituted.pop("record_sha256")
+    substituted["candidate_commit"] = "c" * 40
+    substituted_path = tmp_path / "substituted-stage-a.json"
+    substituted_path.write_bytes(q7.build_record(substituted))
+    with pytest.raises(q7.Q7PreparationError, match="CANDIDATE_SUBSTITUTION"):
+        q7.prepare_activation(
+            runtime_dir=runtime,
+            stage_a_record=substituted_path,
+            b0_backup=backup,
+            output_record=tmp_path / "activation-b.json",
+            candidate_commit=COMMIT,
+            candidate_tree=TREE,
+            provider=_provider(),
+        )
+
+
+def test_q7r_24_29_finalization_rejects_unarmed_runtime(tmp_path):
+    runtime = tmp_path / "runtime"
+    _result, stage_a, backup = _materialize(runtime)
+    activation = tmp_path / "activation.json"
+    q7.prepare_activation(
+        runtime_dir=runtime,
+        stage_a_record=stage_a,
+        b0_backup=backup,
+        output_record=activation,
+        candidate_commit=COMMIT,
+        candidate_tree=TREE,
+        provider=_provider(),
+    )
+    with pytest.raises(
+        q7.Q7PreparationError, match="EXACT_CASH_ARMED_PREDICATE_FAILED"
+    ):
+        q7.finalize_preparation(
+            runtime_dir=runtime,
+            activation_record=activation,
+            output_record=tmp_path / "final.json",
+            backup_output=tmp_path / "b1.zip",
+            candidate_commit=COMMIT,
+            candidate_tree=TREE,
+            q4_artifact_identity_sha256="1" * 64,
+            q5_privacy_summary_sha256="2" * 64,
+            provider=_provider(),
+        )
+    assert not (tmp_path / "b1.zip").exists()
+
+
+def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
+    tmp_path, monkeypatch
+):
+    provider = _provider()
+    secrets = resolve_q7_protected_secrets(provider=provider)
+    account_scope = q7.derive_account_scope(
+        secrets.account_id,
+        identity_key=secrets.identity_key,
+        identity_key_id=secrets.identity_key_id,
+    )
+    activation = tmp_path / "activation.json"
+    activation.write_bytes(
+        q7.build_record(
+            {
+                "version": 1,
+                "domain": "v3.10-cl8-q7-cl7-activation-preparation",
+                "candidate_commit": COMMIT,
+                "candidate_tree": TREE,
+                "runtime_instance_id": "1" * 64,
+                "configured_set_sha256": "2" * 64,
+            }
+        )
+    )
+    authority = SimpleNamespace(
+        state=RuntimeCashAuthorityState.EXACT_CASH_ARMED,
+        post_attempt_count=0,
+        pending_dispatch_proof_sha256=None,
+        identity_key_id=secrets.identity_key_id,
+        account_scope_sha256=account_scope,
+        record_revision=7,
+        sha256="3" * 64,
+    )
+    monkeypatch.setattr(
+        q7,
+        "RuntimeCashAuthorityStore",
+        lambda _root: SimpleNamespace(
+            load=lambda **_kwargs: authority,
+        ),
+    )
+    monkeypatch.setattr(
+        q7,
+        "_configured_set",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            identity_sha256="2" * 64,
+            bindings=(object(), object()),
+        ),
+    )
+    monkeypatch.setattr(
+        q7,
+        "_initialize_and_validate_local_owners",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(
+                account_id=ACCOUNT,
+                freshness=q7.SnapshotFreshness.FRESH,
+                blocking=False,
+                revision=8,
+            ),
+            SimpleNamespace(blocking_intent=None, revision=4),
+            {"policy_hash": "4" * 64},
+            SimpleNamespace(revision=5),
+        ),
+    )
+    ledger = SimpleNamespace(
+        validate=lambda: SimpleNamespace(
+            ledger_revision=6,
+            ledger_head_sha256="5" * 64,
+        ),
+        close=lambda: None,
+    )
+    monkeypatch.setattr(q7, "_open_ledger", lambda *_args, **_kwargs: ledger)
+    monkeypatch.setattr(
+        q7,
+        "_backup_binding",
+        lambda *_args, **_kwargs: {
+            "sha256": "6" * 64,
+            "size_bytes": 1234,
+            "manifest_sha256": "7" * 64,
+            "status": "VERIFIED",
+        },
+    )
+    result = q7.finalize_preparation(
+        runtime_dir=tmp_path / "runtime",
+        activation_record=activation,
+        output_record=tmp_path / "final.json",
+        backup_output=tmp_path / "b1.zip",
+        candidate_commit=COMMIT,
+        candidate_tree=TREE,
+        q4_artifact_identity_sha256="8" * 64,
+        q5_privacy_summary_sha256="9" * 64,
+        provider=provider,
+        generated_at="2026-09-13T00:02:00+00:00",
+    )
+    record = q7.verify_record_bytes((tmp_path / "final.json").read_bytes())
+    assert result["status"] == "PASS"
+    assert result["burnin_authorized"] is False
+    assert record["authority_state"] == "EXACT_CASH_ARMED"
+    assert record["post_attempt_count"] == 0
+    assert record["pending_dispatch_proof_sha256"] is None
+    assert record["preparation_provider_order_mutations"] == 0
+
+
+@pytest.mark.parametrize("field", VECTORS["evidence_tamper_fields"])
+def test_q7r_30_record_tamper_is_rejected(field):
+    payload = {
+        "version": 1,
+        "domain": "synthetic",
+        "candidate_commit": COMMIT,
+        "candidate_tree": TREE,
+        "runtime_instance_id": "1" * 64,
+        "configured_set_sha256": "2" * 64,
+        "b0_backup_sha256": "3" * 64,
+        "identity_key_id": "Q7R_SYNTHETIC_V1",
+    }
+    raw = q7.build_record(payload)
+    value = json.loads(raw)
+    value[field] = "tampered"
+    tampered = q7._canonical_bytes(value)
+    with pytest.raises(q7.Q7PreparationError, match="SHA256_MISMATCH"):
+        q7.verify_record_bytes(tampered)
+
+
+def test_closed_q7r_case_set_has_behavioral_nodes():
+    assert VECTORS["case_ids"] == [f"Q7R-{index:02d}" for index in range(1, 31)]
+    source = Path(__file__).read_text(encoding="utf-8")
+    names = {
+        node.name
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_q7r_")
+    }
+    assert len(names) >= 13
+    assert "results" not in VECTORS

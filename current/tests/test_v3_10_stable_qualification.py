@@ -121,6 +121,23 @@ CL8_ADOPTION_CONTRACT_PATH = (
     "docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md"
 )
 CL8_ADOPTION_ISSUE72_TEST_PATH = "current/tests/test_v3_10_issue72_gui_runtime.py"
+CL8_Q7R_IMPLEMENTATION_BRANCH = (
+    "agent/v3-10-clean-cl8-q7-preparation-rescope-implementation"
+)
+CL8_Q7R_ACCEPTED_CONTRACT = "1b87316a310e094c8c1c0d2bd3790221b49f60b4"
+CL8_Q7R_ACCEPTED_CONTRACT_TREE = "610e544f802cea599fbfce56ede0a72a7e14c945"
+CL8_Q7R_IMPLEMENTATION_PATHS = {
+    "current/desktop_gui.py",
+    "current/trading_robot/gui_runtime_controller.py",
+    "current/trading_robot/secret_provider.py",
+    "current/tools/v3_10_runtime_cash_cutover.py",
+    "current/tools/v3_10_q7_prepare_runtime.py",
+    "current/tests/test_v3_10_q7_preparation_runtime.py",
+    "current/tests/fixtures/v3_10_q7_preparation_vectors.json",
+    "current/tests/test_v3_10_issue72_gui_runtime.py",
+    "current/tests/test_v3_10_stable_qualification.py",
+    "docs/plans/V3_10_CL8_Q7_PREPARATION_RUNBOOK_RU.md",
+}
 CL8_ADOPTION_CORRECTION_PATHS = {
     CL8_ADOPTION_CONTRACT_PATH,
     "current/tests/test_v3_10_stable_qualification.py",
@@ -1869,6 +1886,43 @@ def test_v310_cl8_046_missing_failure_never_compensates_for_new_failure() -> Non
 
 def test_exact_qualification_delta_and_predecessor_immutability() -> None:
     branch = _git("branch", "--show-current", text=True).stdout.strip()
+    if branch == CL8_Q7R_IMPLEMENTATION_BRANCH:
+        head = _git("rev-parse", "HEAD", text=True).stdout.strip()
+        assert (
+            _git(
+                "rev-parse",
+                f"{CL8_Q7R_ACCEPTED_CONTRACT}^{{tree}}",
+                text=True,
+            ).stdout.strip()
+            == CL8_Q7R_ACCEPTED_CONTRACT_TREE
+        )
+        assert (
+            _git(
+                "merge-base", CL8_Q7R_ACCEPTED_CONTRACT, head, text=True
+            ).stdout.strip()
+            == CL8_Q7R_ACCEPTED_CONTRACT
+        )
+        if head != CL8_Q7R_ACCEPTED_CONTRACT:
+            assert (
+                _git("rev-parse", f"{head}^", text=True).stdout.strip()
+                == CL8_Q7R_ACCEPTED_CONTRACT
+            )
+        changed = set(
+            _git(
+                "diff",
+                "--name-only",
+                f"{CL8_Q7R_ACCEPTED_CONTRACT}..{head}",
+                text=True,
+            ).stdout.splitlines()
+        )
+        changed.update(_git("diff", "--name-only", text=True).stdout.splitlines())
+        changed.update(
+            _git(
+                "ls-files", "--others", "--exclude-standard", text=True
+            ).stdout.splitlines()
+        )
+        assert changed == CL8_Q7R_IMPLEMENTATION_PATHS
+        return
     release_cut_pr: dict[str, object] | None = None
     if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
         event_path = os.environ.get("GITHUB_EVENT_PATH")

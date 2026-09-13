@@ -10,12 +10,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
 import tools.v3_10_issue72_q0_evidence as q0
+from desktop_gui import _privacy_safe_gui_value
 from tools.v3_10_stable_qualification import (
     RELEASE_CUT_ALLOWLIST,
     RELEASE_REVIEW_CORRECTION_ALLOWLIST,
 )
-from desktop_gui import _privacy_safe_gui_value
 from trading_robot.bot import BotConfig
 from trading_robot.config_persistence import bot_config_to_profile
 from trading_robot.dashboard_view import build_multi_instrument_dashboard
@@ -77,6 +78,23 @@ CL8_Q1_CORRECTION_PATHS = {
     "current/tools/v3_10_stable_qualification.py",
     "current/trading_robot/tbank_sandbox.py",
     "docs/project/V3_10_CL8_STABLE_QUALIFICATION_RELEASE_CONTRACT_RU.md",
+}
+CL8_Q7R_IMPLEMENTATION_BRANCH = (
+    "agent/v3-10-clean-cl8-q7-preparation-rescope-implementation"
+)
+CL8_Q7R_ACCEPTED_CONTRACT = "1b87316a310e094c8c1c0d2bd3790221b49f60b4"
+CL8_Q7R_ACCEPTED_CONTRACT_TREE = "610e544f802cea599fbfce56ede0a72a7e14c945"
+CL8_Q7R_IMPLEMENTATION_PATHS = {
+    "current/desktop_gui.py",
+    "current/trading_robot/gui_runtime_controller.py",
+    "current/trading_robot/secret_provider.py",
+    "current/tools/v3_10_runtime_cash_cutover.py",
+    "current/tools/v3_10_q7_prepare_runtime.py",
+    "current/tests/test_v3_10_q7_preparation_runtime.py",
+    "current/tests/fixtures/v3_10_q7_preparation_vectors.json",
+    "current/tests/test_v3_10_issue72_gui_runtime.py",
+    "current/tests/test_v3_10_stable_qualification.py",
+    "docs/plans/V3_10_CL8_Q7_PREPARATION_RUNBOOK_RU.md",
 }
 IMPLEMENTATION_PATHS = {
     "ROADMAP.md",
@@ -141,6 +159,24 @@ def test_exact_contract_branch_and_fourteen_path_custody():
     assert _git("rev-parse", f"{ACCEPTED_CONTRACT}^{{tree}}") == ACCEPTED_CONTRACT_TREE
     assert _git("merge-base", ACCEPTED_CONTRACT, head) == ACCEPTED_CONTRACT
     branch = _git("branch", "--show-current")
+    if branch == CL8_Q7R_IMPLEMENTATION_BRANCH:
+        assert _git(
+            "rev-parse", f"{CL8_Q7R_ACCEPTED_CONTRACT}^{{tree}}"
+        ) == CL8_Q7R_ACCEPTED_CONTRACT_TREE
+        assert _git("merge-base", CL8_Q7R_ACCEPTED_CONTRACT, head) == (
+            CL8_Q7R_ACCEPTED_CONTRACT
+        )
+        if head != CL8_Q7R_ACCEPTED_CONTRACT:
+            assert _git("rev-parse", f"{head}^") == CL8_Q7R_ACCEPTED_CONTRACT
+        changed = set(
+            _git(
+                "diff", "--name-only", f"{CL8_Q7R_ACCEPTED_CONTRACT}..{head}"
+            ).splitlines()
+        )
+        changed.update(_git("diff", "--name-only").splitlines())
+        changed.update(_git("ls-files", "--others", "--exclude-standard").splitlines())
+        assert changed == CL8_Q7R_IMPLEMENTATION_PATHS
+        return
     release_cut_pr = None
     if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
         event_path = os.environ.get("GITHUB_EVENT_PATH")

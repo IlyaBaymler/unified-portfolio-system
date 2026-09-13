@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Protocol
 from uuid import uuid4
@@ -23,6 +23,11 @@ from .multi_instrument_config import (
     MAX_V3_8_INSTRUMENTS,
     MultiInstrumentProfile,
     MultiInstrumentProfileStore,
+)
+from .multi_instrument_strategy import (
+    MultiInstrumentStrategyError,
+    StrategyCandleLoader,
+    build_strategy_proposal,
 )
 from .portfolio_risk_runtime import PortfolioRiskRuntime
 from .runtime_cash_authority import (
@@ -120,6 +125,155 @@ class GuiStrategyHooks(InstrumentRuntimeHooks, Protocol):
         candle_time: datetime,
         now: datetime,
     ) -> GuiCoordinationRequest | None: ...
+
+
+class _ProductionGuiHooks:
+    """One-cycle read adapter; economic mutation stays behind Central/CL7."""
+
+    def __init__(
+        self,
+        *,
+        provider: Any,
+        risk_runtime: Any,
+        portfolio_refresher: Callable[[], Any],
+        profiles: Mapping[str, MultiInstrumentProfile],
+        frames: Mapping[str, Any],
+        lot_sizes: Mapping[str, int],
+    ) -> None:
+        self.provider = provider
+        self.risk_runtime = risk_runtime
+        self.portfolio_refresher = portfolio_refresher
+        self.profiles = dict(profiles)
+        self.frames = dict(frames)
+        self.lot_sizes = dict(lot_sizes)
+
+    def refresh_market_status(self, runtime: InstrumentRuntime, now: datetime) -> Any:
+        del now
+        return self.provider.get_trading_status(runtime.config.instrument_id)
+
+    def refresh_risk(self, runtime: InstrumentRuntime, now: datetime) -> Any:
+        del runtime, now
+        return {
+            "policy_hash": self.risk_runtime.current_policy_hash(),
+            "state": self.risk_runtime.state_store.load_account(
+                self.risk_runtime.account_id
+            ).to_dict(),
+        }
+
+    def reconcile_portfolio(self, runtime: InstrumentRuntime, now: datetime) -> Any:
+        del runtime, now
+        return self.portfolio_refresher()
+
+    def evaluate_closed_candle(
+        self,
+        runtime: InstrumentRuntime,
+        candle_time: datetime,
+        now: datetime,
+    ) -> Any:
+        frame = self.frames[runtime.config.instrument_id]
+        proposal = build_strategy_proposal(
+            runtime,
+            self.profiles[runtime.config.instrument_id],
+            frame,
+            now=now,
+        )
+        if datetime.fromisoformat(proposal.candle_time).astimezone(timezone.utc) != (
+            candle_time.astimezone(timezone.utc)
+        ):
+            raise MultiInstrumentStrategyError("Cycle candle identity changed.")
+        return proposal
+
+    def coordination_request(
+        self,
+        runtime: InstrumentRuntime,
+        proposal: Any,
+        candle_time: datetime,
+        now: datetime,
+    ) -> GuiCoordinationRequest:
+        del candle_time, now
+        instrument_id = runtime.config.instrument_id
+        return GuiCoordinationRequest(
+            proposal=proposal,
+            profile=self.profiles[instrument_id],
+            candles=self.frames[instrument_id],
+            lot_size=self.lot_sizes[instrument_id],
+        )
+
+
+class ProductionGuiCycleSource:
+    """Provider-read cycle source for the single shipped controller graph.
+
+    Construction performs no provider call. Reads occur only when the already
+    gated account-level GUI loop invokes a cycle; order POST remains reachable
+    solely through the controller's SandboxExecutionAdapter.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: Any,
+        profile_store: MultiInstrumentProfileStore,
+        runtime_store: InstrumentRuntimeStore,
+        risk_runtime: Any,
+        portfolio_refresher: Callable[[], Any],
+        account_id: str,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.provider = provider
+        self.profile_store = profile_store
+        self.runtime_store = runtime_store
+        self.risk_runtime = risk_runtime
+        self.portfolio_refresher = portfolio_refresher
+        self.account_id = str(account_id).strip()
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.candle_loader = StrategyCandleLoader(provider)
+        self._lot_sizes: dict[str, int] = {}
+
+    def __call__(
+        self,
+    ) -> tuple[datetime, Mapping[str, datetime | None], GuiStrategyHooks]:
+        now = self.clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise GuiRuntimeBlockedError("CYCLE_CLOCK_INVALID")
+        profiles = self.profile_store.load_mode("SANDBOX_EXECUTION")
+        if len(profiles) not in {2, 3}:
+            raise GuiRuntimeBlockedError("CONFIGURED_INSTRUMENT_COUNT_INVALID")
+        runtimes = self.runtime_store.load(expected_account_id=self.account_id)
+        by_instrument = {item.config.instrument_id: item for item in runtimes}
+        if len(by_instrument) != len(runtimes) or len(runtimes) != len(profiles):
+            raise GuiRuntimeBlockedError("CONFIGURED_SET_MISMATCH")
+        frames: dict[str, Any] = {}
+        latest: dict[str, datetime | None] = {}
+        profile_map: dict[str, MultiInstrumentProfile] = {}
+        lots: dict[str, int] = {}
+        for profile in profiles:
+            runtime = by_instrument.get(profile.instrument_id)
+            if runtime is None or runtime.config.to_dict() != profile.to_runtime_config(
+                self.account_id
+            ).to_dict():
+                raise GuiRuntimeBlockedError("PROFILE_RUNTIME_IDENTITY_MISMATCH")
+            frame = self.candle_loader.load(runtime, profile, now=now)
+            frames[profile.instrument_id] = frame
+            timestamp = frame.index[-1]
+            latest[runtime.runtime_key] = timestamp.to_pydatetime()
+            profile_map[profile.instrument_id] = profile
+            lot_size = self._lot_sizes.get(profile.instrument_id)
+            if lot_size is None:
+                metadata = self.provider.get_instrument_by_id(profile.instrument_id)
+                lot_size = int(metadata.get("lot") or 0)
+                if lot_size < 1:
+                    raise GuiRuntimeBlockedError("INSTRUMENT_LOT_SIZE_INVALID")
+                self._lot_sizes[profile.instrument_id] = lot_size
+            lots[profile.instrument_id] = lot_size
+        hooks = _ProductionGuiHooks(
+            provider=self.provider,
+            risk_runtime=self.risk_runtime,
+            portfolio_refresher=self.portfolio_refresher,
+            profiles=profile_map,
+            frames=frames,
+            lot_sizes=lots,
+        )
+        return now.astimezone(timezone.utc), latest, hooks
 
 
 class _CoordinatingHooks:

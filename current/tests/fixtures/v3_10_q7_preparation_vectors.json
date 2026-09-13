@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "synthetic_secrets": {
+    "TBANK_SANDBOX_TOKEN": "q7r-synthetic-token-canary",
+    "TBANK_SANDBOX_ACCOUNT_ID": "q7r-synthetic-account",
+    "V310_CL_IDENTITY_KEY_HEX": "1111111111111111111111111111111111111111111111111111111111111111",
+    "V310_CL_IDENTITY_KEY_ID": "Q7R_SYNTHETIC_V1"
+  },
+  "candidate": {
+    "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "evidence_tamper_fields": [
+    "candidate_commit",
+    "candidate_tree",
+    "runtime_instance_id",
+    "configured_set_sha256",
+    "b0_backup_sha256",
+    "identity_key_id"
+  ],
+  "finite_blockers": [
+    "IDENTITY_KEY_REQUIRED",
+    "IDENTITY_CUSTODY_PARTIAL",
+    "IDENTITY_KEY_INVALID",
+    "IDENTITY_KEY_MISMATCH",
+    "IDENTITY_PROVISIONING_LOCK_FAILED",
+    "IDENTITY_PROVISIONING_FAILED",
+    "CONFIGURED_INSTRUMENT_COUNT_INVALID",
+    "CONFIGURED_SET_ORPHAN_OR_DUPLICATE",
+    "PROFILE_RUNTIME_IDENTITY_MISMATCH",
+    "RECOVERY_REQUIRED"
+  ],
+  "case_ids": [
+    "Q7R-01", "Q7R-02", "Q7R-03", "Q7R-04", "Q7R-05",
+    "Q7R-06", "Q7R-07", "Q7R-08", "Q7R-09", "Q7R-10",
+    "Q7R-11", "Q7R-12", "Q7R-13", "Q7R-14", "Q7R-15",
+    "Q7R-16", "Q7R-17", "Q7R-18", "Q7R-19", "Q7R-20",
+    "Q7R-21", "Q7R-22", "Q7R-23", "Q7R-24", "Q7R-25",
+    "Q7R-26", "Q7R-27", "Q7R-28", "Q7R-29", "Q7R-30"
+  ]
+}

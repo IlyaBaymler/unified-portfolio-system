@@ -6,10 +6,14 @@ Windows Credential Manager is preferred when available.  The existing .env
 file remains a compatibility fallback and is explicitly reported as less safe.
 """
 
-from dataclasses import dataclass
 import base64
 import json
 import os
+import re
+import secrets
+from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -23,6 +27,120 @@ class SecretProvider(Protocol):
     def get(self, key: str) -> str | None: ...
     def set(self, key: str, value: str) -> None: ...
     def delete(self, key: str) -> None: ...
+
+
+Q7_PROTECTED_KEYS = (
+    "TBANK_SANDBOX_TOKEN",
+    "TBANK_SANDBOX_ACCOUNT_ID",
+    "V310_CL_IDENTITY_KEY_HEX",
+    "V310_CL_IDENTITY_KEY_ID",
+)
+Q7_IDENTITY_MUTEX = r"Local\MOEXResearchRobot.V310CLIdentityProvisioning.v1"
+Q7_IDENTITY_CONFIRMATION = "PROVISION V3.10 CL7 IDENTITY"
+_IDENTITY_ID_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+_IDENTITY_HEX_RE = re.compile(r"[0-9a-f]{64,128}")
+
+
+class Q7SecretError(RuntimeError):
+    """Finite fail-closed error at the protected Q7 secret boundary."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = str(reason).strip().upper()
+        super().__init__(self.reason)
+
+
+@dataclass(frozen=True, slots=True)
+class Q7ProtectedSecrets:
+    token: str
+    account_id: str
+    identity_key: bytes
+    identity_key_id: str
+    provider: str
+    secure: bool
+
+    def metadata(self) -> dict[str, object]:
+        return {
+            "secret_provider": self.provider,
+            "secret_provider_secure": self.secure,
+            "token_present": True,
+            "account_present": True,
+            "identity_key_present": True,
+            "identity_key_id": self.identity_key_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityProvisioningResult:
+    status: str
+    provider: str
+    secure: bool
+    identity_key_present: bool
+    identity_key_id: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "secret_provider": self.provider,
+            "secret_provider_secure": self.secure,
+            "identity_key_present": self.identity_key_present,
+            "identity_key_id": self.identity_key_id,
+        }
+
+
+class WindowsIdentityProvisioningMutex(AbstractContextManager[None]):
+    """Per-user product-writer lock for create-once CL7 identity custody."""
+
+    def __init__(self, *, timeout_ms: int = 5_000) -> None:
+        self.timeout_ms = int(timeout_ms)
+        self._handle = None
+
+    def __enter__(self) -> None:
+        if os.name != "nt":
+            raise Q7SecretError("IDENTITY_PROVISIONING_LOCK_FAILED")
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        handle = kernel32.CreateMutexW(None, False, Q7_IDENTITY_MUTEX)
+        if not handle:
+            raise Q7SecretError("IDENTITY_PROVISIONING_LOCK_FAILED")
+        result = kernel32.WaitForSingleObject(handle, self.timeout_ms)
+        if result != 0:  # WAIT_OBJECT_0 only; abandonment is a failed gate.
+            if result == 0x00000080:  # WAIT_ABANDONED: this caller owns it.
+                kernel32.ReleaseMutex(handle)
+            kernel32.CloseHandle(handle)
+            raise Q7SecretError("IDENTITY_PROVISIONING_LOCK_FAILED")
+        self._handle = (kernel32, handle)
+
+    def __exit__(self, exc_type, exc, traceback) -> bool:
+        if self._handle is not None:
+            kernel32, handle = self._handle
+            kernel32.ReleaseMutex(handle)
+            kernel32.CloseHandle(handle)
+            self._handle = None
+        return False
+
+
+@dataclass(slots=True)
+class MappingSecretProvider:
+    """Explicit test/development provider; never selected in production."""
+
+    values: Mapping[str, str]
+    name: str = "explicit environment"
+    secure: bool = False
+
+    def get(self, key: str) -> str | None:
+        value = str(self.values.get(key, "") or "").strip()
+        return value or None
+
+    def set(self, key: str, value: str) -> None:
+        raise Q7SecretError("SECRET_PROVIDER_READ_ONLY")
+
+    def delete(self, key: str) -> None:
+        raise Q7SecretError("SECRET_PROVIDER_READ_ONLY")
 
 
 @dataclass(slots=True)
@@ -366,3 +484,193 @@ def resolve_tbank_token(
             return ResolvedSecret(value=value, provider="Windows DPAPI", secure=True)
     fallback = str(env_value or "").strip() or EnvFileSecretProvider(root / ".env").get("TBANK_SANDBOX_TOKEN")
     return ResolvedSecret(value=fallback, provider=".env fallback", secure=False)
+
+
+def _strict_identity_pair(key_hex: str | None, key_id: str | None) -> tuple[bytes, str]:
+    key_text = str(key_hex or "").strip()
+    id_text = str(key_id or "").strip()
+    if not key_text and not id_text:
+        raise Q7SecretError("IDENTITY_KEY_REQUIRED")
+    if not key_text or not id_text:
+        raise Q7SecretError("IDENTITY_CUSTODY_PARTIAL")
+    if _IDENTITY_HEX_RE.fullmatch(key_text) is None or len(key_text) % 2:
+        raise Q7SecretError("IDENTITY_KEY_INVALID")
+    if _IDENTITY_ID_RE.fullmatch(id_text) is None:
+        raise Q7SecretError("IDENTITY_KEY_INVALID")
+    try:
+        decoded = bytes.fromhex(key_text)
+    except ValueError as exc:  # defensive; the regex already excludes this path
+        raise Q7SecretError("IDENTITY_KEY_INVALID") from exc
+    if not 32 <= len(decoded) <= 64:
+        raise Q7SecretError("IDENTITY_KEY_INVALID")
+    return decoded, id_text
+
+
+def resolve_q7_protected_secrets(
+    *,
+    provider: SecretProvider | None = None,
+    allow_environment: bool = False,
+    environ: Mapping[str, str] | None = None,
+    expected_identity_key_id: str | None = None,
+) -> Q7ProtectedSecrets:
+    """Resolve one complete Q7 secret tuple through the canonical boundary.
+
+    Production callers get Windows Credential Manager. Environment values are
+    reachable only through an explicit test/development opt-in and never form
+    an automatic fallback.
+    """
+
+    selected = provider
+    if selected is None:
+        if allow_environment:
+            selected = MappingSecretProvider(environ or os.environ)
+        elif os.name == "nt":
+            selected = WindowsCredentialManagerProvider()
+        else:
+            raise Q7SecretError("SECRET_PROVIDER_UNAVAILABLE")
+    if not bool(getattr(selected, "secure", False)) and not allow_environment:
+        raise Q7SecretError("PROTECTED_SECRET_PROVIDER_REQUIRED")
+    try:
+        token = str(selected.get("TBANK_SANDBOX_TOKEN") or "").strip()
+        account_id = str(selected.get("TBANK_SANDBOX_ACCOUNT_ID") or "").strip()
+        key_hex = selected.get("V310_CL_IDENTITY_KEY_HEX")
+        key_id = selected.get("V310_CL_IDENTITY_KEY_ID")
+    except Q7SecretError:
+        raise
+    except Exception as exc:
+        raise Q7SecretError("SECRET_PROVIDER_UNAVAILABLE") from exc
+    if not token:
+        raise Q7SecretError("SANDBOX_TOKEN_REQUIRED")
+    if not account_id or len(account_id) > 256 or any(
+        0xD800 <= ord(char) <= 0xDFFF for char in account_id
+    ):
+        raise Q7SecretError("SANDBOX_ACCOUNT_REQUIRED")
+    key, normalized_id = _strict_identity_pair(key_hex, key_id)
+    expected_id = str(expected_identity_key_id or "").strip()
+    if expected_id and expected_id != normalized_id:
+        raise Q7SecretError("IDENTITY_KEY_MISMATCH")
+    return Q7ProtectedSecrets(
+        token=token,
+        account_id=account_id,
+        identity_key=key,
+        identity_key_id=normalized_id,
+        provider=str(getattr(selected, "name", "unknown")),
+        secure=bool(getattr(selected, "secure", False)),
+    )
+
+
+def provision_q7_identity(
+    *,
+    identity_key_id: str,
+    confirmation: str,
+    provider: SecretProvider | None = None,
+    random_bytes: Callable[[int], bytes] = secrets.token_bytes,
+    mutex_factory: Callable[[], AbstractContextManager[None]] = WindowsIdentityProvisioningMutex,
+) -> IdentityProvisioningResult:
+    """Create the protected CL7 identity pair exactly once.
+
+    The function deliberately returns metadata only. It serializes every
+    accepted product writer and compensates only values created by this call.
+    """
+
+    requested_id = str(identity_key_id or "").strip()
+    if str(confirmation) != Q7_IDENTITY_CONFIRMATION:
+        raise Q7SecretError("IDENTITY_PROVISIONING_CONFIRMATION_REQUIRED")
+    if _IDENTITY_ID_RE.fullmatch(requested_id) is None:
+        raise Q7SecretError("IDENTITY_KEY_INVALID")
+    selected = provider or WindowsCredentialManagerProvider()
+    if not bool(getattr(selected, "secure", False)):
+        raise Q7SecretError("PROTECTED_SECRET_PROVIDER_REQUIRED")
+
+    def read_pair() -> tuple[str | None, str | None]:
+        return (
+            selected.get("V310_CL_IDENTITY_KEY_HEX"),
+            selected.get("V310_CL_IDENTITY_KEY_ID"),
+        )
+
+    def compensate(created_key: str, created_id: str | None) -> None:
+        safe = True
+        for logical_key, created_value in reversed(
+            (
+                ("V310_CL_IDENTITY_KEY_HEX", created_key),
+                ("V310_CL_IDENTITY_KEY_ID", created_id),
+            )
+        ):
+            if created_value is None:
+                continue
+            try:
+                current_value = selected.get(logical_key)
+                if current_value is None:
+                    continue
+                if current_value != created_value:
+                    safe = False
+                    continue
+                selected.delete(logical_key)
+                if selected.get(logical_key) is not None:
+                    safe = False
+            except Exception:
+                safe = False
+        try:
+            absent = read_pair() == (None, None)
+        except Exception:
+            absent = False
+        if not safe or not absent:
+            raise Q7SecretError("IDENTITY_CUSTODY_PARTIAL")
+        raise Q7SecretError("IDENTITY_PROVISIONING_FAILED")
+
+    try:
+        mutex = mutex_factory()
+        with mutex:
+            try:
+                existing_key, existing_id = read_pair()
+            except Exception as exc:
+                raise Q7SecretError("SECRET_PROVIDER_UNAVAILABLE") from exc
+            if existing_key is not None or existing_id is not None:
+                try:
+                    _strict_identity_pair(existing_key, existing_id)
+                except Q7SecretError:
+                    if bool(existing_key) != bool(existing_id):
+                        raise Q7SecretError("IDENTITY_CUSTODY_PARTIAL")
+                    raise
+                if existing_id != requested_id:
+                    raise Q7SecretError("IDENTITY_KEY_MISMATCH")
+                return IdentityProvisioningResult(
+                    "ALREADY_PROVISIONED",
+                    str(getattr(selected, "name", "unknown")),
+                    True,
+                    True,
+                    requested_id,
+                )
+
+            generated = random_bytes(32)
+            if type(generated) is not bytes or len(generated) != 32:
+                raise Q7SecretError("IDENTITY_PROVISIONING_FAILED")
+            created_key = generated.hex()
+            created_id: str | None = None
+            try:
+                if selected.get("V310_CL_IDENTITY_KEY_HEX") is not None:
+                    compensate(created_key, created_id)
+                selected.set("V310_CL_IDENTITY_KEY_HEX", created_key)
+                if selected.get("V310_CL_IDENTITY_KEY_HEX") != created_key:
+                    compensate(created_key, created_id)
+                if selected.get("V310_CL_IDENTITY_KEY_ID") is not None:
+                    compensate(created_key, created_id)
+                selected.set("V310_CL_IDENTITY_KEY_ID", requested_id)
+                created_id = requested_id
+                if read_pair() != (created_key, requested_id):
+                    compensate(created_key, created_id)
+            except Q7SecretError:
+                raise
+            except Exception:
+                compensate(created_key, created_id)
+            return IdentityProvisioningResult(
+                "PROVISIONED",
+                str(getattr(selected, "name", "unknown")),
+                True,
+                True,
+                requested_id,
+            )
+    except Q7SecretError:
+        raise
+    except Exception as exc:
+        raise Q7SecretError("IDENTITY_PROVISIONING_LOCK_FAILED") from exc
