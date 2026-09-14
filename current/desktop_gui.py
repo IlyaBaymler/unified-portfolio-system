@@ -2872,14 +2872,27 @@ class TradingRobotGUI(tk.Tk):
                 return api.get_accounts()
 
         def done(accounts: list[dict[str, Any]]) -> None:
-            self._set_account_records(accounts)
-            self.sb_status.set(f"Подключено: найдено счетов — {len(accounts)}")
-            self._show_sandbox_result({"connection": "ok", "accounts": accounts})
+            account_count = len(accounts)
+            self.sb_status.set(f"Подключено: найдено счетов — {account_count}")
             messagebox.showinfo(
                 "Подключение успешно",
-                f"API-токен принят. Открытых виртуальных счетов: {len(accounts)}.",
+                f"API-токен принят. Открытых виртуальных счетов: {account_count}.",
                 parent=self,
             )
+            try:
+                self._set_account_records(accounts)
+            except Exception:
+                self.logger.exception(
+                    "Connection succeeded but account rendering failed"
+                )
+            try:
+                self._show_sandbox_result(
+                    {"connection": "ok", "accounts": accounts}
+                )
+            except Exception:
+                self.logger.exception(
+                    "Connection succeeded but secondary GUI refresh failed"
+                )
 
         self._run_background(
             work,
@@ -6125,68 +6138,81 @@ OWNERSHIP И ВИРТУАЛЬНЫЙ ПОРТФЕЛЬ
         try:
             while True:
                 kind, payload = self.ui_queue.get_nowait()
-                if kind == "log":
-                    self._append_log(str(payload))
-                elif kind == "callback":
-                    callback, result = payload
-                    callback(result)
-                elif kind == "finally":
-                    payload()
-                elif kind == "background_error":
-                    exc, on_error, show_modal_error, error_context = payload
-                    info = describe_background_error(exc)
-                    if on_error is not None:
-                        try:
-                            on_error(exc)
-                        except Exception:
-                            self.logger.error(
-                                "Background error callback failed context=%s",
-                                error_context,
-                            )
-                            self.logger.debug("%s", traceback.format_exc())
-                    else:
-                        self.bt_status.set("Операция завершилась ошибкой")
-                        self.sb_status.set("Операция завершилась ошибкой")
-                        self.diag_status.set("Операция завершилась ошибкой")
-                    self._refresh_events()
-                    if show_modal_error:
-                        if info.transient:
-                            now = time.monotonic()
-                            last_notice = self._background_error_notice_at.get(
-                                info.dedup_key,
-                                0.0,
-                            )
-                            if now - last_notice >= 120.0:
-                                self._background_error_notice_at[info.dedup_key] = now
-                                request_note = (
-                                    f"\nRequest ID: {info.request_id}"
-                                    if info.request_id
-                                    else ""
+                try:
+                    if kind == "log":
+                        self._append_log(str(payload))
+                    elif kind == "callback":
+                        callback, result = payload
+                        callback(result)
+                    elif kind == "finally":
+                        payload()
+                    elif kind == "background_error":
+                        exc, on_error, show_modal_error, error_context = payload
+                        info = describe_background_error(exc)
+                        if on_error is not None:
+                            try:
+                                on_error(exc)
+                            except Exception:
+                                self.logger.error(
+                                    "Background error callback failed context=%s",
+                                    error_context,
                                 )
-                                messagebox.showwarning(
-                                    "T-Invest временно недоступен",
-                                    f"{info.summary}.\n"
-                                    "Новые заявки не отправляются без актуального "
-                                    "снимка портфеля. Повторите операцию позже."
-                                    f"{request_note}",
+                                self.logger.debug("%s", traceback.format_exc())
+                        else:
+                            self.bt_status.set("Операция завершилась ошибкой")
+                            self.sb_status.set("Операция завершилась ошибкой")
+                            self.diag_status.set("Операция завершилась ошибкой")
+                        if show_modal_error:
+                            if info.transient:
+                                now = time.monotonic()
+                                last_notice = self._background_error_notice_at.get(
+                                    info.dedup_key,
+                                    0.0,
+                                )
+                                if now - last_notice >= 120.0:
+                                    self._background_error_notice_at[
+                                        info.dedup_key
+                                    ] = now
+                                    request_note = (
+                                        f"\nRequest ID: {info.request_id}"
+                                        if info.request_id
+                                        else ""
+                                    )
+                                    messagebox.showwarning(
+                                        "T-Invest временно недоступен",
+                                        f"{info.summary}.\n"
+                                        "Новые заявки не отправляются без актуального "
+                                        "снимка портфеля. Повторите операцию позже."
+                                        f"{request_note}",
+                                        parent=self,
+                                    )
+                            else:
+                                messagebox.showerror(
+                                    "Ошибка",
+                                    str(exc),
                                     parent=self,
                                 )
-                        else:
-                            messagebox.showerror(
-                                "Ошибка",
-                                str(exc),
-                                parent=self,
+                        try:
+                            self._refresh_events()
+                        except Exception:
+                            self.logger.exception(
+                                "Event refresh failed after background error "
+                                "context=%s",
+                                error_context,
                             )
-                elif kind == "sandbox_result":
-                    self._show_sandbox_result(payload)
-                elif kind == "sandbox_status":
-                    self.sb_status.set(str(payload))
-                elif kind == "sandbox_config_unlock":
-                    self._set_sb_config_locked(False)
+                    elif kind == "sandbox_result":
+                        self._show_sandbox_result(payload)
+                    elif kind == "sandbox_status":
+                        self.sb_status.set(str(payload))
+                    elif kind == "sandbox_config_unlock":
+                        self._set_sb_config_locked(False)
+                except Exception:
+                    self.logger.exception("UI queue item failed kind=%s", kind)
         except queue.Empty:
             pass
-        if self.winfo_exists():
-            self.after(100, self._process_ui_queue)
+        finally:
+            if self.winfo_exists():
+                self.after(100, self._process_ui_queue)
 
     def _append_log(self, line: str) -> None:
         if not hasattr(self, "log_text"):
