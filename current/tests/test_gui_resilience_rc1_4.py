@@ -124,9 +124,7 @@ def test_gui_conn_01_success_notice_precedes_failing_secondary_refresh(
         _get_token=lambda: "synthetic-token",
         _get_ca_bundle=lambda: None,
         _begin_sandbox_operation=lambda name: True,
-        sb_status=SimpleNamespace(
-            set=lambda value: events.append(f"status:{value}")
-        ),
+        sb_status=SimpleNamespace(set=lambda value: events.append(f"status:{value}")),
         _set_account_records=lambda accounts: events.append("accounts"),
         _show_sandbox_result=fail_secondary_refresh,
         logger=Mock(),
@@ -246,9 +244,7 @@ def test_gui_conn_05_two_checks_possible_after_render_failure(monkeypatch) -> No
     host._begin_sandbox_operation = lambda name: (
         TradingRobotGUI._begin_sandbox_operation(host, name)
     )
-    host._end_sandbox_operation = lambda: TradingRobotGUI._end_sandbox_operation(
-        host
-    )
+    host._end_sandbox_operation = lambda: TradingRobotGUI._end_sandbox_operation(host)
     host._set_account_records = lambda accounts: None
     render_attempts: list[int] = []
 
@@ -288,3 +284,80 @@ def test_gui_conn_05_two_checks_possible_after_render_failure(monkeypatch) -> No
     assert host.sandbox_task_name == ""
     assert notices == ["Подключение успешно", "Подключение успешно"]
     assert render_attempts == [1, 2]
+
+
+def test_gui_conn_06_non_transient_error_modal_is_privacy_safe(monkeypatch) -> None:
+    host = _queue_host()
+    messages: list[str] = []
+    private_marker = "PRIVATE-ACCOUNT-CANARY"
+    error = TBankAPIError(
+        private_marker,
+        status_code=400,
+        details={"requestId": "req-400", "private": private_marker},
+        transient=False,
+        service="SandboxService",
+        method="PostSandboxOrder",
+    )
+    monkeypatch.setattr(
+        desktop_gui.messagebox,
+        "showerror",
+        lambda title, message, parent: messages.append(message),
+    )
+    host.ui_queue.put(("background_error", (error, None, True, "order")))
+
+    TradingRobotGUI._process_ui_queue(host)
+
+    assert messages == [describe_background_error(error).summary]
+    assert private_marker not in messages[0]
+
+
+def test_gui_restore_uses_isolated_no_clobber_target(monkeypatch, tmp_path) -> None:
+    backup = tmp_path / "B0.zip"
+    destination = tmp_path / "isolated-restore"
+    restored = destination.resolve()
+    manager = Mock()
+    manager.preview_restore.return_value = (
+        SimpleNamespace(name="runtime_cash_authority.json", action="CREATE"),
+    )
+    manager.restore_backup_isolated.return_value = restored
+    host = SimpleNamespace(
+        robot_thread=None,
+        runtime_backup_manager=manager,
+        logger=Mock(),
+    )
+    notices: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        desktop_gui.filedialog,
+        "askopenfilename",
+        lambda **kwargs: str(backup),
+    )
+    monkeypatch.setattr(
+        desktop_gui.filedialog,
+        "askdirectory",
+        lambda **kwargs: str(destination),
+    )
+    monkeypatch.setattr(
+        desktop_gui.simpledialog,
+        "askstring",
+        lambda *args, **kwargs: "RESTORE RUNTIME",
+    )
+    monkeypatch.setattr(
+        desktop_gui.messagebox,
+        "showinfo",
+        lambda title, message, parent: notices.append((title, message)),
+    )
+
+    TradingRobotGUI._restore_runtime_backup(host)
+
+    manager.restore_backup_isolated.assert_called_once_with(
+        str(backup),
+        str(destination),
+    )
+    manager.restore_backup.assert_not_called()
+    assert notices == [
+        (
+            "Восстановление runtime",
+            f"Backup восстановлен в изолированный каталог:\n{restored}\n\n"
+            "Активный runtime не изменён.",
+        )
+    ]

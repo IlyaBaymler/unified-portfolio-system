@@ -575,7 +575,9 @@ class TradingRobotGUI(tk.Tk):
     def _copy_text(self, value: str, *, status: str | None = None) -> None:
         text = str(value or "").strip()
         if not text:
-            messagebox.showinfo("Копирование", "Нет значения для копирования.", parent=self)
+            messagebox.showinfo(
+                "Копирование", "Нет значения для копирования.", parent=self
+            )
             return
         self.clipboard_clear()
         self.clipboard_append(text)
@@ -591,9 +593,7 @@ class TradingRobotGUI(tk.Tk):
 
     def _copy_selected_account_id(self) -> None:
         # Predecessor wording retained for regression identity: "Копировать полный ID".
-        value = self._account_scope_display(
-            self._selected_account_id(optional=True)
-        )
+        value = self._account_scope_display(self._selected_account_id(optional=True))
         self._copy_text(value, status="Account scope hash скопирован")
 
     def _account_scope_display(self, account_id: str | None) -> str:
@@ -657,7 +657,9 @@ class TradingRobotGUI(tk.Tk):
                 _safe_file_mtime_ns(RISK_STATE_PATH),
                 _safe_file_mtime_ns(RISK_PROFILE_PATH),
                 _safe_file_mtime_ns(EVENT_DB_PATH),
-                _safe_file_mtime_ns(EVENT_DB_PATH.with_name(EVENT_DB_PATH.name + "-wal")),
+                _safe_file_mtime_ns(
+                    EVENT_DB_PATH.with_name(EVENT_DB_PATH.name + "-wal")
+                ),
             )
             if (
                 account_id
@@ -680,7 +682,9 @@ class TradingRobotGUI(tk.Tk):
         today = date.today()
         self.bt_ticker = tk.StringVar(value="SBER")
         self.bt_board = tk.StringVar(value="TQBR")
-        self.bt_start = tk.StringVar(value=f"{today.year - 3}-{today.month:02d}-{today.day:02d}")
+        self.bt_start = tk.StringVar(
+            value=f"{today.year - 3}-{today.month:02d}-{today.day:02d}"
+        )
         self.bt_end = tk.StringVar(value=today.isoformat())
         self.bt_interval_label = tk.StringVar(value="День")
         self.bt_fast = tk.StringVar(value="20")
@@ -702,12 +706,9 @@ class TradingRobotGUI(tk.Tk):
         self.sb_ticker = tk.StringVar(value="SBER")
         self.sb_class_code = tk.StringVar(value="TQBR")
         self.sb_interval = tk.StringVar(value="CANDLE_INTERVAL_HOUR")
-        self.sb_primary_strategy = tk.StringVar(
-            value=STRATEGY_TITLES_RU["sma"]
-        )
+        self.sb_primary_strategy = tk.StringVar(value=STRATEGY_TITLES_RU["sma"])
         self.sb_shadow_vars = {
-            strategy: tk.BooleanVar(value=False)
-            for strategy in VALID_STRATEGIES
+            strategy: tk.BooleanVar(value=False) for strategy in VALID_STRATEGIES
         }
         self.sb_fast = tk.StringVar(value="20")
         self.sb_slow = tk.StringVar(value="50")
@@ -742,9 +743,7 @@ class TradingRobotGUI(tk.Tk):
         self.sb_profile_mode = tk.StringVar(value="DRY_RUN")
         self.sb_profile_status = tk.StringVar(value="Профиль не загружен")
         self.sb_profile_hash = tk.StringVar(value="—")
-        self.multi_instrument_status = tk.StringVar(
-            value="Runtime ещё не загружен"
-        )
+        self.multi_instrument_status = tk.StringVar(value="Runtime ещё не загружен")
 
         self.portfolio_status = tk.StringVar(value="Портфель не загружен")
         self.portfolio_auto_refresh = tk.BooleanVar(value=False)
@@ -795,15 +794,11 @@ class TradingRobotGUI(tk.Tk):
         }
 
         self.risk_dashboard_mode = tk.StringVar(value="SANDBOX_EXECUTION")
-        self.risk_dashboard_status = tk.StringVar(
-            value="Risk Dashboard не загружен"
-        )
+        self.risk_dashboard_status = tk.StringVar(value="Risk Dashboard не загружен")
         self.risk_dashboard_hours = tk.StringVar(value="24")
         self.risk_dashboard_account_id = tk.StringVar(value="—")
         self.risk_kill_switch_title = tk.StringVar(value="KILL SWITCH: UNKNOWN")
-        self.risk_kill_switch_detail = tk.StringVar(
-            value="RiskState ещё не загружен."
-        )
+        self.risk_kill_switch_detail = tk.StringVar(value="RiskState ещё не загружен.")
         self.risk_order_limit_preset = tk.StringVar(value="Stable default (4)")
         self.risk_order_limit_custom = tk.StringVar(value="4")
         self.risk_order_limit_status = tk.StringVar(value="Лимит не загружен")
@@ -825,7 +820,9 @@ class TradingRobotGUI(tk.Tk):
         self.readiness_status = tk.StringVar(value="Готовность ещё не проверена")
         self.readiness_account_id = tk.StringVar(value="—")
         self.readiness_backup_status = tk.StringVar(value="Backup не создан")
-        self.readiness_support_status = tk.StringVar(value="Диагностический пакет не создан")
+        self.readiness_support_status = tk.StringVar(
+            value="Диагностический пакет не создан"
+        )
 
         self.metric_vars = {
             "capital": tk.StringVar(value="—"),
@@ -839,7 +836,9 @@ class TradingRobotGUI(tk.Tk):
     def _build_ui(self) -> None:
         header = ttk.Frame(self, padding=(16, 12, 16, 8))
         header.pack(fill="x")
-        ttk.Label(header, text="MOEX Research Robot", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(header, text="MOEX Research Robot", style="Title.TLabel").pack(
+            anchor="w"
+        )
         ttk.Label(
             header,
             text=(
@@ -1027,11 +1026,19 @@ class TradingRobotGUI(tk.Tk):
             "position": "Доля позиции",
             "trade_return": "Доходность сделки",
         }
-        widths = {"time": 170, "action": 100, "price": 100, "position": 120, "trade_return": 150}
+        widths = {
+            "time": 170,
+            "action": 100,
+            "price": 100,
+            "position": 120,
+            "trade_return": 150,
+        }
         for column in columns:
             self.trades_tree.heading(column, text=headings[column])
             self.trades_tree.column(column, width=widths[column], anchor="center")
-        scroll = ttk.Scrollbar(trades_box, orient="vertical", command=self.trades_tree.yview)
+        scroll = ttk.Scrollbar(
+            trades_box, orient="vertical", command=self.trades_tree.yview
+        )
         self.trades_tree.configure(yscrollcommand=scroll.set)
         self.trades_tree.grid(row=0, column=0, sticky="nsew")
         scroll.grid(row=0, column=1, sticky="ns")
@@ -1124,7 +1131,9 @@ class TradingRobotGUI(tk.Tk):
             raise ValueError("Числовые параметры содержат неверное значение.") from exc
 
         if fast < 2 or slow <= fast:
-            raise ValueError("Медленная SMA должна быть больше быстрой, а быстрая — не меньше 2.")
+            raise ValueError(
+                "Медленная SMA должна быть больше быстрой, а быстрая — не меньше 2."
+            )
         if capital <= 0:
             raise ValueError("Начальный капитал должен быть положительным.")
         if not 0 < position_fraction <= 100:
@@ -1156,7 +1165,9 @@ class TradingRobotGUI(tk.Tk):
     ) -> None:
         self.backtest_result = result
         metrics = result.metrics
-        self.metric_vars["capital"].set(f"{metrics['ending_capital']:,.0f} ₽".replace(",", " "))
+        self.metric_vars["capital"].set(
+            f"{metrics['ending_capital']:,.0f} ₽".replace(",", " ")
+        )
         self.metric_vars["return"].set(f"{metrics['total_return']:.1%}")
         self.metric_vars["cagr"].set(f"{metrics['cagr']:.1%}")
         self.metric_vars["drawdown"].set(f"{metrics['max_drawdown']:.1%}")
@@ -1204,12 +1215,32 @@ class TradingRobotGUI(tk.Tk):
         axis.plot(frame.index, frame["close"], label=f"{ticker} close", linewidth=1.1)
         axis.plot(frame.index, frame["sma_fast"], label="SMA fast", linewidth=1.0)
         axis.plot(frame.index, frame["sma_slow"], label="SMA slow", linewidth=1.0)
-        buys = result.trades[result.trades["action"] == "BUY"] if not result.trades.empty else pd.DataFrame()
-        sells = result.trades[result.trades["action"] == "SELL"] if not result.trades.empty else pd.DataFrame()
+        buys = (
+            result.trades[result.trades["action"] == "BUY"]
+            if not result.trades.empty
+            else pd.DataFrame()
+        )
+        sells = (
+            result.trades[result.trades["action"] == "SELL"]
+            if not result.trades.empty
+            else pd.DataFrame()
+        )
         if not buys.empty:
-            axis.scatter(pd.to_datetime(buys["time"]), buys["price"], marker="^", label="BUY", zorder=3)
+            axis.scatter(
+                pd.to_datetime(buys["time"]),
+                buys["price"],
+                marker="^",
+                label="BUY",
+                zorder=3,
+            )
         if not sells.empty:
-            axis.scatter(pd.to_datetime(sells["time"]), sells["price"], marker="v", label="SELL", zorder=3)
+            axis.scatter(
+                pd.to_datetime(sells["time"]),
+                sells["price"],
+                marker="v",
+                label="SELL",
+                zorder=3,
+            )
         axis.set_title("Цена, скользящие средние и точки сделок")
         axis.set_ylabel("Цена")
         axis.grid(True, alpha=0.25)
@@ -1220,7 +1251,9 @@ class TradingRobotGUI(tk.Tk):
         figure.clear()
         axis = figure.add_subplot(111)
         axis.plot(result.curve.index, result.curve["equity"], label="Стратегия")
-        axis.plot(result.curve.index, result.curve["buy_hold_equity"], label="Buy & hold")
+        axis.plot(
+            result.curve.index, result.curve["buy_hold_equity"], label="Buy & hold"
+        )
         axis.set_title("Изменение капитала")
         axis.set_ylabel("Капитал, ₽")
         axis.grid(True, alpha=0.25)
@@ -1354,9 +1387,9 @@ class TradingRobotGUI(tk.Tk):
         ttk.Entry(ca_row, textvariable=self.sb_ca_bundle).pack(
             side="left", fill="x", expand=True
         )
-        ttk.Button(
-            ca_row, text="…", width=3, command=self._browse_ca_bundle
-        ).pack(side="left", padx=(4, 0))
+        ttk.Button(ca_row, text="…", width=3, command=self._browse_ca_bundle).pack(
+            side="left", padx=(4, 0)
+        )
         ttk.Label(
             auth_box,
             text=(
@@ -1436,9 +1469,7 @@ class TradingRobotGUI(tk.Tk):
             command=self._create_sandbox_account,
         ).pack(fill="x", pady=2)
 
-        profile_box = ttk.LabelFrame(
-            controls, text="Профили стратегии", padding=10
-        )
+        profile_box = ttk.LabelFrame(controls, text="Профили стратегии", padding=10)
         profile_box.pack(fill="x", pady=(0, 8))
         self.profile_mode_combo = self._labeled_combo(
             profile_box,
@@ -1461,27 +1492,21 @@ class TradingRobotGUI(tk.Tk):
                 self.sb_profile_mode.get(), show_message=True
             ),
         )
-        self.profile_load_button.pack(
-            side="left", fill="x", expand=True, padx=(0, 2)
-        )
+        self.profile_load_button.pack(side="left", fill="x", expand=True, padx=(0, 2))
         self._register_sb_config_widget(self.profile_load_button)
         self.profile_save_button = ttk.Button(
             profile_buttons,
             text="Сохранить",
             command=self._save_selected_strategy_profile,
         )
-        self.profile_save_button.pack(
-            side="left", fill="x", expand=True, padx=2
-        )
+        self.profile_save_button.pack(side="left", fill="x", expand=True, padx=2)
         self._register_sb_config_widget(self.profile_save_button)
         self.profile_reset_button = ttk.Button(
             profile_buttons,
             text="Сбросить",
             command=self._reset_selected_strategy_profile,
         )
-        self.profile_reset_button.pack(
-            side="left", fill="x", expand=True, padx=(2, 0)
-        )
+        self.profile_reset_button.pack(side="left", fill="x", expand=True, padx=(2, 0))
         self._register_sb_config_widget(self.profile_reset_button)
         ttk.Label(
             profile_box,
@@ -1507,9 +1532,7 @@ class TradingRobotGUI(tk.Tk):
             justify="left",
         ).pack(anchor="w", pady=(5, 0))
 
-        params_box = ttk.LabelFrame(
-            controls, text="Инструмент и цикл", padding=10
-        )
+        params_box = ttk.LabelFrame(controls, text="Инструмент и цикл", padding=10)
         params_box.pack(fill="x", pady=(0, 8))
         for label, variable in (
             ("Тикер", self.sb_ticker),
@@ -1543,9 +1566,7 @@ class TradingRobotGUI(tk.Tk):
                 self._labeled_entry(params_box, label, variable)
             )
 
-        role_box = ttk.LabelFrame(
-            controls, text="PRIMARY и SHADOW", padding=10
-        )
+        role_box = ttk.LabelFrame(controls, text="PRIMARY и SHADOW", padding=10)
         role_box.pack(fill="x", pady=(0, 8))
         primary_combo = self._labeled_combo(
             role_box,
@@ -1581,9 +1602,7 @@ class TradingRobotGUI(tk.Tk):
             justify="left",
         ).pack(anchor="w", pady=(5, 0))
 
-        sma_box = ttk.LabelFrame(
-            controls, text="SMA с гистерезисом", padding=10
-        )
+        sma_box = ttk.LabelFrame(controls, text="SMA с гистерезисом", padding=10)
         sma_box.pack(fill="x", pady=(0, 8))
         for label, variable in (
             ("Быстрая SMA", self.sb_fast),
@@ -1594,9 +1613,7 @@ class TradingRobotGUI(tk.Tk):
                 self._labeled_entry(sma_box, label, variable)
             )
 
-        donchian_box = ttk.LabelFrame(
-            controls, text="Donchian + ATR", padding=10
-        )
+        donchian_box = ttk.LabelFrame(controls, text="Donchian + ATR", padding=10)
         donchian_box.pack(fill="x", pady=(0, 8))
         for label, variable in (
             ("Канал входа", self.sb_donchian_entry),
@@ -1608,9 +1625,7 @@ class TradingRobotGUI(tk.Tk):
                 self._labeled_entry(donchian_box, label, variable)
             )
 
-        ensemble_box = ttk.LabelFrame(
-            controls, text="Ансамбль трендов", padding=10
-        )
+        ensemble_box = ttk.LabelFrame(controls, text="Ансамбль трендов", padding=10)
         ensemble_box.pack(fill="x", pady=(0, 8))
         for label, variable in (
             ("Быстрая SMA", self.sb_ensemble_fast),
@@ -1623,9 +1638,7 @@ class TradingRobotGUI(tk.Tk):
                 self._labeled_entry(ensemble_box, label, variable)
             )
 
-        sizing_box = ttk.LabelFrame(
-            controls, text="Размер позиции", padding=10
-        )
+        sizing_box = ttk.LabelFrame(controls, text="Размер позиции", padding=10)
         sizing_box.pack(fill="x", pady=(0, 8))
         for label, variable in (
             (
@@ -1695,7 +1708,9 @@ class TradingRobotGUI(tk.Tk):
             variable=self.sb_arm_checkbox,
         ).pack(anchor="w")
         ttk.Label(actions_box, text="Введите SANDBOX:").pack(anchor="w", pady=(5, 0))
-        ttk.Entry(actions_box, textvariable=self.sb_confirm_text).pack(fill="x", pady=(2, 5))
+        ttk.Entry(actions_box, textvariable=self.sb_confirm_text).pack(
+            fill="x", pady=(2, 5)
+        )
         ttk.Button(
             actions_box,
             text="Start Sandbox — весь configured set",
@@ -1736,9 +1751,9 @@ class TradingRobotGUI(tk.Tk):
             ttk.Label(dashboard, text=f"{label}:").grid(
                 row=row, column=column, sticky="w", padx=(0, 5), pady=2
             )
-            ttk.Label(
-                dashboard, textvariable=self.sb_dashboard_vars[key]
-            ).grid(row=row, column=column + 1, sticky="w", pady=2)
+            ttk.Label(dashboard, textvariable=self.sb_dashboard_vars[key]).grid(
+                row=row, column=column + 1, sticky="w", pady=2
+            )
 
         multi_box = ttk.LabelFrame(
             info,
@@ -1960,9 +1975,7 @@ class TradingRobotGUI(tk.Tk):
         mode = self.sb_profile_mode.get().strip().upper() or "DRY_RUN"
         if mode not in PROFILE_MODES:
             mode = "DRY_RUN"
-        self.multi_instrument_tree.delete(
-            *self.multi_instrument_tree.get_children()
-        )
+        self.multi_instrument_tree.delete(*self.multi_instrument_tree.get_children())
         try:
             if mode == "SANDBOX_EXECUTION" and self.gui_runtime_controller:
                 snapshot = self.gui_runtime_controller.dashboard()
@@ -1988,9 +2001,7 @@ class TradingRobotGUI(tk.Tk):
             if row.account_scope_sha256 != "UNKNOWN"
         }
         account = (
-            f" | Account scope: {next(iter(scopes))[:16]}…"
-            if len(scopes) == 1
-            else ""
+            f" | Account scope: {next(iter(scopes))[:16]}…" if len(scopes) == 1 else ""
         )
         self.multi_instrument_status.set(
             f"{snapshot.mode}: {snapshot.state} — {snapshot.detail}{account}"
@@ -2135,9 +2146,7 @@ class TradingRobotGUI(tk.Tk):
         )
         entry.bind(
             "<Button-3>",
-            lambda event, widget=entry: self._show_entry_context_menu(
-                event, widget
-            ),
+            lambda event, widget=entry: self._show_entry_context_menu(event, widget),
             add="+",
         )
 
@@ -2260,9 +2269,7 @@ class TradingRobotGUI(tk.Tk):
             label="Вставить",
             command=lambda: self._paste_into_entry(
                 entry,
-                strip_outer_whitespace=bool(
-                    getattr(entry, "_moex_strip_paste", False)
-                ),
+                strip_outer_whitespace=bool(getattr(entry, "_moex_strip_paste", False)),
             ),
         )
         menu.add_separator()
@@ -2393,9 +2400,9 @@ class TradingRobotGUI(tk.Tk):
                         variable.set(str(value))
                     elif not variable.get():
                         variable.set(default)
-                primary_raw = str(
-                    values.get("ROBOT_PRIMARY_STRATEGY") or "sma"
-                ).strip().lower()
+                primary_raw = (
+                    str(values.get("ROBOT_PRIMARY_STRATEGY") or "sma").strip().lower()
+                )
                 primary_title = STRATEGY_TITLES_RU.get(
                     primary_raw,
                     STRATEGY_TITLES_RU["sma"],
@@ -2416,9 +2423,7 @@ class TradingRobotGUI(tk.Tk):
                 self._strategy_profile_loading = False
 
         self.diag_ticker.set(self.sb_ticker.get().strip().upper() or "SBER")
-        self.diag_class_code.set(
-            self.sb_class_code.get().strip().upper() or "TQBR"
-        )
+        self.diag_class_code.set(self.sb_class_code.get().strip().upper() or "TQBR")
         if show_message:
             if ENV_PATH.exists():
                 note = (
@@ -2441,7 +2446,9 @@ class TradingRobotGUI(tk.Tk):
             return
         token = self.sb_token.get().strip()
         if not token:
-            messagebox.showerror("Нет токена", "Введите Sandbox API-токен.", parent=self)
+            messagebox.showerror(
+                "Нет токена", "Введите Sandbox API-токен.", parent=self
+            )
             return
 
         self.secret_provider.set("TBANK_SANDBOX_TOKEN", token)
@@ -2520,9 +2527,7 @@ class TradingRobotGUI(tk.Tk):
             return
         self._strategy_profile_dirty = True
         mode = self.sb_profile_mode.get().strip().upper() or "DRY_RUN"
-        self.sb_profile_status.set(
-            f"{mode}: есть несохранённые изменения"
-        )
+        self.sb_profile_status.set(f"{mode}: есть несохранённые изменения")
 
     def _initialize_strategy_profiles(self) -> None:
         try:
@@ -2597,15 +2602,9 @@ class TradingRobotGUI(tk.Tk):
             self.sb_sma_hysteresis.set(
                 str(float(profile.get("sma_hysteresis_percent", 0.002)) * 100.0)
             )
-            self.sb_donchian_entry.set(
-                str(profile.get("donchian_entry_window", 55))
-            )
-            self.sb_donchian_exit.set(
-                str(profile.get("donchian_exit_window", 20))
-            )
-            self.sb_donchian_atr.set(
-                str(profile.get("donchian_atr_window", 20))
-            )
+            self.sb_donchian_entry.set(str(profile.get("donchian_entry_window", 55)))
+            self.sb_donchian_exit.set(str(profile.get("donchian_exit_window", 20)))
+            self.sb_donchian_atr.set(str(profile.get("donchian_atr_window", 20)))
             self.sb_donchian_stop.set(
                 str(profile.get("donchian_trailing_stop_atr", 3.0))
             )
@@ -2617,41 +2616,27 @@ class TradingRobotGUI(tk.Tk):
             self.sb_ensemble_breakout.set(
                 str(profile.get("ensemble_breakout_window", 100))
             )
-            self.sb_ensemble_votes.set(
-                str(profile.get("ensemble_vote_threshold", 3))
-            )
+            self.sb_ensemble_votes.set(str(profile.get("ensemble_vote_threshold", 3)))
             target = profile.get("annual_target_volatility")
             self.sb_target_volatility.set(
                 "" if target in (None, "") else str(float(target) * 100.0)
             )
-            self.sb_volatility_window.set(
-                str(profile.get("volatility_window", 20))
-            )
+            self.sb_volatility_window.set(str(profile.get("volatility_window", 20)))
             self.sb_max_strategy_weight.set(
                 str(float(profile.get("max_strategy_weight", 1.0)) * 100.0)
             )
             self.sb_lookback.set(str(profile.get("lookback_days", 30)))
             self.sb_poll.set(str(profile.get("poll_seconds", 300)))
             self.sb_max_lots.set(str(profile.get("max_order_lots", 1)))
-            self.sb_connect_timeout.set(
-                str(profile.get("connect_timeout_seconds", 8))
-            )
+            self.sb_connect_timeout.set(str(profile.get("connect_timeout_seconds", 8)))
             self.sb_read_timeout.set(str(profile.get("read_timeout_seconds", 25)))
-            self.sb_failure_threshold.set(
-                str(profile.get("failure_threshold", 3))
-            )
-            self.sb_circuit_seconds.set(
-                str(profile.get("circuit_open_seconds", 60))
-            )
+            self.sb_failure_threshold.set(str(profile.get("failure_threshold", 3)))
+            self.sb_circuit_seconds.set(str(profile.get("circuit_open_seconds", 60)))
             self.sb_circuit_max_seconds.set(
                 str(profile.get("circuit_max_open_seconds", 900))
             )
-            self.sb_max_signal_age.set(
-                str(profile.get("max_signal_age_seconds", 0))
-            )
-            self.sb_reconcile_attempts.set(
-                str(profile.get("reconcile_attempts", 3))
-            )
+            self.sb_max_signal_age.set(str(profile.get("max_signal_age_seconds", 0)))
+            self.sb_reconcile_attempts.set(str(profile.get("reconcile_attempts", 3)))
             self.sb_reconcile_delay.set(
                 str(profile.get("reconcile_delay_seconds", 0.5))
             )
@@ -2705,9 +2690,7 @@ class TradingRobotGUI(tk.Tk):
         try:
             loaded = self.strategy_profile_store.load_profile(normalized)
             if loaded is None:
-                raise StrategyProfileError(
-                    f"Профиль {normalized} ещё не сохранён."
-                )
+                raise StrategyProfileError(f"Профиль {normalized} ещё не сохранён.")
             self._apply_strategy_profile_to_ui(dict(loaded["config"]))
             self.strategy_profile_store.set_last_selected_mode(normalized)
             self._strategy_profile_dirty = False
@@ -2767,9 +2750,7 @@ class TradingRobotGUI(tk.Tk):
             self.strategy_profile_error = None
             config_hash = str(saved["config_hash"])
             self.sb_profile_hash.set(f"hash: {config_hash[:16]}")
-            self.sb_profile_status.set(
-                f"{normalized}: сохранён {saved['updated_at']}"
-            )
+            self.sb_profile_status.set(f"{normalized}: сохранён {saved['updated_at']}")
             self._journal_config_event(
                 "CONFIG_CHANGED",
                 mode=normalized,
@@ -2798,8 +2779,7 @@ class TradingRobotGUI(tk.Tk):
         )
         if not messagebox.askyesno(
             "Сброс профиля",
-            f"Сбросить {normalized} к безопасным значениям по умолчанию?"
-            f"{reset_note}",
+            f"Сбросить {normalized} к безопасным значениям по умолчанию?{reset_note}",
             parent=self,
         ):
             return
@@ -2824,9 +2804,7 @@ class TradingRobotGUI(tk.Tk):
             self._strategy_profile_dirty = False
             self._loaded_profile_mode = normalized
             self.strategy_profile_error = None
-            self.sb_profile_hash.set(
-                f"hash: {str(saved['config_hash'])[:16]}"
-            )
+            self.sb_profile_hash.set(f"hash: {str(saved['config_hash'])[:16]}")
             self.sb_profile_status.set(f"{normalized}: сброшен")
             self._journal_config_event(
                 "CONFIG_RESET",
@@ -3015,9 +2993,7 @@ class TradingRobotGUI(tk.Tk):
                     "Connection succeeded but account rendering failed"
                 )
             try:
-                self._show_sandbox_result(
-                    {"connection": "ok", "accounts": accounts}
-                )
+                self._show_sandbox_result({"connection": "ok", "accounts": accounts})
             except Exception:
                 self.logger.exception(
                     "Connection succeeded but secondary GUI refresh failed"
@@ -3087,7 +3063,9 @@ class TradingRobotGUI(tk.Tk):
             if amount <= 0:
                 raise ValueError("Сумма пополнения должна быть положительной.")
             if amount > 30_000_000:
-                raise ValueError("Сумма пополнения Sandbox не должна превышать 30 млн ₽.")
+                raise ValueError(
+                    "Сумма пополнения Sandbox не должна превышать 30 млн ₽."
+                )
         except ValueError as exc:
             messagebox.showerror("Ошибка", str(exc), parent=self)
             return
@@ -3119,7 +3097,9 @@ class TradingRobotGUI(tk.Tk):
             )
             messagebox.showinfo(
                 "Счёт создан",
-                f"Виртуальный счёт создан и пополнен на {amount:,.0f} ₽.".replace(",", " "),
+                f"Виртуальный счёт создан и пополнен на {amount:,.0f} ₽.".replace(
+                    ",", " "
+                ),
                 parent=self,
             )
 
@@ -3154,9 +3134,7 @@ class TradingRobotGUI(tk.Tk):
             ensemble_votes = int(self.sb_ensemble_votes.get())
             target_raw = self.sb_target_volatility.get().strip()
             target_volatility = (
-                None
-                if not target_raw
-                else float(target_raw.replace(",", ".")) / 100.0
+                None if not target_raw else float(target_raw.replace(",", ".")) / 100.0
             )
             volatility_window = int(self.sb_volatility_window.get())
             max_strategy_weight = as_float(self.sb_max_strategy_weight) / 100.0
@@ -3189,8 +3167,9 @@ class TradingRobotGUI(tk.Tk):
                 str(env_values.get("ROBOT_HEARTBEAT_LOG_SECONDS") or "1800")
             )
             slow_cycle_seconds = float(
-                str(env_values.get("ROBOT_SLOW_CYCLE_SECONDS") or "10")
-                .replace(",", ".")
+                str(env_values.get("ROBOT_SLOW_CYCLE_SECONDS") or "10").replace(
+                    ",", "."
+                )
             )
             market_idle_enabled = str(
                 env_values.get("ROBOT_MARKET_IDLE_ENABLED") or "YES"
@@ -3202,16 +3181,10 @@ class TradingRobotGUI(tk.Tk):
                 str(env_values.get("ROBOT_MARKET_IDLE_POLL_SECONDS") or "300")
             )
             market_idle_reconcile_seconds = int(
-                str(
-                    env_values.get("ROBOT_MARKET_IDLE_RECONCILE_SECONDS")
-                    or "1800"
-                )
+                str(env_values.get("ROBOT_MARKET_IDLE_RECONCILE_SECONDS") or "1800")
             )
             market_idle_heartbeat_seconds = int(
-                str(
-                    env_values.get("ROBOT_MARKET_IDLE_HEARTBEAT_SECONDS")
-                    or "1800"
-                )
+                str(env_values.get("ROBOT_MARKET_IDLE_HEARTBEAT_SECONDS") or "1800")
             )
         except ValueError as exc:
             raise ValueError(
@@ -3276,7 +3249,10 @@ class TradingRobotGUI(tk.Tk):
         return account_id
 
     def _confirm_execution(self) -> bool:
-        if not self.sb_arm_checkbox.get() or self.sb_confirm_text.get().strip().upper() != "SANDBOX":
+        if (
+            not self.sb_arm_checkbox.get()
+            or self.sb_confirm_text.get().strip().upper() != "SANDBOX"
+        ):
             messagebox.showwarning(
                 "Исполнение заблокировано",
                 "Для тестовых заявок установите флажок и введите слово SANDBOX.",
@@ -3290,8 +3266,7 @@ class TradingRobotGUI(tk.Tk):
         if configured_max_lots != 1:
             messagebox.showwarning(
                 "Beta1.1: лимит Sandbox",
-                "Sandbox Execution разрешён только при "
-                "максимуме 1 лот.",
+                "Sandbox Execution разрешён только при максимуме 1 лот.",
                 parent=self,
             )
             return False
@@ -3393,9 +3368,7 @@ class TradingRobotGUI(tk.Tk):
                 transition = controller.start_configured_set()
                 started = True
                 self.ui_queue.put(("sandbox_result", transition.to_dict()))
-                self.ui_queue.put(
-                    ("sandbox_status", "Sandbox configured set ACTIVE")
-                )
+                self.ui_queue.put(("sandbox_status", "Sandbox configured set ACTIVE"))
                 while not self.stop_event.is_set():
                     try:
                         result = controller.run_cycle()
@@ -3455,6 +3428,7 @@ class TradingRobotGUI(tk.Tk):
         self.stop_event.set()
         self.sb_status.set("Останавливаю весь configured set после текущего цикла…")
         self.logger.info("Account-level stop requested")
+
     def _show_sandbox_result(self, result: Any) -> None:
         text = json.dumps(
             _privacy_safe_gui_value(result),
@@ -3492,7 +3466,9 @@ class TradingRobotGUI(tk.Tk):
         for strategy, raw in ordered:
             if not isinstance(raw, dict):
                 continue
-            role = str(raw.get("role") or ("PRIMARY" if strategy == primary else "SHADOW"))
+            role = str(
+                raw.get("role") or ("PRIMARY" if strategy == primary else "SHADOW")
+            )
             weight = raw.get("target_weight")
             try:
                 weight_text = f"{float(weight):.1%}"
@@ -3534,15 +3510,11 @@ class TradingRobotGUI(tk.Tk):
             reason = str(result.get("market_idle_reason") or "UNAVAILABLE")
             wait_seconds = result.get("recommended_wait_seconds")
             suffix = f"; проверка через {wait_seconds} с" if wait_seconds else ""
-            self.sb_dashboard_vars["market"].set(
-                f"MARKET_IDLE ({reason}){suffix}"
-            )
+            self.sb_dashboard_vars["market"].set(f"MARKET_IDLE ({reason}){suffix}")
         elif market_state == "OPEN":
             transition = result.get("market_idle_transition")
             self.sb_dashboard_vars["market"].set(
-                "Открыт; выход из MARKET_IDLE"
-                if transition == "EXITED"
-                else "Открыт"
+                "Открыт; выход из MARKET_IDLE" if transition == "EXITED" else "Открыт"
             )
         elif market_state == "UNKNOWN":
             self.sb_dashboard_vars["market"].set("Статус не подтверждён")
@@ -3577,12 +3549,9 @@ class TradingRobotGUI(tk.Tk):
             self.sb_dashboard_vars["mode"].set(str(result["mode"]))
             self.sb_dashboard_vars["profile"].set(str(result["mode"]))
         elif self._active_strategy_profile_mode:
-            self.sb_dashboard_vars["profile"].set(
-                self._active_strategy_profile_mode
-            )
-        applied_hash = (
-            self._active_strategy_profile_hash
-            or result.get("strategy_profile_hash")
+            self.sb_dashboard_vars["profile"].set(self._active_strategy_profile_mode)
+        applied_hash = self._active_strategy_profile_hash or result.get(
+            "strategy_profile_hash"
         )
         if applied_hash:
             self.sb_dashboard_vars["config_hash"].set(str(applied_hash)[:12])
@@ -3599,7 +3568,10 @@ class TradingRobotGUI(tk.Tk):
             risk_text = str(risk_status)
             if risk_hash:
                 risk_text += f" [{risk_hash}]"
-            if risk_status == "NOT_ENFORCED" and result.get("mode") == "SANDBOX_EXECUTION":
+            if (
+                risk_status == "NOT_ENFORCED"
+                and result.get("mode") == "SANDBOX_EXECUTION"
+            ):
                 risk_text = "ОШИБКА: Risk Engine не применён"
             self.sb_dashboard_vars["risk"].set(risk_text)
         if result.get("reason"):
@@ -3607,9 +3579,7 @@ class TradingRobotGUI(tk.Tk):
         if "signal" in result:
             signal = result.get("signal")
             action = result.get("action")
-            self.sb_dashboard_vars["signal"].set(
-                f"{signal} / {action or '—'}"
-            )
+            self.sb_dashboard_vars["signal"].set(f"{signal} / {action or '—'}")
         if "current_lots" in result or "actual_lots_after" in result:
             current = result.get("actual_lots_after")
             if current is None:
@@ -3624,9 +3594,7 @@ class TradingRobotGUI(tk.Tk):
         if pending:
             state = pending.get("lifecycle_state", "неизвестно")
             order_id = str(pending.get("order_id", ""))[:8]
-            self.sb_dashboard_vars["pending"].set(
-                f"да: {state} {order_id}".strip()
-            )
+            self.sb_dashboard_vars["pending"].set(f"да: {state} {order_id}".strip())
         else:
             self.sb_dashboard_vars["pending"].set("нет")
 
@@ -3874,9 +3842,7 @@ class TradingRobotGUI(tk.Tk):
             text="Разрешить виртуальную продажу",
             variable=self.portfolio_close_arm,
         ).pack(anchor="w", pady=(7, 2))
-        ttk.Label(close_box, text="Введите CLOSE <ТИКЕР> <ЛОТЫ>:").pack(
-            anchor="w"
-        )
+        ttk.Label(close_box, text="Введите CLOSE <ТИКЕР> <ЛОТЫ>:").pack(anchor="w")
         ttk.Entry(
             close_box,
             textvariable=self.portfolio_close_confirm,
@@ -4090,7 +4056,9 @@ class TradingRobotGUI(tk.Tk):
             owner = row.get("owner_strategy") or row.get("ownership_status") or "—"
             tag = ""
             reconciliation_status = str(row.get("reconciliation_status") or "")
-            if row.get("ownership_status") == "UNATTRIBUTED" or reconciliation_status in {
+            if row.get(
+                "ownership_status"
+            ) == "UNATTRIBUTED" or reconciliation_status in {
                 "UNATTRIBUTED_OPEN_POSITION",
                 "OWNERSHIP_MISSING",
                 "EXTERNAL_ACTIVITY_DETECTED",
@@ -4108,8 +4076,12 @@ class TradingRobotGUI(tk.Tk):
                     row.get("ticker") or row.get("instrument_id") or "—",
                     row.get("asset_type") or "—",
                     row.get("origin") or "UNKNOWN",
-                    row.get("quantity_lots") if row.get("quantity_lots") is not None else "—",
-                    row.get("target_lots") if row.get("target_lots") is not None else "—",
+                    row.get("quantity_lots")
+                    if row.get("quantity_lots") is not None
+                    else "—",
+                    row.get("target_lots")
+                    if row.get("target_lots") is not None
+                    else "—",
                     self._format_money(row.get("average_price")),
                     self._format_money(row.get("current_price")),
                     self._format_money(row.get("market_value")),
@@ -4300,9 +4272,7 @@ class TradingRobotGUI(tk.Tk):
                 raise ValueError("Денежный остаток не имеет strategy target.")
             status = str(row.get("reconciliation_status") or "").upper()
             if status != "TARGET_MISMATCH":
-                raise ValueError(
-                    "Команда разрешена только для TARGET_MISMATCH."
-                )
+                raise ValueError("Команда разрешена только для TARGET_MISMATCH.")
             actual_lots = int(row.get("quantity_lots") or 0)
             if actual_lots != 0:
                 raise ValueError(
@@ -4512,7 +4482,9 @@ class TradingRobotGUI(tk.Tk):
             anchor="w",
             wraplength=770,
         )
-        self.risk_kill_switch_detail_label.grid(row=1, column=0, sticky="ew", pady=(3, 0))
+        self.risk_kill_switch_detail_label.grid(
+            row=1, column=0, sticky="ew", pady=(3, 0)
+        )
         self._apply_kill_switch_banner(None)
 
         summary = ttk.Frame(self.risk_tab, padding=(12, 0, 12, 6))
@@ -4549,9 +4521,7 @@ class TradingRobotGUI(tk.Tk):
             padding=8,
         )
         risk_editor.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 6))
-        ttk.Label(risk_editor, text="Профиль лимита:").grid(
-            row=0, column=0, sticky="w"
-        )
+        ttk.Label(risk_editor, text="Профиль лимита:").grid(row=0, column=0, sticky="w")
         self.risk_order_limit_preset_combo = ttk.Combobox(
             risk_editor,
             textvariable=self.risk_order_limit_preset,
@@ -4566,9 +4536,7 @@ class TradingRobotGUI(tk.Tk):
         self.risk_order_limit_preset_combo.grid(
             row=0, column=1, sticky="w", padx=(6, 12)
         )
-        ttk.Label(risk_editor, text="Custom, 1…100:").grid(
-            row=0, column=2, sticky="w"
-        )
+        ttk.Label(risk_editor, text="Custom, 1…100:").grid(row=0, column=2, sticky="w")
         self.risk_order_limit_custom_entry = ttk.Entry(
             risk_editor,
             textvariable=self.risk_order_limit_custom,
@@ -4627,9 +4595,7 @@ class TradingRobotGUI(tk.Tk):
         content.add(limits_box, weight=3)
         limits_box.rowconfigure(0, weight=1)
         limits_box.columnconfigure(0, weight=1)
-        columns = (
-            "status", "limit", "current", "remaining", "utilization", "note"
-        )
+        columns = ("status", "limit", "current", "remaining", "utilization", "note")
         self.risk_limits_tree = ttk.Treeview(
             limits_box,
             columns=columns,
@@ -4733,7 +4699,9 @@ class TradingRobotGUI(tk.Tk):
             self._show_selected_risk_event,
         )
 
-        detail_box = ttk.LabelFrame(content, text="Пояснения и полная запись", padding=6)
+        detail_box = ttk.LabelFrame(
+            content, text="Пояснения и полная запись", padding=6
+        )
         content.add(detail_box, weight=2)
         detail_box.rowconfigure(0, weight=1)
         detail_box.columnconfigure(0, weight=1)
@@ -4774,6 +4742,7 @@ class TradingRobotGUI(tk.Tk):
         self.risk_order_limit_status.set(
             f"Текущее: {count}/{limit}. Изменение — только через operator tools."
         )
+
     @staticmethod
     def _format_risk_value(value: Any, unit: str = "") -> str:
         if value is None:
@@ -4836,9 +4805,7 @@ class TradingRobotGUI(tk.Tk):
         self.risk_dashboard_summary_vars["account"].set(
             f"{self._account_scope_display(snapshot.account_id)}\n{snapshot.mode}"
         )
-        self.sb_account_id_display.set(
-            self._account_scope_display(snapshot.account_id)
-        )
+        self.sb_account_id_display.set(self._account_scope_display(snapshot.account_id))
         self.risk_dashboard_account_id.set(
             self._account_scope_display(snapshot.account_id)
         )
@@ -4875,9 +4842,7 @@ class TradingRobotGUI(tk.Tk):
         )
         cash = self._format_risk_value(summary.get("cash_rub"), "₽")
         reserve = self._format_risk_value(summary.get("cash_reserve_rub"), "₽")
-        surplus = self._format_risk_value(
-            summary.get("cash_reserve_surplus_rub"), "₽"
-        )
+        surplus = self._format_risk_value(summary.get("cash_reserve_surplus_rub"), "₽")
         self.risk_dashboard_summary_vars["cash"].set(
             f"{cash}; резерв {reserve}; запас {surplus}"
         )
@@ -4904,9 +4869,7 @@ class TradingRobotGUI(tk.Tk):
         self.risk_limits_tree.delete(*self.risk_limits_tree.get_children())
         for item in snapshot.limits:
             utilization = (
-                "—"
-                if item.utilization is None
-                else f"{item.utilization * 100:.1f}%"
+                "—" if item.utilization is None else f"{item.utilization * 100:.1f}%"
             )
             self.risk_limits_tree.insert(
                 "",
@@ -4968,9 +4931,7 @@ class TradingRobotGUI(tk.Tk):
                 "estimated_turnover_rub": summary.get(
                     "estimated_round_trip_turnover_rub"
                 ),
-                "turnover_remaining_rub": summary.get(
-                    "daily_turnover_remaining_rub"
-                ),
+                "turnover_remaining_rub": summary.get("daily_turnover_remaining_rub"),
                 "blockers": blockers,
             },
         }
@@ -4986,9 +4947,7 @@ class TradingRobotGUI(tk.Tk):
             ),
         )
         self.risk_dashboard_detail_text.configure(state="disabled")
-        self.risk_dashboard_status.set(
-            f"Обновлено {snapshot.generated_at[:19]} UTC"
-        )
+        self.risk_dashboard_status.set(f"Обновлено {snapshot.generated_at[:19]} UTC")
 
     def _show_selected_risk_event(self, _event: tk.Event | None = None) -> None:
         selection = self.risk_events_tree.selection()
@@ -5137,7 +5096,9 @@ class TradingRobotGUI(tk.Tk):
                 status="Account scope hash скопирован",
             ),
         ).grid(row=0, column=2, sticky="e")
-        ttk.Label(summary, text="Backup:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(summary, text="Backup:").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
+        )
         ttk.Label(summary, textvariable=self.readiness_backup_status).grid(
             row=1, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(6, 0)
         )
@@ -5264,9 +5225,7 @@ class TradingRobotGUI(tk.Tk):
             )
             return
         BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
-        default_name = build_export_filename(
-            "runtime_backup", DISPLAY_VERSION, ".zip"
-        )
+        default_name = build_export_filename("runtime_backup", DISPLAY_VERSION, ".zip")
         path = filedialog.asksaveasfilename(
             parent=self,
             title="Создать резервную копию runtime",
@@ -5382,18 +5341,24 @@ class TradingRobotGUI(tk.Tk):
                 text=str(raw.get("name") or "—"),
                 values=(
                     raw.get("kind") or "—",
-                    raw.get("schema_version") if raw.get("schema_version") is not None else "—",
+                    raw.get("schema_version")
+                    if raw.get("schema_version") is not None
+                    else "—",
                     size_text,
                     raw.get("sha256") or "—",
                 ),
             )
         files_tree.grid(row=0, column=0, sticky="nsew")
-        files_scroll = ttk.Scrollbar(files_box, orient="vertical", command=files_tree.yview)
+        files_scroll = ttk.Scrollbar(
+            files_box, orient="vertical", command=files_tree.yview
+        )
         files_scroll.grid(row=0, column=1, sticky="ns")
         files_tree.configure(yscrollcommand=files_scroll.set)
         content.add(files_box, weight=3)
 
-        messages_box = ttk.LabelFrame(content, text="Ошибки и предупреждения", padding=6)
+        messages_box = ttk.LabelFrame(
+            content, text="Ошибки и предупреждения", padding=6
+        )
         messages_box.columnconfigure(0, weight=1)
         messages_box.rowconfigure(0, weight=1)
         messages = tk.Text(messages_box, height=8, wrap="word", font=("Segoe UI", 9))
@@ -5406,10 +5371,14 @@ class TradingRobotGUI(tk.Tk):
             messages.insert("end", "\n".join(f"• {item}" for item in result.warnings))
             messages.insert("end", "\n")
         if not result.errors and not result.warnings:
-            messages.insert("end", "Ошибок и предупреждений нет. Все SHA-256 и схемы проверены.")
+            messages.insert(
+                "end", "Ошибок и предупреждений нет. Все SHA-256 и схемы проверены."
+            )
         messages.configure(state="disabled")
         messages.grid(row=0, column=0, sticky="nsew")
-        message_scroll = ttk.Scrollbar(messages_box, orient="vertical", command=messages.yview)
+        message_scroll = ttk.Scrollbar(
+            messages_box, orient="vertical", command=messages.yview
+        )
         message_scroll.grid(row=0, column=1, sticky="ns")
         messages.configure(yscrollcommand=message_scroll.set)
         content.add(messages_box, weight=2)
@@ -5450,48 +5419,63 @@ class TradingRobotGUI(tk.Tk):
         try:
             preview = self.runtime_backup_manager.preview_restore(path)
         except (RuntimeBackupError, OSError) as exc:
-            messagebox.showerror("Восстановление runtime", str(exc), parent=self)
+            self.logger.error(
+                "Runtime backup preview failed error_class=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Восстановление runtime",
+                "Не удалось проверить backup. Проверьте файл и повторите операцию.",
+                parent=self,
+            )
             return
-        lines = [f"{item.name}: {item.action}" for item in preview]
+        destination = filedialog.askdirectory(
+            parent=self,
+            title="Выберите новый пустой каталог для isolated restore",
+            initialdir=str(BACKUPS_DIR.parent),
+            mustexist=False,
+        )
+        if not destination:
+            return
+        lines = [f"{item.name}: CREATE" for item in preview]
         confirmation = simpledialog.askstring(
             "Восстановление runtime",
             "Предпросмотр:\n"
             + "\n".join(lines)
-            + "\n\nВведите RESTORE RUNTIME для продолжения.",
+            + f"\n\nIsolated target:\n{destination}"
+            + "\n\nАктивный runtime не изменяется. "
+            "Введите RESTORE RUNTIME для продолжения.",
             parent=self,
         )
-        if confirmation is None:
+        if confirmation is None or confirmation.strip() != "RESTORE RUNTIME":
             return
         try:
-            self.runtime_backup_manager.restore_backup(
+            restored = self.runtime_backup_manager.restore_backup_isolated(
                 path,
-                confirmation=confirmation,
+                destination,
             )
-            # Reset the lightweight journal facade after its SQLite contents
-            # were restored through the online backup API.
-            self.event_journal = EventJournal(EVENT_DB_PATH)
         except (RuntimeBackupError, OSError) as exc:
+            self.logger.error(
+                "Isolated runtime restore failed error_class=%s",
+                type(exc).__name__,
+            )
             messagebox.showerror(
                 "Восстановление runtime",
-                str(exc)
-                + "\n\nУбедитесь, что торговый цикл остановлен и другая копия "
-                "программы не использует этот runtime. Для каталога OneDrive "
-                "при повторной ошибке временно приостановите синхронизацию.",
+                "Не удалось восстановить backup в изолированный каталог. "
+                "Выберите новый пустой каталог и повторите операцию.",
                 parent=self,
             )
             return
         messagebox.showinfo(
             "Восстановление runtime",
-            "Файлы восстановлены. Перезапустите GUI перед продолжением работы.",
+            f"Backup восстановлен в изолированный каталог:\n{restored}\n\n"
+            "Активный runtime не изменён.",
             parent=self,
         )
-        self._refresh_readiness()
 
     def _create_support_bundle(self) -> None:
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        default_name = build_export_filename(
-            "support_bundle", DISPLAY_VERSION, ".zip"
-        )
+        default_name = build_export_filename("support_bundle", DISPLAY_VERSION, ".zip")
         path = filedialog.asksaveasfilename(
             parent=self,
             title="Собрать диагностический пакет",
@@ -5544,9 +5528,7 @@ class TradingRobotGUI(tk.Tk):
         output.rowconfigure(1, weight=1)
         output.columnconfigure(0, weight=1)
 
-        connection_box = ttk.LabelFrame(
-            controls, text="Источник настроек", padding=10
-        )
+        connection_box = ttk.LabelFrame(controls, text="Источник настроек", padding=10)
         connection_box.pack(fill="x", pady=(0, 8))
         ttk.Label(
             connection_box,
@@ -5557,9 +5539,7 @@ class TradingRobotGUI(tk.Tk):
             wraplength=310,
             justify="left",
         ).pack(anchor="w")
-        ttk.Label(connection_box, text="Выбранный счёт").pack(
-            anchor="w", pady=(7, 0)
-        )
+        ttk.Label(connection_box, text="Выбранный счёт").pack(anchor="w", pady=(7, 0))
         self.diag_account_combo = ttk.Combobox(
             connection_box,
             textvariable=self.sb_account,
@@ -5633,9 +5613,7 @@ class TradingRobotGUI(tk.Tk):
             justify="left",
         ).pack(anchor="w")
 
-        result_box = ttk.LabelFrame(
-            output, text="Результат диагностики", padding=8
-        )
+        result_box = ttk.LabelFrame(output, text="Результат диагностики", padding=8)
         result_box.grid(row=1, column=0, sticky="nsew")
         result_box.rowconfigure(0, weight=1)
         result_box.columnconfigure(0, weight=1)
@@ -5714,9 +5692,7 @@ class TradingRobotGUI(tk.Tk):
 
         def work() -> dict[str, Any]:
             with self._make_tbank_client(token, ca_bundle) as api:
-                return SandboxOrderDiagnostics(
-                    api, account_id, config
-                ).snapshot()
+                return SandboxOrderDiagnostics(api, account_id, config).snapshot()
 
         def done(result: dict[str, Any]) -> None:
             self._show_diagnostic_result(result)
@@ -5799,11 +5775,25 @@ class TradingRobotGUI(tk.Tk):
             controls,
             textvariable=self.event_filter,
             values=[
-                "Все", "session", "cycle", "decision", "order", "api",
-                "performance", "strategy", "strategy_comparison",
-                "strategy_config", "state", "incident", "diagnostic",
-                "diagnostic_order", "risk", "risk_control",
-                "scheduler", "runtime", "central_order",
+                "Все",
+                "session",
+                "cycle",
+                "decision",
+                "order",
+                "api",
+                "performance",
+                "strategy",
+                "strategy_comparison",
+                "strategy_config",
+                "state",
+                "incident",
+                "diagnostic",
+                "diagnostic_order",
+                "risk",
+                "risk_control",
+                "scheduler",
+                "runtime",
+                "central_order",
             ],
             state="readonly",
             width=20,
@@ -5826,13 +5816,15 @@ class TradingRobotGUI(tk.Tk):
         )
         self.event_session_combo.pack(side="left", padx=(4, 8))
         ttk.Label(controls, text="Поиск:").pack(side="left")
-        search_entry = ttk.Entry(
-            controls, textvariable=self.event_search, width=20
-        )
+        search_entry = ttk.Entry(controls, textvariable=self.event_search, width=20)
         search_entry.pack(side="left", padx=(4, 8), fill="x", expand=True)
         search_entry.bind("<Return>", lambda _e: self._refresh_events())
-        ttk.Button(controls, text="Обновить", command=self._refresh_events).pack(side="left")
-        ttk.Button(controls, text="Экспорт CSV", command=self._export_events).pack(side="left", padx=6)
+        ttk.Button(controls, text="Обновить", command=self._refresh_events).pack(
+            side="left"
+        )
+        ttk.Button(controls, text="Экспорт CSV", command=self._export_events).pack(
+            side="left", padx=6
+        )
 
         info = ttk.Frame(frame)
         info.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
@@ -5843,33 +5835,58 @@ class TradingRobotGUI(tk.Tk):
         ).pack(side="right")
 
         columns = (
-            "time", "category", "event", "severity", "session", "mode",
-            "ticker", "action", "duration", "summary",
+            "time",
+            "category",
+            "event",
+            "severity",
+            "session",
+            "mode",
+            "ticker",
+            "action",
+            "duration",
+            "summary",
         )
         self.events_tree = ttk.Treeview(
             frame, columns=columns, show="headings", selectmode="browse"
         )
         headings = {
-            "time": "UTC", "category": "Категория", "event": "Событие",
-            "severity": "Уровень", "session": "Сессия", "mode": "Режим",
-            "ticker": "Тикер", "action": "Действие",
-            "duration": "Время, с", "summary": "Кратко",
+            "time": "UTC",
+            "category": "Категория",
+            "event": "Событие",
+            "severity": "Уровень",
+            "session": "Сессия",
+            "mode": "Режим",
+            "ticker": "Тикер",
+            "action": "Действие",
+            "duration": "Время, с",
+            "summary": "Кратко",
         }
         widths = {
-            "time": 165, "category": 105, "event": 180, "severity": 72,
-            "session": 78, "mode": 125, "ticker": 58, "action": 65,
-            "duration": 70, "summary": 420,
+            "time": 165,
+            "category": 105,
+            "event": 180,
+            "severity": 72,
+            "session": 78,
+            "mode": 125,
+            "ticker": 58,
+            "action": 65,
+            "duration": 70,
+            "summary": 420,
         }
         for column in columns:
             self.events_tree.heading(column, text=headings[column])
             self.events_tree.column(
-                column, width=widths[column], minwidth=50,
+                column,
+                width=widths[column],
+                minwidth=50,
                 stretch=(column == "summary"),
             )
         self.events_tree.tag_configure("ERROR", background="#ffd9d9")
         self.events_tree.tag_configure("WARNING", background="#fff1cc")
         tree_y = ttk.Scrollbar(frame, orient="vertical", command=self.events_tree.yview)
-        tree_x = ttk.Scrollbar(frame, orient="horizontal", command=self.events_tree.xview)
+        tree_x = ttk.Scrollbar(
+            frame, orient="horizontal", command=self.events_tree.xview
+        )
         self.events_tree.configure(yscrollcommand=tree_y.set, xscrollcommand=tree_x.set)
         self.events_tree.grid(row=2, column=0, sticky="nsew")
         tree_y.grid(row=2, column=1, sticky="ns")
@@ -5925,11 +5942,15 @@ class TradingRobotGUI(tk.Tk):
             for key, value in (
                 ("status", row.get("status") or payload.get("status")),
                 ("signal", payload.get("signal")),
-                ("position", (
-                    f"{payload.get('current_lots')}→{payload.get('target_lots')}"
-                    if payload.get("current_lots") is not None
-                    and payload.get("target_lots") is not None else None
-                )),
+                (
+                    "position",
+                    (
+                        f"{payload.get('current_lots')}→{payload.get('target_lots')}"
+                        if payload.get("current_lots") is not None
+                        and payload.get("target_lots") is not None
+                        else None
+                    ),
+                ),
                 ("strategy", row.get("strategy_id") or payload.get("strategy_id")),
                 ("retries", payload.get("api_retry_count", payload.get("retry_count"))),
                 ("error", payload.get("error")),
@@ -5941,13 +5962,21 @@ class TradingRobotGUI(tk.Tk):
             duration = row.get("duration_seconds")
             duration_text = "" if duration is None else f"{float(duration):.3f}"
             self.events_tree.insert(
-                "", "end", iid=iid, tags=(severity_value,),
+                "",
+                "end",
+                iid=iid,
+                tags=(severity_value,),
                 values=(
-                    row.get("timestamp_utc", ""), row.get("category", ""),
-                    row.get("event_type", ""), severity_value,
+                    row.get("timestamp_utc", ""),
+                    row.get("category", ""),
+                    row.get("event_type", ""),
+                    severity_value,
                     str(row.get("session_id") or "")[:8],
-                    row.get("mode", "") or "", row.get("ticker", "") or "",
-                    row.get("action", "") or "", duration_text, summary,
+                    row.get("mode", "") or "",
+                    row.get("ticker", "") or "",
+                    row.get("action", "") or "",
+                    duration_text,
+                    summary,
                 ),
             )
 
@@ -6015,7 +6044,9 @@ class TradingRobotGUI(tk.Tk):
         frame.pack(fill="both", expand=True)
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
-        self.log_text = tk.Text(frame, wrap="none", font=("Consolas", 9), state="disabled")
+        self.log_text = tk.Text(
+            frame, wrap="none", font=("Consolas", 9), state="disabled"
+        )
         yscroll = ttk.Scrollbar(frame, orient="vertical", command=self.log_text.yview)
         xscroll = ttk.Scrollbar(frame, orient="horizontal", command=self.log_text.xview)
         self.log_text.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
@@ -6024,8 +6055,12 @@ class TradingRobotGUI(tk.Tk):
         xscroll.grid(row=1, column=0, sticky="ew")
         buttons = ttk.Frame(frame)
         buttons.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Button(buttons, text="Очистить окно", command=self._clear_logs).pack(side="left")
-        ttk.Button(buttons, text="Открыть папку проекта", command=self._open_project_folder).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Очистить окно", command=self._clear_logs).pack(
+            side="left"
+        )
+        ttk.Button(
+            buttons, text="Открыть папку проекта", command=self._open_project_folder
+        ).pack(side="left", padx=6)
         ttk.Label(
             buttons,
             text=f"Компактный: {LOG_PATH.name} | Подробный: {DEBUG_LOG_PATH.name}",
@@ -6203,13 +6238,19 @@ OWNERSHIP И ВИРТУАЛЬНЫЙ ПОРТФЕЛЬ
                 delta = int(getattr(event, "delta", 0))
                 if delta == 0:
                     return
-                units = -max(1, abs(delta) // 120) if delta > 0 else max(1, abs(delta) // 120)
+                units = (
+                    -max(1, abs(delta) // 120)
+                    if delta > 0
+                    else max(1, abs(delta) // 120)
+                )
                 units *= 3
             canvas.yview_scroll(units, "units")
             return
 
     @staticmethod
-    def _labeled_entry(parent: ttk.Widget, label: str, variable: tk.StringVar) -> ttk.Entry:
+    def _labeled_entry(
+        parent: ttk.Widget, label: str, variable: tk.StringVar
+    ) -> ttk.Entry:
         ttk.Label(parent, text=label).pack(anchor="w")
         entry = ttk.Entry(parent, textvariable=variable)
         entry.pack(fill="x", pady=(2, 6))
@@ -6223,7 +6264,9 @@ OWNERSHIP И ВИРТУАЛЬНЫЙ ПОРТФЕЛЬ
         values: list[str],
     ) -> ttk.Combobox:
         ttk.Label(parent, text=label).pack(anchor="w")
-        combo = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly")
+        combo = ttk.Combobox(
+            parent, textvariable=variable, values=values, state="readonly"
+        )
         combo.pack(fill="x", pady=(2, 6))
         return combo
 
@@ -6243,7 +6286,9 @@ OWNERSHIP И ВИРТУАЛЬНЫЙ ПОРТФЕЛЬ
                 self.ui_queue.put(("callback", (on_success, result)))
             except Exception as exc:
                 info = describe_background_error(exc)
-                log_method = self.logger.warning if info.transient else self.logger.error
+                log_method = (
+                    self.logger.warning if info.transient else self.logger.error
+                )
                 log_method(
                     "Background task failed context=%s transient=%s: %s",
                     error_context,
@@ -6299,9 +6344,9 @@ OWNERSHIP И ВИРТУАЛЬНЫЙ ПОРТФЕЛЬ
                                     0.0,
                                 )
                                 if now - last_notice >= 120.0:
-                                    self._background_error_notice_at[
-                                        info.dedup_key
-                                    ] = now
+                                    self._background_error_notice_at[info.dedup_key] = (
+                                        now
+                                    )
                                     request_note = (
                                         f"\nRequest ID: {info.request_id}"
                                         if info.request_id
@@ -6318,7 +6363,7 @@ OWNERSHIP И ВИРТУАЛЬНЫЙ ПОРТФЕЛЬ
                             else:
                                 messagebox.showerror(
                                     "Ошибка",
-                                    str(exc),
+                                    info.summary,
                                     parent=self,
                                 )
                         try:
