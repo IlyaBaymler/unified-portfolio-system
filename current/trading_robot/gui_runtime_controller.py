@@ -766,9 +766,16 @@ class GuiRuntimeController:
             raise GuiRuntimeBlockedError("PORTFOLIO_STATE_NOT_READY")
         for binding in configured.bindings:
             position = portfolio.position(binding.profile.instrument_id)
+            # Canonical broker portfolios omit instruments with a zero holding.
+            # A missing configured position therefore means current_lots == 0;
+            # the already-passed account-level freshness/blocking gate is the
+            # proof that this absence is current rather than unknown.  Existing
+            # positions still require their complete target/reconciliation
+            # evidence below.
+            if position is None:
+                continue
             if (
-                position is None
-                or position.target is None
+                position.target is None
                 or position.reconciliation is None
                 or bool(position.reconciliation.blocking)
                 or str(getattr(position.reconciliation, "status", "UNKNOWN")).upper()

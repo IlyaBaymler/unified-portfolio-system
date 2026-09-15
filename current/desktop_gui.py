@@ -3575,7 +3575,13 @@ class TradingRobotGUI(tk.Tk):
                             ("sandbox_status", f"STOP_FAILED: {type(exc).__name__}")
                         )
                 self.ui_queue.put(("sandbox_config_unlock", None))
-                self.ui_queue.put(("sandbox_status", "Sandbox configured set STOPPED"))
+                # Preserve an exact start blocker as the terminal GUI status.
+                # STOPPED is meaningful only after this loop actually started
+                # the accepted configured set and then stopped it.
+                if started:
+                    self.ui_queue.put(
+                        ("sandbox_status", "Sandbox configured set STOPPED")
+                    )
 
         self.robot_thread = threading.Thread(
             target=loop,

@@ -3,7 +3,9 @@ from __future__ import annotations
 import ast
 import json
 import os
+import queue
 import subprocess
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 import tools.v3_10_issue72_q0_evidence as q0
-from desktop_gui import _privacy_safe_gui_value
+from desktop_gui import TradingRobotGUI, _privacy_safe_gui_value
 from tools.v3_10_stable_qualification import (
     RELEASE_CUT_ALLOWLIST,
     RELEASE_REVIEW_CORRECTION_ALLOWLIST,
@@ -104,6 +106,30 @@ CL8_Q7R_IMPLEMENTATION_PATHS = {
     "current/tests/test_v3_10_stable_qualification.py",
     "docs/plans/V3_10_CL8_Q7_PREPARATION_RUNBOOK_RU.md",
 }
+CL8_CLEAN_ACCOUNT_HOTFIX_BRANCH = (
+    "agent/v3-10-clean-account-preflight-gui-blocker-hotfix"
+)
+CL8_CLEAN_ACCOUNT_HOTFIX_BASE_BRANCH = (
+    "program/v3-10-v4-stable-line"
+)
+CL8_CLEAN_ACCOUNT_HOTFIX_BASE = "ba46b8a2d9933560e0154d62c7f5c98ccf4118db"
+CL8_CLEAN_ACCOUNT_HOTFIX_BASE_TREE = "6ed2c04074632efa1d9ff28d1e427fe26de94959"
+CL8_CLEAN_ACCOUNT_HOTFIX_PARENT = (
+    "38e46a66a65ef3f3ccd723d94131ca8712c40f9e"
+)
+CL8_CLEAN_ACCOUNT_HOTFIX_PARENT_TREE = (
+    "68d5c5bdede419414549c5c3490620edc7aceb12"
+)
+CL8_CLEAN_ACCOUNT_HOTFIX_PATHS = {
+    "current/desktop_gui.py",
+    "current/tests/test_v3_10_issue72_gui_runtime.py",
+    "current/tests/test_v3_10_stable_qualification.py",
+    "current/trading_robot/gui_runtime_controller.py",
+}
+CL8_CLEAN_ACCOUNT_HOTFIX_CUMULATIVE_PATHS = {
+    *CL8_CLEAN_ACCOUNT_HOTFIX_PATHS,
+    "current/tests/test_v3_10_q7_preparation_runtime.py",
+}
 IMPLEMENTATION_PATHS = {
     "ROADMAP.md",
     "current/README.md",
@@ -168,6 +194,7 @@ def test_exact_contract_branch_and_fourteen_path_custody():
     assert _git("merge-base", ACCEPTED_CONTRACT, head) == ACCEPTED_CONTRACT
     branch = _git("branch", "--show-current")
     q7r_pr = None
+    hotfix_pr = None
     if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
         event_path = os.environ.get("GITHUB_EVENT_PATH")
         assert event_path is not None
@@ -191,6 +218,22 @@ def test_exact_contract_branch_and_fourteen_path_custody():
             head = pull_request["head"]["sha"]
             parents = _git("show", "-s", "--format=%P", checked_out_head).split()
             assert parents == [base[1], head]
+            assert _git("rev-parse", f"{checked_out_head}^{{tree}}") == _git(
+                "rev-parse", f"{head}^{{tree}}"
+            )
+        elif pull_request["head"]["ref"] == CL8_CLEAN_ACCOUNT_HOTFIX_BRANCH:
+            hotfix_pr = pull_request
+            assert pull_request["base"]["ref"] == (
+                CL8_CLEAN_ACCOUNT_HOTFIX_BASE_BRANCH
+            )
+            assert pull_request["base"]["sha"] == CL8_CLEAN_ACCOUNT_HOTFIX_BASE
+            assert _git(
+                "rev-parse", f"{CL8_CLEAN_ACCOUNT_HOTFIX_BASE}^{{tree}}"
+            ) == CL8_CLEAN_ACCOUNT_HOTFIX_BASE_TREE
+            head = pull_request["head"]["sha"]
+            assert checked_out_head == os.environ.get("GITHUB_SHA")
+            parents = _git("show", "-s", "--format=%P", checked_out_head).split()
+            assert parents == [CL8_CLEAN_ACCOUNT_HOTFIX_BASE, head]
             assert _git("rev-parse", f"{checked_out_head}^{{tree}}") == _git(
                 "rev-parse", f"{head}^{{tree}}"
             )
@@ -223,6 +266,38 @@ def test_exact_contract_branch_and_fourteen_path_custody():
             changed.update(_git("diff", "--name-only").splitlines())
             changed.update(_git("ls-files", "--others", "--exclude-standard").splitlines())
         assert changed == CL8_Q7R_IMPLEMENTATION_PATHS
+        return
+    if branch == CL8_CLEAN_ACCOUNT_HOTFIX_BRANCH or hotfix_pr is not None:
+        assert _git(
+            "rev-parse", f"{CL8_CLEAN_ACCOUNT_HOTFIX_PARENT}^{{tree}}"
+        ) == CL8_CLEAN_ACCOUNT_HOTFIX_PARENT_TREE
+        assert _git("merge-base", CL8_CLEAN_ACCOUNT_HOTFIX_PARENT, head) == (
+            CL8_CLEAN_ACCOUNT_HOTFIX_PARENT
+        )
+        if head != CL8_CLEAN_ACCOUNT_HOTFIX_PARENT:
+            assert _git("rev-parse", f"{head}^") == CL8_CLEAN_ACCOUNT_HOTFIX_PARENT
+        changed = set(
+            _git(
+                "diff",
+                "--name-only",
+                f"{CL8_CLEAN_ACCOUNT_HOTFIX_PARENT}..{head}",
+            ).splitlines()
+        )
+        if hotfix_pr is None:
+            changed.update(_git("diff", "--name-only").splitlines())
+            changed.update(
+                _git("ls-files", "--others", "--exclude-standard").splitlines()
+            )
+        assert changed == CL8_CLEAN_ACCOUNT_HOTFIX_PATHS
+        if hotfix_pr is not None:
+            cumulative_changed = set(
+                _git(
+                    "diff",
+                    "--name-only",
+                    f"{CL8_CLEAN_ACCOUNT_HOTFIX_BASE}..{head}",
+                ).splitlines()
+            )
+            assert cumulative_changed == CL8_CLEAN_ACCOUNT_HOTFIX_CUMULATIVE_PATHS
         return
     release_cut_pr = None
     if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
@@ -778,6 +853,50 @@ def test_controller_starts_and_stops_exact_three_runtime_set(tmp_path: Path):
             status == "ACTIVE" for _, status in started.runtime_statuses
         )
     )
+
+
+def test_controller_treats_absent_clean_account_positions_as_zero_lots(
+    tmp_path: Path,
+):
+    controller, store, _, _, coordinator, adapter = _controller(tmp_path)
+    controller.portfolio_repository.positions.clear()
+
+    started = controller.start_configured_set()
+
+    assert started.status == "ACTIVE"
+    assert {item[1] for item in started.runtime_statuses} == {"ACTIVE"}
+    assert coordinator.calls == []
+    assert adapter.dispatches == 0
+    assert {item.status for item in store.load(expected_account_id=ACCOUNT)} == {
+        "ACTIVE"
+    }
+    _emit_behavior_counters(
+        active_runtimes=len(started.runtime_statuses),
+        proposal=len(coordinator.calls),
+        central_intent=len(coordinator.calls),
+        adapter_dispatch=adapter.dispatches,
+    )
+
+
+def test_clean_account_does_not_bypass_exact_cl7_authority(tmp_path: Path):
+    controller, store, _, _, coordinator, adapter = _controller(
+        tmp_path,
+        RuntimeCashAuthorityState.LEGACY_ACTIVE,
+    )
+    controller.portfolio_repository.positions.clear()
+
+    with pytest.raises(
+        GuiRuntimeBlockedError,
+        match="CL7_EXACT_AUTHORITY_REQUIRED",
+    ):
+        controller.start_configured_set()
+
+    assert {item.status for item in store.load(expected_account_id=ACCOUNT)} == {
+        "STOPPED"
+    }
+    assert coordinator.calls == []
+    assert adapter.dispatches == 0
+    _emit_behavior_counters()
 
 
 def test_stop_preserves_unresolved_custody_and_is_idempotent(tmp_path: Path):
@@ -1358,6 +1477,47 @@ def test_transient_failures_coalesce_to_one_status_surface():
             item in calls for item in ("showerror", "showwarning", "showinfo")
         )
     )
+
+
+def test_gui_start_blocker_remains_terminal_status():
+    statuses: queue.Queue[tuple[str, object]] = queue.Queue()
+
+    class BlockedController:
+        service_ready = True
+
+        @staticmethod
+        def start_configured_set():
+            raise GuiRuntimeBlockedError(
+                "CL7_EXACT_AUTHORITY_REQUIRED",
+                "exact authority is not armed",
+            )
+
+    fake = SimpleNamespace(
+        robot_thread=None,
+        sb_status=SimpleNamespace(set=lambda _value: None),
+        _connection_restart_required=False,
+        gui_runtime_controller=BlockedController(),
+        _confirm_execution=lambda: True,
+        _set_sb_config_locked=lambda _value: None,
+        stop_event=threading.Event(),
+        ui_queue=statuses,
+        logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+    )
+
+    TradingRobotGUI._start_robot_loop(fake, True)
+    fake.robot_thread.join(timeout=5)
+    assert not fake.robot_thread.is_alive()
+
+    emitted = []
+    while not statuses.empty():
+        emitted.append(statuses.get_nowait())
+    assert emitted == [
+        (
+            "sandbox_status",
+            "CL7_EXACT_AUTHORITY_REQUIRED: exact authority is not armed",
+        ),
+        ("sandbox_config_unlock", None),
+    ]
 
 
 def test_gui_process_always_receives_one_controller_and_raw_ids_are_sanitized():

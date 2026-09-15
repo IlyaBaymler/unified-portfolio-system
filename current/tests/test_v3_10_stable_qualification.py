@@ -146,6 +146,30 @@ CL8_Q7R_IMPLEMENTATION_PATHS = {
     "current/tests/test_v3_10_stable_qualification.py",
     "docs/plans/V3_10_CL8_Q7_PREPARATION_RUNBOOK_RU.md",
 }
+CL8_CLEAN_ACCOUNT_HOTFIX_BRANCH = (
+    "agent/v3-10-clean-account-preflight-gui-blocker-hotfix"
+)
+CL8_CLEAN_ACCOUNT_HOTFIX_BASE_BRANCH = (
+    "program/v3-10-v4-stable-line"
+)
+CL8_CLEAN_ACCOUNT_HOTFIX_BASE = "ba46b8a2d9933560e0154d62c7f5c98ccf4118db"
+CL8_CLEAN_ACCOUNT_HOTFIX_BASE_TREE = "6ed2c04074632efa1d9ff28d1e427fe26de94959"
+CL8_CLEAN_ACCOUNT_HOTFIX_PARENT = (
+    "38e46a66a65ef3f3ccd723d94131ca8712c40f9e"
+)
+CL8_CLEAN_ACCOUNT_HOTFIX_PARENT_TREE = (
+    "68d5c5bdede419414549c5c3490620edc7aceb12"
+)
+CL8_CLEAN_ACCOUNT_HOTFIX_PATHS = {
+    "current/desktop_gui.py",
+    "current/tests/test_v3_10_issue72_gui_runtime.py",
+    "current/tests/test_v3_10_stable_qualification.py",
+    "current/trading_robot/gui_runtime_controller.py",
+}
+CL8_CLEAN_ACCOUNT_HOTFIX_CUMULATIVE_PATHS = {
+    *CL8_CLEAN_ACCOUNT_HOTFIX_PATHS,
+    "current/tests/test_v3_10_q7_preparation_runtime.py",
+}
 CL8_ADOPTION_CORRECTION_PATHS = {
     CL8_ADOPTION_CONTRACT_PATH,
     "current/tests/test_v3_10_stable_qualification.py",
@@ -1897,6 +1921,7 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
     checked_out_head = _git("rev-parse", "HEAD", text=True).stdout.strip()
     head = checked_out_head
     q7r_pr: dict[str, object] | None = None
+    hotfix_pr: dict[str, object] | None = None
     if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
         event_path = os.environ.get("GITHUB_EVENT_PATH")
         assert event_path is not None
@@ -1926,6 +1951,33 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
                 .split()
             )
             assert parents == [base[1], head]
+            assert (
+                _git("rev-parse", f"{checked_out_head}^{{tree}}", text=True)
+                .stdout.strip()
+                == _git("rev-parse", f"{head}^{{tree}}", text=True).stdout.strip()
+            )
+        elif pull_request["head"]["ref"] == CL8_CLEAN_ACCOUNT_HOTFIX_BRANCH:
+            hotfix_pr = pull_request
+            assert pull_request["base"]["ref"] == (
+                CL8_CLEAN_ACCOUNT_HOTFIX_BASE_BRANCH
+            )
+            assert pull_request["base"]["sha"] == CL8_CLEAN_ACCOUNT_HOTFIX_BASE
+            assert (
+                _git(
+                    "rev-parse",
+                    f"{CL8_CLEAN_ACCOUNT_HOTFIX_BASE}^{{tree}}",
+                    text=True,
+                ).stdout.strip()
+                == CL8_CLEAN_ACCOUNT_HOTFIX_BASE_TREE
+            )
+            head = str(pull_request["head"]["sha"])
+            assert checked_out_head == os.environ.get("GITHUB_SHA")
+            parents = (
+                _git("show", "-s", "--format=%P", checked_out_head, text=True)
+                .stdout.strip()
+                .split()
+            )
+            assert parents == [CL8_CLEAN_ACCOUNT_HOTFIX_BASE, head]
             assert (
                 _git("rev-parse", f"{checked_out_head}^{{tree}}", text=True)
                 .stdout.strip()
@@ -1979,6 +2031,56 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
                 ).stdout.splitlines()
             )
         assert changed == CL8_Q7R_IMPLEMENTATION_PATHS
+        return
+    if branch == CL8_CLEAN_ACCOUNT_HOTFIX_BRANCH or hotfix_pr is not None:
+        assert (
+            _git(
+                "rev-parse",
+                f"{CL8_CLEAN_ACCOUNT_HOTFIX_PARENT}^{{tree}}",
+                text=True,
+            ).stdout.strip()
+            == CL8_CLEAN_ACCOUNT_HOTFIX_PARENT_TREE
+        )
+        assert (
+            _git(
+                "merge-base",
+                CL8_CLEAN_ACCOUNT_HOTFIX_PARENT,
+                head,
+                text=True,
+            ).stdout.strip()
+            == CL8_CLEAN_ACCOUNT_HOTFIX_PARENT
+        )
+        if head != CL8_CLEAN_ACCOUNT_HOTFIX_PARENT:
+            assert (
+                _git("rev-parse", f"{head}^", text=True).stdout.strip()
+                == CL8_CLEAN_ACCOUNT_HOTFIX_PARENT
+            )
+        changed = set(
+            _git(
+                "diff",
+                "--name-only",
+                f"{CL8_CLEAN_ACCOUNT_HOTFIX_PARENT}..{head}",
+                text=True,
+            ).stdout.splitlines()
+        )
+        if hotfix_pr is None:
+            changed.update(_git("diff", "--name-only", text=True).stdout.splitlines())
+            changed.update(
+                _git(
+                    "ls-files", "--others", "--exclude-standard", text=True
+                ).stdout.splitlines()
+            )
+        assert changed == CL8_CLEAN_ACCOUNT_HOTFIX_PATHS
+        if hotfix_pr is not None:
+            cumulative_changed = set(
+                _git(
+                    "diff",
+                    "--name-only",
+                    f"{CL8_CLEAN_ACCOUNT_HOTFIX_BASE}..{head}",
+                    text=True,
+                ).stdout.splitlines()
+            )
+            assert cumulative_changed == CL8_CLEAN_ACCOUNT_HOTFIX_CUMULATIVE_PATHS
         return
     release_cut_pr: dict[str, object] | None = None
     if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
