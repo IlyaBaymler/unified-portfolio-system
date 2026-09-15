@@ -615,12 +615,10 @@ class TradingRobotGUI(tk.Tk):
         if not raw:
             return ""
         controller = self.gui_runtime_controller
-        controller_account_id = str(
-            getattr(controller, "account_id", "") or ""
-        ).strip()
-        controller_scope = str(
-            getattr(controller, "account_scope_sha256", "") or ""
-        ).strip().lower()
+        controller_account_id = str(getattr(controller, "account_id", "") or "").strip()
+        controller_scope = (
+            str(getattr(controller, "account_scope_sha256", "") or "").strip().lower()
+        )
         if (
             controller_account_id == raw
             and len(controller_scope) == 64
@@ -2334,18 +2332,14 @@ class TradingRobotGUI(tk.Tk):
                 values.get("TBANK_SANDBOX_ACCOUNT_ID") or ""
             ).strip()
             if legacy_account_id:
-                self.secret_provider.set(
-                    "TBANK_SANDBOX_ACCOUNT_ID", legacy_account_id
-                )
+                self.secret_provider.set("TBANK_SANDBOX_ACCOUNT_ID", legacy_account_id)
                 if (
                     self.secret_provider.get("TBANK_SANDBOX_ACCOUNT_ID")
                     != legacy_account_id
                 ):
                     self.secret_provider.delete("TBANK_SANDBOX_ACCOUNT_ID")
                     raise RuntimeError("PROTECTED_SANDBOX_ACCOUNT_READBACK_FAILED")
-                _delete_dotenv_secret_exact(
-                    ENV_PATH, "TBANK_SANDBOX_ACCOUNT_ID"
-                )
+                _delete_dotenv_secret_exact(ENV_PATH, "TBANK_SANDBOX_ACCOUNT_ID")
                 account_id = legacy_account_id
         if token:
             self.sb_token.set(token)
@@ -2354,9 +2348,7 @@ class TradingRobotGUI(tk.Tk):
         if account_id:
             self._preferred_account_id = account_id
             if self.secret_provider.secure:
-                _delete_dotenv_secret_exact(
-                    ENV_PATH, "TBANK_SANDBOX_ACCOUNT_ID"
-                )
+                _delete_dotenv_secret_exact(ENV_PATH, "TBANK_SANDBOX_ACCOUNT_ID")
         connection_mapping: list[tuple[tk.StringVar, str, str]] = [
             (self.sb_ca_bundle, "TBANK_CA_BUNDLE", ""),
             (self.sb_initial_rub, "SANDBOX_INITIAL_RUB", "1000000"),
@@ -2600,9 +2592,7 @@ class TradingRobotGUI(tk.Tk):
                 set_key(str(ENV_PATH), key, value or "", quote_mode="auto")
             if self.secret_provider.secure:
                 _delete_dotenv_secret_exact(ENV_PATH, "TBANK_SANDBOX_TOKEN")
-                _delete_dotenv_secret_exact(
-                    ENV_PATH, "TBANK_SANDBOX_ACCOUNT_ID"
-                )
+                _delete_dotenv_secret_exact(ENV_PATH, "TBANK_SANDBOX_ACCOUNT_ID")
             elif account_id:
                 set_key(
                     str(ENV_PATH),

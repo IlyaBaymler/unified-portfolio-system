@@ -248,9 +248,11 @@ class ProductionGuiCycleSource:
         lots: dict[str, int] = {}
         for profile in profiles:
             runtime = by_instrument.get(profile.instrument_id)
-            if runtime is None or runtime.config.to_dict() != profile.to_runtime_config(
-                self.account_id
-            ).to_dict():
+            if (
+                runtime is None
+                or runtime.config.to_dict()
+                != profile.to_runtime_config(self.account_id).to_dict()
+            ):
                 raise GuiRuntimeBlockedError("PROFILE_RUNTIME_IDENTITY_MISMATCH")
             frame = self.candle_loader.load(runtime, profile, now=now)
             frames[profile.instrument_id] = frame
@@ -279,7 +281,9 @@ class ProductionGuiCycleSource:
 class _CoordinatingHooks:
     """Adapter that keeps Scheduler pure and routes proposals through Central."""
 
-    def __init__(self, controller: GuiRuntimeController, hooks: GuiStrategyHooks) -> None:
+    def __init__(
+        self, controller: GuiRuntimeController, hooks: GuiStrategyHooks
+    ) -> None:
         self.controller = controller
         self.hooks = hooks
 
@@ -683,8 +687,7 @@ class GuiRuntimeController:
         except Exception:  # noqa: BLE001 - presentation stays fail closed
             status = "BLOCKED"
         return {
-            item.runtime.config.instrument_id: status
-            for item in configured.bindings
+            item.runtime.config.instrument_id: status for item in configured.bindings
         }
 
     @staticmethod
@@ -722,7 +725,9 @@ class GuiRuntimeController:
         bindings: list[ConfiguredRuntimeBinding] = []
         for profile in profiles:
             runtime = by_instrument.pop(profile.instrument_id, None)
-            if runtime is None or runtime.config != profile.to_runtime_config(self.account_id):
+            if runtime is None or runtime.config != profile.to_runtime_config(
+                self.account_id
+            ):
                 raise GuiRuntimeBlockedError("PROFILE_RUNTIME_IDENTITY_MISMATCH")
             bindings.append(ConfiguredRuntimeBinding(profile, runtime))
         if by_instrument:
@@ -747,9 +752,11 @@ class GuiRuntimeController:
         if self.scheduler is None:
             self.restore()
         assert self.scheduler is not None
-        if self._configured_set is not None and any(
-            item.status == "ACTIVE" for item in self.scheduler.runtimes
-        ) and configured.identity_sha256 != self._configured_set.identity_sha256:
+        if (
+            self._configured_set is not None
+            and any(item.status == "ACTIVE" for item in self.scheduler.runtimes)
+            and configured.identity_sha256 != self._configured_set.identity_sha256
+        ):
             raise GuiRuntimeBlockedError("ACTIVE_CONFIGURED_SET_MISMATCH")
 
         portfolio = self.portfolio_repository.load(expected_account_id=self.account_id)
@@ -780,8 +787,10 @@ class GuiRuntimeController:
         policy_hash = self.central_order_coordinator.risk_runtime.current_policy_hash()
         if not policy_hash:
             raise GuiRuntimeBlockedError("RISK_POLICY_UNAVAILABLE")
-        risk_state = self.central_order_coordinator.risk_runtime.state_store.load_account(
-            self.account_id
+        risk_state = (
+            self.central_order_coordinator.risk_runtime.state_store.load_account(
+                self.account_id
+            )
         )
         if risk_state.kill_switch_active:
             raise GuiRuntimeBlockedError("RISK_KILL_SWITCH_ACTIVE")
@@ -806,7 +815,9 @@ class GuiRuntimeController:
             RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING: "CL7_RECOVERY_REQUIRED",
         }
         if authority.state is not RuntimeCashAuthorityState.EXACT_CASH_ARMED:
-            raise GuiRuntimeBlockedError(reason_by_state.get(authority.state, "CL7_STATE_INVALID"))
+            raise GuiRuntimeBlockedError(
+                reason_by_state.get(authority.state, "CL7_STATE_INVALID")
+            )
         if authority.pending_dispatch_proof_sha256 is not None:
             raise GuiRuntimeBlockedError("CL7_RECOVERY_REQUIRED")
 

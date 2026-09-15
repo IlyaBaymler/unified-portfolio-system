@@ -274,9 +274,7 @@ def test_q7r_04_credential_manager_distinguishes_absence_from_read_failure():
     with pytest.raises(OSError):
         provider.get("V310_CL_IDENTITY_KEY_HEX")
 
-    provider._advapi.CredReadW = lambda *_args: (
-        ctypes.set_last_error(1168) or 0
-    )
+    provider._advapi.CredReadW = lambda *_args: ctypes.set_last_error(1168) or 0
     assert provider.get("V310_CL_IDENTITY_KEY_HEX") is None
 
 
@@ -292,9 +290,7 @@ def test_q7r_04_credential_manager_preserves_present_empty_record():
     class Api:
         @staticmethod
         def CredReadW(_target, _kind, _flags, destination):
-            typed = ctypes.cast(
-                destination, ctypes.POINTER(ctypes.POINTER(Credential))
-            )
+            typed = ctypes.cast(destination, ctypes.POINTER(ctypes.POINTER(Credential)))
             typed[0] = ctypes.pointer(credential)
             return 1
 
@@ -687,9 +683,7 @@ def test_secure_account_cleanup_handles_all_supported_dotenv_forms(
     env_path.write_text(legacy_line, encoding="utf-8")
     assert dotenv_values(env_path)["TBANK_SANDBOX_ACCOUNT_ID"] == ACCOUNT
 
-    desktop_gui._delete_dotenv_secret_exact(
-        env_path, "TBANK_SANDBOX_ACCOUNT_ID"
-    )
+    desktop_gui._delete_dotenv_secret_exact(env_path, "TBANK_SANDBOX_ACCOUNT_ID")
 
     assert "TBANK_SANDBOX_ACCOUNT_ID" not in dotenv_values(env_path)
     assert ACCOUNT not in env_path.read_text(encoding="utf-8")
@@ -704,9 +698,7 @@ def test_secure_account_cleanup_requires_exact_absence(tmp_path, monkeypatch):
     monkeypatch.setattr(desktop_gui, "unset_key", lambda *_args, **_kwargs: None)
 
     with pytest.raises(RuntimeError, match="LEGACY_ENV_SECRET_CLEANUP_FAILED"):
-        desktop_gui._delete_dotenv_secret_exact(
-            env_path, "TBANK_SANDBOX_ACCOUNT_ID"
-        )
+        desktop_gui._delete_dotenv_secret_exact(env_path, "TBANK_SANDBOX_ACCOUNT_ID")
 
 
 def test_legacy_token_migration_requires_exact_protected_readback(
@@ -725,9 +717,7 @@ def test_legacy_token_migration_requires_exact_protected_readback(
     monkeypatch.setattr(desktop_gui, "ENV_PATH", env_path)
     host = SimpleNamespace(secret_provider=provider)
 
-    with pytest.raises(
-        RuntimeError, match="PROTECTED_SANDBOX_TOKEN_READBACK_FAILED"
-    ):
+    with pytest.raises(RuntimeError, match="PROTECTED_SANDBOX_TOKEN_READBACK_FAILED"):
         desktop_gui.TradingRobotGUI._load_settings_from_env(
             host,
             show_message=False,
@@ -1113,9 +1103,10 @@ def test_q7r_19_23_activation_preparation_is_separate_and_exact(tmp_path):
         "ACTIVATE V3.10 CL7 EXACT CASH AUTHORITY",
         "ARM V3.10 CL7 SANDBOX EXACT CASH EXECUTION",
     ]
-    assert record["stage_a_record_sha256"] == q7.verify_record_bytes(
-        stage_a.read_bytes()
-    )["record_sha256"]
+    assert (
+        record["stage_a_record_sha256"]
+        == q7.verify_record_bytes(stage_a.read_bytes())["record_sha256"]
+    )
     assert record["stage_a_canonical_summary_sha256"] == q7._sha256_file(stage_a)
     substituted = dict(record)
     substituted.pop("record_sha256")
