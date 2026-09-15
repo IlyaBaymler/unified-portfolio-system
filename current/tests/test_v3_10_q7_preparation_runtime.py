@@ -594,6 +594,34 @@ def test_secure_account_cleanup_requires_exact_absence(tmp_path, monkeypatch):
         )
 
 
+def test_legacy_token_migration_requires_exact_protected_readback(
+    tmp_path, monkeypatch
+):
+    class DroppedWriteProvider(FakeSecretProvider):
+        def set(self, key: str, value: str) -> None:
+            self.writes.append((key, value))
+
+    provider = DroppedWriteProvider()
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "TBANK_SANDBOX_TOKEN=legacy-token\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(desktop_gui, "ENV_PATH", env_path)
+    host = SimpleNamespace(secret_provider=provider)
+
+    with pytest.raises(
+        RuntimeError, match="PROTECTED_SANDBOX_TOKEN_READBACK_FAILED"
+    ):
+        desktop_gui.TradingRobotGUI._load_settings_from_env(
+            host,
+            show_message=False,
+        )
+
+    assert provider.get("TBANK_SANDBOX_TOKEN") is None
+    assert dotenv_values(env_path)["TBANK_SANDBOX_TOKEN"] == "legacy-token"
+
+
 def test_secure_connection_save_is_rejected_while_runtime_is_active(monkeypatch):
     errors: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -729,6 +757,78 @@ def test_secure_connection_write_readback_failure_restores_previous_pair():
         "TBANK_SANDBOX_TOKEN": "old-token",
         "TBANK_SANDBOX_ACCOUNT_ID": "old-account",
     }
+
+
+def test_failed_credential_rollback_blocks_stale_composed_controller(monkeypatch):
+    class Variable:
+        def __init__(self, value=""):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    class PartialWriteRollbackFailure(FakeSecretProvider):
+        def __init__(self) -> None:
+            super().__init__(
+                {
+                    "TBANK_SANDBOX_TOKEN": "old-token",
+                    "TBANK_SANDBOX_ACCOUNT_ID": "old-account",
+                }
+            )
+            self.set_calls = 0
+
+        def set(self, key: str, value: str) -> None:
+            self.set_calls += 1
+            if self.set_calls == 1:
+                self.values[key] = value
+                return
+            raise OSError("synthetic credential write/rollback failure")
+
+    provider = PartialWriteRollbackFailure()
+    errors: list[tuple[str, str]] = []
+    confirmation_reached: list[bool] = []
+    monkeypatch.setattr(
+        desktop_gui.messagebox,
+        "showerror",
+        lambda title, message, **_kwargs: errors.append((title, message)),
+    )
+    host = SimpleNamespace(
+        secret_provider=provider,
+        sb_token=Variable("new-token"),
+        sb_status=Variable(),
+        robot_thread=None,
+        _connection_restart_required=False,
+        _read_client_settings=lambda: (8.0, 25.0),
+        _selected_account_id=lambda optional=False: "new-account",
+        logger=SimpleNamespace(exception=lambda *_args: None),
+        gui_runtime_controller=SimpleNamespace(service_ready=True),
+        _confirm_execution=lambda: confirmation_reached.append(True) or False,
+    )
+    host._persist_connection_credentials = lambda token, account_id: (
+        desktop_gui.TradingRobotGUI._persist_connection_credentials(
+            host,
+            token,
+            account_id,
+        )
+    )
+
+    desktop_gui.TradingRobotGUI._save_settings_to_env(host)
+
+    assert provider.values == {
+        "TBANK_SANDBOX_TOKEN": "new-token",
+        "TBANK_SANDBOX_ACCOUNT_ID": "old-account",
+    }
+    assert host._connection_restart_required is True
+    assert host.sb_status.get().startswith("BLOCKED:")
+    assert errors and "перезапустите приложение" in errors[0][1]
+
+    desktop_gui.TradingRobotGUI._start_robot_loop(host, execute=True)
+
+    assert confirmation_reached == []
+    assert host.sb_status.get().startswith("BLOCKED:")
 
 
 def test_q7r_09_12_secret_boundary_and_tools_do_not_export_or_call_provider():

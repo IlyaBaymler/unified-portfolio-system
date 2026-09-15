@@ -2324,6 +2324,9 @@ class TradingRobotGUI(tk.Tk):
             legacy_token = str(values.get("TBANK_SANDBOX_TOKEN") or "").strip()
             if legacy_token:
                 self.secret_provider.set("TBANK_SANDBOX_TOKEN", legacy_token)
+                if self.secret_provider.get("TBANK_SANDBOX_TOKEN") != legacy_token:
+                    self.secret_provider.delete("TBANK_SANDBOX_TOKEN")
+                    raise RuntimeError("PROTECTED_SANDBOX_TOKEN_READBACK_FAILED")
                 _delete_dotenv_secret_exact(ENV_PATH, "TBANK_SANDBOX_TOKEN")
                 token = legacy_token
         if not account_id and self.secret_provider.secure:
@@ -2554,6 +2557,17 @@ class TradingRobotGUI(tk.Tk):
             return
 
         account_id = self._selected_account_id(optional=True)
+        if self.secret_provider.secure and not account_id:
+            messagebox.showerror(
+                "Нет счёта",
+                "Выберите Sandbox-счёт после проверки подключения.",
+                parent=self,
+            )
+            return
+        # From this point a credential provider may be partially mutated even
+        # if its write or compensating rollback raises.  Block every stale
+        # composed controller before the first possible mutation.
+        self._connection_restart_required = True
         try:
             self._persist_connection_credentials(token, account_id)
         except ValueError as exc:
@@ -2561,13 +2575,18 @@ class TradingRobotGUI(tk.Tk):
             return
         except Exception:
             self.logger.exception("Protected connection credential write failed")
+            self.sb_status.set(
+                "BLOCKED: состояние подключения могло измениться; "
+                "перезапустите приложение."
+            )
             messagebox.showerror(
                 "Ошибка сохранения",
-                "Не удалось сохранить защищённые данные подключения.",
+                "Не удалось сохранить защищённые данные подключения. "
+                "Состояние хранилища могло измениться; перезапустите приложение. "
+                "Start Sandbox заблокирован.",
                 parent=self,
             )
             return
-        self._connection_restart_required = True
         try:
             ENV_PATH.touch(exist_ok=True)
             values = {
