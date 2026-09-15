@@ -386,6 +386,8 @@ class GuiRuntimeController:
         instance.session_id = str(uuid4())
         instance.market_state = "OPEN"
         instance.connected = False
+        instance.account_id = ""
+        instance.account_scope_sha256 = ""
         instance.scheduler = None
         instance._configured_set = None
         instance._composition_blocker = GuiRuntimeBlockedError(reason, detail)

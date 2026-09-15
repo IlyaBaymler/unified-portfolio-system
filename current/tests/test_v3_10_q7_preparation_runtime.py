@@ -5,6 +5,7 @@ import ctypes
 import json
 import subprocess
 import threading
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -463,6 +464,201 @@ def test_q7r_07_identity_id_mismatch_is_explicit():
             expected_identity_key_id="OTHER_ID",
         )
     assert provider.writes == []
+
+
+def test_blocked_controller_renders_selected_account_scope_without_raw_id():
+    class Variable:
+        def __init__(self, value=""):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    blocked = GuiRuntimeController.blocked("GUI_RUNTIME_COMPOSITION_REQUIRED")
+    assert blocked.account_id == ""
+    assert blocked.account_scope_sha256 == ""
+
+    host = SimpleNamespace(
+        gui_runtime_controller=blocked,
+        account_records={},
+        account_combo={},
+        sb_account=Variable(),
+        sb_account_id_display=Variable(),
+        _preferred_account_id="",
+    )
+    host._selected_account_id = lambda optional=False: (
+        desktop_gui.TradingRobotGUI._selected_account_id(host, optional)
+    )
+    host._account_scope_display = lambda account_id: (
+        desktop_gui.TradingRobotGUI._account_scope_display(host, account_id)
+    )
+    host._set_account_id_display = lambda account_id=None: (
+        desktop_gui.TradingRobotGUI._set_account_id_display(host, account_id)
+    )
+
+    desktop_gui.TradingRobotGUI._set_account_records(
+        host,
+        [{"id": ACCOUNT, "name": "Synthetic Sandbox"}],
+    )
+
+    rendered = host.sb_account_id_display.get()
+    assert host.sb_account.get() == "Synthetic Sandbox — account 1"
+    assert rendered == sha256(ACCOUNT.encode("utf-8")).hexdigest()
+    assert ACCOUNT not in host.sb_account.get()
+    assert ACCOUNT not in rendered
+
+
+def test_secure_account_load_keeps_raw_id_out_of_visible_combobox(
+    tmp_path, monkeypatch
+):
+    class Variable:
+        def __init__(self, value=""):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    provider = _provider()
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "TBANK_SANDBOX_TOKEN=legacy-token\n"
+        f"TBANK_SANDBOX_ACCOUNT_ID={ACCOUNT}-legacy\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(desktop_gui, "ENV_PATH", env_path)
+    host = SimpleNamespace(
+        secret_provider=provider,
+        _preferred_account_id="",
+        sb_token=Variable(),
+        sb_account=Variable(),
+        sb_ca_bundle=Variable(),
+        sb_initial_rub=Variable(),
+        sb_connect_timeout=Variable(),
+        sb_read_timeout=Variable(),
+        sb_ticker=Variable("SBER"),
+        sb_class_code=Variable("TQBR"),
+        diag_ticker=Variable(),
+        diag_class_code=Variable(),
+    )
+
+    desktop_gui.TradingRobotGUI._load_settings_from_env(host, show_message=False)
+
+    assert host._preferred_account_id == ACCOUNT
+    assert host.sb_account.get() == ""
+    assert ACCOUNT not in host.sb_account.get()
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "TBANK_SANDBOX_TOKEN" not in env_text
+    assert "TBANK_SANDBOX_ACCOUNT_ID" not in env_text
+
+
+def test_secure_connection_save_custodies_token_and_account_and_requires_restart(
+    tmp_path, monkeypatch
+):
+    class Variable:
+        def __init__(self, value=""):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    provider = FakeSecretProvider()
+    messages: list[tuple[str, str]] = []
+    errors: list[tuple[str, str]] = []
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(desktop_gui, "ENV_PATH", env_path)
+    monkeypatch.setattr(
+        desktop_gui.messagebox,
+        "showinfo",
+        lambda title, message, **_kwargs: messages.append((title, message)),
+    )
+    monkeypatch.setattr(
+        desktop_gui.messagebox,
+        "showerror",
+        lambda title, message, **_kwargs: errors.append((title, message)),
+    )
+    host = SimpleNamespace(
+        secret_provider=provider,
+        sb_token=Variable("synthetic-token"),
+        sb_ca_bundle=Variable(""),
+        sb_initial_rub=Variable("1000000"),
+        sb_connect_timeout=Variable("8"),
+        sb_read_timeout=Variable("25"),
+        sb_status=Variable(),
+        _selected_account_id=lambda optional=False: ACCOUNT,
+        _read_client_settings=lambda: (8.0, 25.0),
+        logger=SimpleNamespace(
+            info=lambda *_args: None,
+            exception=lambda *_args: None,
+        ),
+        _refresh_readiness=lambda: None,
+    )
+    host._persist_connection_credentials = lambda token, account_id: (
+        desktop_gui.TradingRobotGUI._persist_connection_credentials(
+            host, token, account_id
+        )
+    )
+
+    desktop_gui.TradingRobotGUI._save_settings_to_env(host)
+
+    assert errors == []
+    assert provider.values["TBANK_SANDBOX_TOKEN"] == "synthetic-token"
+    assert provider.values["TBANK_SANDBOX_ACCOUNT_ID"] == ACCOUNT
+    assert provider.get("TBANK_SANDBOX_TOKEN") == "synthetic-token"
+    assert provider.get("TBANK_SANDBOX_ACCOUNT_ID") == ACCOUNT
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "TBANK_SANDBOX_TOKEN" not in env_text
+    assert "TBANK_SANDBOX_ACCOUNT_ID" not in env_text
+    assert ACCOUNT not in env_text
+    assert "перезапустите приложение" in host.sb_status.get().lower()
+    assert len(messages) == 1
+    assert "production runtime должен быть собран заново" in messages[0][1]
+
+
+def test_secure_connection_write_readback_failure_restores_previous_pair():
+    class MismatchAfterAccountWrite(FakeSecretProvider):
+        mismatch_enabled = False
+
+        def get(self, key: str):
+            value = super().get(key)
+            if (
+                self.mismatch_enabled
+                and key == "TBANK_SANDBOX_ACCOUNT_ID"
+                and value is not None
+            ):
+                return value + "-mismatch"
+            return value
+
+        def set(self, key: str, value: str) -> None:
+            super().set(key, value)
+            if key == "TBANK_SANDBOX_ACCOUNT_ID" and value == ACCOUNT:
+                self.mismatch_enabled = True
+
+    provider = MismatchAfterAccountWrite(
+        {
+            "TBANK_SANDBOX_TOKEN": "old-token",
+            "TBANK_SANDBOX_ACCOUNT_ID": "old-account",
+        }
+    )
+    host = SimpleNamespace(secret_provider=provider)
+
+    with pytest.raises(RuntimeError, match="PROTECTED_CONNECTION_WRITE_FAILED"):
+        desktop_gui.TradingRobotGUI._persist_connection_credentials(
+            host, "new-token", ACCOUNT
+        )
+
+    assert provider.values == {
+        "TBANK_SANDBOX_TOKEN": "old-token",
+        "TBANK_SANDBOX_ACCOUNT_ID": "old-account",
+    }
 
 
 def test_q7r_09_12_secret_boundary_and_tools_do_not_export_or_call_provider():

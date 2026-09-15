@@ -388,6 +388,7 @@ class TradingRobotGUI(tk.Tk):
         self.sandbox_task_name = ""
         self.backtest_result: BacktestResult | None = None
         self.account_records: dict[str, dict[str, Any]] = {}
+        self._preferred_account_id = ""
         self._scroll_canvases: list[tk.Canvas] = []
         self.event_journal = EventJournal(EVENT_DB_PATH)
         self.strategy_profile_store = StrategyProfileStore(STRATEGY_PROFILE_PATH)
@@ -586,9 +587,10 @@ class TradingRobotGUI(tk.Tk):
             self.risk_dashboard_status.set(status)
 
     def _set_account_id_display(self, account_id: str | None = None) -> None:
-        value = self._account_scope_display(
-            account_id or self._selected_account_id(optional=True)
-        )
+        selected_account_id = account_id or self._selected_account_id(optional=True)
+        if selected_account_id:
+            self._preferred_account_id = selected_account_id
+        value = self._account_scope_display(selected_account_id)
         self.sb_account_id_display.set(value or "—")
 
     def _copy_selected_account_id(self) -> None:
@@ -601,8 +603,18 @@ class TradingRobotGUI(tk.Tk):
         if not raw:
             return ""
         controller = self.gui_runtime_controller
-        if controller is not None and controller.account_id == raw:
-            return controller.account_scope_sha256
+        controller_account_id = str(
+            getattr(controller, "account_id", "") or ""
+        ).strip()
+        controller_scope = str(
+            getattr(controller, "account_scope_sha256", "") or ""
+        ).strip().lower()
+        if (
+            controller_account_id == raw
+            and len(controller_scope) == 64
+            and all(char in "0123456789abcdef" for char in controller_scope)
+        ):
+            return controller_scope
         return sha256(raw.encode("utf-8")).hexdigest()
 
     def _apply_kill_switch_banner(
@@ -1411,7 +1423,7 @@ class TradingRobotGUI(tk.Tk):
         ).pack(fill="x", pady=(6, 2))
         ttk.Button(
             auth_box,
-            text="Сохранить подключение в .env",
+            text="Сохранить подключение",
             command=self._save_settings_to_env,
         ).pack(fill="x", pady=2)
         ttk.Button(
@@ -2295,17 +2307,39 @@ class TradingRobotGUI(tk.Tk):
     ) -> None:
         values = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
         token = self.secret_provider.get("TBANK_SANDBOX_TOKEN")
+        account_id = self.secret_provider.get("TBANK_SANDBOX_ACCOUNT_ID")
         if not token and self.secret_provider.secure:
             legacy_token = str(values.get("TBANK_SANDBOX_TOKEN") or "").strip()
             if legacy_token:
                 self.secret_provider.set("TBANK_SANDBOX_TOKEN", legacy_token)
                 EnvFileSecretProvider(ENV_PATH).delete("TBANK_SANDBOX_TOKEN")
                 token = legacy_token
+        if not account_id and self.secret_provider.secure:
+            legacy_account_id = str(
+                values.get("TBANK_SANDBOX_ACCOUNT_ID") or ""
+            ).strip()
+            if legacy_account_id:
+                self.secret_provider.set(
+                    "TBANK_SANDBOX_ACCOUNT_ID", legacy_account_id
+                )
+                if (
+                    self.secret_provider.get("TBANK_SANDBOX_ACCOUNT_ID")
+                    != legacy_account_id
+                ):
+                    self.secret_provider.delete("TBANK_SANDBOX_ACCOUNT_ID")
+                    raise RuntimeError("PROTECTED_SANDBOX_ACCOUNT_READBACK_FAILED")
+                EnvFileSecretProvider(ENV_PATH).delete("TBANK_SANDBOX_ACCOUNT_ID")
+                account_id = legacy_account_id
         if token:
             self.sb_token.set(token)
+            if self.secret_provider.secure:
+                EnvFileSecretProvider(ENV_PATH).delete("TBANK_SANDBOX_TOKEN")
+        if account_id:
+            self._preferred_account_id = account_id
+            if self.secret_provider.secure:
+                EnvFileSecretProvider(ENV_PATH).delete("TBANK_SANDBOX_ACCOUNT_ID")
         connection_mapping: list[tuple[tk.StringVar, str, str]] = [
             (self.sb_ca_bundle, "TBANK_CA_BUNDLE", ""),
-            (self.sb_account, "TBANK_SANDBOX_ACCOUNT_ID", ""),
             (self.sb_initial_rub, "SANDBOX_INITIAL_RUB", "1000000"),
             (self.sb_connect_timeout, "TBANK_CONNECT_TIMEOUT_SECONDS", "8"),
             (self.sb_read_timeout, "TBANK_READ_TIMEOUT_SECONDS", "25"),
@@ -2426,8 +2460,14 @@ class TradingRobotGUI(tk.Tk):
         self.diag_class_code.set(self.sb_class_code.get().strip().upper() or "TQBR")
         if show_message:
             if ENV_PATH.exists():
+                source = (
+                    self.secret_provider.name
+                    if self.secret_provider.secure
+                    else ENV_PATH.name
+                )
                 note = (
-                    "Токен, счёт и сетевые параметры загружены из .env. "
+                    f"Токен и счёт загружены через: {source}. "
+                    f"Сетевые параметры загружены из {ENV_PATH.name}. "
                     "PRIMARY/SHADOW загружаются из отдельного профиля режима."
                 )
                 messagebox.showinfo("Настройки", note, parent=self)
@@ -2437,6 +2477,44 @@ class TradingRobotGUI(tk.Tk):
                     ".env пока не существует. Введите токен и сохраните подключение.",
                     parent=self,
                 )
+
+    def _persist_connection_credentials(self, token: str, account_id: str) -> None:
+        selected = self.secret_provider
+        if not selected.secure:
+            selected.set("TBANK_SANDBOX_TOKEN", token)
+            if account_id:
+                selected.set("TBANK_SANDBOX_ACCOUNT_ID", account_id)
+            else:
+                selected.delete("TBANK_SANDBOX_ACCOUNT_ID")
+            return
+
+        if not account_id:
+            raise ValueError("Выберите Sandbox-счёт после проверки подключения.")
+        requested = {
+            "TBANK_SANDBOX_TOKEN": token,
+            "TBANK_SANDBOX_ACCOUNT_ID": account_id,
+        }
+        previous = {key: selected.get(key) for key in requested}
+        written: list[str] = []
+        try:
+            for key, value in requested.items():
+                selected.set(key, value)
+                written.append(key)
+            if any(selected.get(key) != value for key, value in requested.items()):
+                raise RuntimeError("PROTECTED_CONNECTION_READBACK_FAILED")
+        except Exception as exc:
+            try:
+                for key in reversed(written):
+                    old_value = previous[key]
+                    if old_value is None:
+                        selected.delete(key)
+                    else:
+                        selected.set(key, old_value)
+            except Exception as rollback_exc:
+                raise RuntimeError(
+                    "PROTECTED_CONNECTION_ROLLBACK_FAILED"
+                ) from rollback_exc
+            raise RuntimeError("PROTECTED_CONNECTION_WRITE_FAILED") from exc
 
     def _save_settings_to_env(self) -> None:
         try:
@@ -2451,11 +2529,23 @@ class TradingRobotGUI(tk.Tk):
             )
             return
 
-        self.secret_provider.set("TBANK_SANDBOX_TOKEN", token)
+        account_id = self._selected_account_id(optional=True)
+        try:
+            self._persist_connection_credentials(token, account_id)
+        except ValueError as exc:
+            messagebox.showerror("Нет счёта", str(exc), parent=self)
+            return
+        except Exception:
+            self.logger.exception("Protected connection credential write failed")
+            messagebox.showerror(
+                "Ошибка сохранения",
+                "Не удалось сохранить защищённые данные подключения.",
+                parent=self,
+            )
+            return
         ENV_PATH.touch(exist_ok=True)
         values = {
             "TBANK_CA_BUNDLE": self.sb_ca_bundle.get().strip(),
-            "TBANK_SANDBOX_ACCOUNT_ID": self._selected_account_id(optional=True),
             "SANDBOX_INITIAL_RUB": self.sb_initial_rub.get().strip(),
             "TBANK_CONNECT_TIMEOUT_SECONDS": str(connect_timeout),
             "TBANK_READ_TIMEOUT_SECONDS": str(read_timeout),
@@ -2464,20 +2554,34 @@ class TradingRobotGUI(tk.Tk):
         for key, value in values.items():
             set_key(str(ENV_PATH), key, value or "", quote_mode="auto")
         if self.secret_provider.secure:
-            EnvFileSecretProvider(ENV_PATH).delete("TBANK_SANDBOX_TOKEN")
+            env_provider = EnvFileSecretProvider(ENV_PATH)
+            env_provider.delete("TBANK_SANDBOX_TOKEN")
+            env_provider.delete("TBANK_SANDBOX_ACCOUNT_ID")
+        elif account_id:
+            set_key(
+                str(ENV_PATH),
+                "TBANK_SANDBOX_ACCOUNT_ID",
+                account_id,
+                quote_mode="auto",
+            )
         self.logger.info("Settings saved to %s", ENV_PATH)
         storage_note = (
-            "Файл .env не содержит токен."
+            "Токен и выбранный счёт отсутствуют в .env."
             if self.secret_provider.secure
-            else "Не публикуйте .env: используется совместимый token fallback."
+            else "Не публикуйте .env: используется совместимый credential fallback."
+        )
+        self.sb_status.set(
+            "Подключение сохранено; перезапустите приложение для пересборки runtime."
         )
         messagebox.showinfo(
             "Подключение сохранено",
-            f"Токен сохранён через: {self.secret_provider.name}.\n"
-            f"Счёт и сетевые параметры сохранены локально в {ENV_PATH.name}.\n"
+            f"Токен и выбранный счёт сохранены через: {self.secret_provider.name}.\n"
+            f"Сетевые параметры сохранены локально в {ENV_PATH.name}.\n"
             "PRIMARY/SHADOW и торговые параметры сохраняются отдельно в "
             f"{STRATEGY_PROFILE_PATH.name}.\n"
-            f"{storage_note}",
+            f"{storage_note}\n"
+            "Перезапустите приложение: production runtime должен быть собран заново. "
+            "До успешной пересборки Start Sandbox останется заблокирован.",
             parent=self,
         )
         self._refresh_readiness()
@@ -3041,7 +3145,7 @@ class TradingRobotGUI(tk.Tk):
         self.account_combo["values"] = labels
         if hasattr(self, "diag_account_combo"):
             self.diag_account_combo["values"] = labels
-        requested = self.sb_account.get().strip()
+        requested = self._preferred_account_id or self.sb_account.get().strip()
         selected = ""
         if requested:
             for label, account in self.account_records.items():
@@ -3051,6 +3155,10 @@ class TradingRobotGUI(tk.Tk):
         if not selected and labels:
             selected = labels[0]
         self.sb_account.set(selected)
+        if selected:
+            self._preferred_account_id = str(
+                self.account_records[selected].get("id") or ""
+            ).strip()
         self._set_account_id_display()
         if selected and hasattr(self, "risk_limits_tree"):
             self._refresh_risk_dashboard()
