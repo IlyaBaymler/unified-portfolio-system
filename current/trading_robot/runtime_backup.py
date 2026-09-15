@@ -290,9 +290,10 @@ class RuntimeBackupManager:
                         companion_staged = staging / companion_name
                         protected_name = companion_name.removesuffix(".sha256")
                         protected_source = self.runtime_dir / protected_name
-                        if companion_name.endswith(
-                            ".sha256"
-                        ) and not protected_source.is_file():
+                        if (
+                            companion_name.endswith(".sha256")
+                            and not protected_source.is_file()
+                        ):
                             protected = staging / protected_name
                             if not protected.is_file():
                                 raise RuntimeBackupError(
@@ -498,9 +499,12 @@ class RuntimeBackupManager:
                                 + _AUTHORITY_ACTIVE_NAME
                             )
                     for primary_name in sorted(
-                        names & (_CHECKSUM_MANAGED_JSON_NAMES | _LAST_GOOD_MANAGED_JSON_NAMES)
+                        names
+                        & (_CHECKSUM_MANAGED_JSON_NAMES | _LAST_GOOD_MANAGED_JSON_NAMES)
                     ):
-                        for companion_name in self._managed_recovery_names(primary_name):
+                        for companion_name in self._managed_recovery_names(
+                            primary_name
+                        ):
                             if companion_name not in names:
                                 errors.append(
                                     "Managed recovery member is missing: "
@@ -509,11 +513,16 @@ class RuntimeBackupManager:
                                 continue
                             protected_name = companion_name.removesuffix(".sha256")
                             if companion_name.endswith(".sha256"):
-                                expected = hashlib.sha256(
-                                    archive.read(protected_name)
-                                ).hexdigest() + "\n"
+                                expected = (
+                                    hashlib.sha256(
+                                        archive.read(protected_name)
+                                    ).hexdigest()
+                                    + "\n"
+                                )
                                 try:
-                                    actual = archive.read(companion_name).decode("ascii")
+                                    actual = archive.read(companion_name).decode(
+                                        "ascii"
+                                    )
                                 except UnicodeDecodeError:
                                     actual = ""
                                 if not hmac.compare_digest(actual, expected):
@@ -690,9 +699,7 @@ class RuntimeBackupManager:
                     # from the verified backup. The pre-restore companion set is
                     # restored by the transaction rollback on any later failure.
                     if _AUTHORITY_ACTIVE_NAME in entry_name_set:
-                        self._remove_unrestored_authority_recovery_files(
-                            entry_name_set
-                        )
+                        self._remove_unrestored_authority_recovery_files(entry_name_set)
 
                     # Post-commit validation detects filesystem or antivirus corruption.
                     for item in transactional_items:
@@ -710,10 +717,9 @@ class RuntimeBackupManager:
                             content_matches = (
                                 sha256_file(destination) == item.backup_sha256
                             )
-                        recovery_current = (
-                            not self._is_recovery_managed_primary(item.name)
-                            or self._json_recovery_files_current(destination)
-                        )
+                        recovery_current = not self._is_recovery_managed_primary(
+                            item.name
+                        ) or self._json_recovery_files_current(destination)
                         if (
                             not report.valid
                             or not content_matches
@@ -860,9 +866,7 @@ class RuntimeBackupManager:
             return
         temporary = sidecar.with_name(sidecar.name + f".{uuid4().hex}.tmp")
         try:
-            temporary.write_bytes(
-                (sha256_file(destination) + "\n").encode("ascii")
-            )
+            temporary.write_bytes((sha256_file(destination) + "\n").encode("ascii"))
             os.replace(temporary, sidecar)
         finally:
             temporary.unlink(missing_ok=True)
@@ -1230,11 +1234,13 @@ class RuntimeBackupManager:
             or any(
                 primary in self.runtime_files
                 and name in self._managed_recovery_names(primary)
-                for primary in (_CHECKSUM_MANAGED_JSON_NAMES | _LAST_GOOD_MANAGED_JSON_NAMES)
+                for primary in (
+                    _CHECKSUM_MANAGED_JSON_NAMES | _LAST_GOOD_MANAGED_JSON_NAMES
+                )
             )
             or (
-            _CASH_LEDGER_ROOT_NAME in self.runtime_files
-            and name == _CASH_LEDGER_DATABASE_MEMBER
+                _CASH_LEDGER_ROOT_NAME in self.runtime_files
+                and name == _CASH_LEDGER_DATABASE_MEMBER
             )
         )
 

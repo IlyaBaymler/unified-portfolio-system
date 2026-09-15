@@ -88,9 +88,9 @@ def test_runtime_backup_create_verify_and_preview(tmp_path: Path):
         for item in preview
         if item.name != "trading_events.db"
     )
-    assert next(item for item in preview if item.name == "trading_events.db").action in {
-        "UNCHANGED", "REPLACE"
-    }
+    assert next(
+        item for item in preview if item.name == "trading_events.db"
+    ).action in {"UNCHANGED", "REPLACE"}
 
 
 def test_runtime_backup_restore_requires_confirmation_and_preserves_pre_restore(
@@ -106,7 +106,9 @@ def test_runtime_backup_restore_requires_confirmation_and_preserves_pre_restore(
     with pytest.raises(RuntimeBackupError, match="RESTORE RUNTIME"):
         manager.restore_backup(backup, confirmation="yes")
     preview = manager.restore_backup(backup, confirmation="RESTORE RUNTIME")
-    assert any(item.name == "robot_state.json" and item.action == "REPLACE" for item in preview)
+    assert any(
+        item.name == "robot_state.json" and item.action == "REPLACE" for item in preview
+    )
     restored = json.loads(state_path.read_text(encoding="utf-8"))
     assert restored == {"version": 5, "bots": {}}
     assert list(tmp_path.glob("robot_state.json.pre_restore_*.bak"))
@@ -285,9 +287,7 @@ def test_restore_revision_zero_authority_removes_newer_lastgood(
             expected_revision=initial.record_revision,
             expected_sha256=initial.sha256,
         )
-    cancelled = authority_manager.cancel(
-        transition_at="2026-09-13T00:00:02.000000000Z"
-    )
+    cancelled = authority_manager.cancel(transition_at="2026-09-13T00:00:02.000000000Z")
     assert cancelled.record_revision == 2
     assert store.lastgood_path.exists()
 
@@ -324,9 +324,7 @@ def test_failed_revision_zero_restore_rolls_back_newer_authority_custody(
             expected_revision=initial.record_revision,
             expected_sha256=initial.sha256,
         )
-    cancelled = authority_manager.cancel(
-        transition_at="2026-09-13T00:00:02.000000000Z"
-    )
+    cancelled = authority_manager.cancel(transition_at="2026-09-13T00:00:02.000000000Z")
     before = {
         path.name: path.read_bytes()
         for path in (store.path, store.checksum_path, store.lastgood_path)
@@ -388,7 +386,10 @@ def test_failed_unchanged_recovery_maintenance_rolls_back_companions(
     with pytest.raises(RuntimeBackupError, match="unchanged recovery failure"):
         manager.restore_backup(backup, confirmation="RESTORE RUNTIME")
 
-    assert {state.name: state.read_bytes(), checksum.name: checksum.read_bytes()} == original
+    assert {
+        state.name: state.read_bytes(),
+        checksum.name: checksum.read_bytes(),
+    } == original
     assert not state.with_name(state.name + ".lastgood").exists()
     assert not state.with_name(state.name + ".lastgood.sha256").exists()
     assert not list(tmp_path.glob(f"{state.name}.pre_restore_*.bak"))
