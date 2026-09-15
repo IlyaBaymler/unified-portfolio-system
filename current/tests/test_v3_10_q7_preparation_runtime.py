@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from dotenv import dotenv_values
 
 import desktop_gui
 from tools import v3_10_q7_prepare_runtime as q7
@@ -557,6 +558,64 @@ def test_secure_account_load_keeps_raw_id_out_of_visible_combobox(
     assert "TBANK_SANDBOX_ACCOUNT_ID" not in env_text
 
 
+@pytest.mark.parametrize(
+    "legacy_line",
+    [
+        f"export TBANK_SANDBOX_ACCOUNT_ID={ACCOUNT}\n",
+        f"TBANK_SANDBOX_ACCOUNT_ID = {ACCOUNT}\n",
+    ],
+)
+def test_secure_account_cleanup_handles_all_supported_dotenv_forms(
+    tmp_path, legacy_line
+):
+    env_path = tmp_path / ".env"
+    env_path.write_text(legacy_line, encoding="utf-8")
+    assert dotenv_values(env_path)["TBANK_SANDBOX_ACCOUNT_ID"] == ACCOUNT
+
+    desktop_gui._delete_dotenv_secret_exact(
+        env_path, "TBANK_SANDBOX_ACCOUNT_ID"
+    )
+
+    assert "TBANK_SANDBOX_ACCOUNT_ID" not in dotenv_values(env_path)
+    assert ACCOUNT not in env_path.read_text(encoding="utf-8")
+
+
+def test_secure_account_cleanup_requires_exact_absence(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        f"export TBANK_SANDBOX_ACCOUNT_ID={ACCOUNT}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(desktop_gui, "unset_key", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match="LEGACY_ENV_SECRET_CLEANUP_FAILED"):
+        desktop_gui._delete_dotenv_secret_exact(
+            env_path, "TBANK_SANDBOX_ACCOUNT_ID"
+        )
+
+
+def test_secure_connection_save_is_rejected_while_runtime_is_active(monkeypatch):
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        desktop_gui.messagebox,
+        "showerror",
+        lambda title, message, **_kwargs: errors.append((title, message)),
+    )
+    host = SimpleNamespace(
+        robot_thread=SimpleNamespace(is_alive=lambda: True),
+    )
+
+    desktop_gui.TradingRobotGUI._save_settings_to_env(host)
+
+    assert errors == [
+        (
+            "Sandbox активен",
+            "Сначала остановите account-level Sandbox runtime, затем сохраните "
+            "подключение и перезапустите приложение.",
+        )
+    ]
+
+
 def test_secure_connection_save_custodies_token_and_account_and_requires_restart(
     tmp_path, monkeypatch
 ):
@@ -593,6 +652,9 @@ def test_secure_connection_save_custodies_token_and_account_and_requires_restart
         sb_connect_timeout=Variable("8"),
         sb_read_timeout=Variable("25"),
         sb_status=Variable(),
+        _connection_restart_required=False,
+        robot_thread=None,
+        gui_runtime_controller=SimpleNamespace(service_ready=True),
         _selected_account_id=lambda optional=False: ACCOUNT,
         _read_client_settings=lambda: (8.0, 25.0),
         logger=SimpleNamespace(
@@ -600,6 +662,9 @@ def test_secure_connection_save_custodies_token_and_account_and_requires_restart
             exception=lambda *_args: None,
         ),
         _refresh_readiness=lambda: None,
+        _confirm_execution=lambda: pytest.fail(
+            "stale composed controller reached execution confirmation"
+        ),
     )
     host._persist_connection_credentials = lambda token, account_id: (
         desktop_gui.TradingRobotGUI._persist_connection_credentials(
@@ -618,9 +683,14 @@ def test_secure_connection_save_custodies_token_and_account_and_requires_restart
     assert "TBANK_SANDBOX_TOKEN" not in env_text
     assert "TBANK_SANDBOX_ACCOUNT_ID" not in env_text
     assert ACCOUNT not in env_text
+    assert host._connection_restart_required is True
     assert "перезапустите приложение" in host.sb_status.get().lower()
     assert len(messages) == 1
     assert "production runtime должен быть собран заново" in messages[0][1]
+
+    desktop_gui.TradingRobotGUI._start_robot_loop(host, execute=True)
+
+    assert host.sb_status.get().startswith("BLOCKED:")
 
 
 def test_secure_connection_write_readback_failure_restores_previous_pair():

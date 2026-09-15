@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 
 import pandas as pd
-from dotenv import dotenv_values, set_key
+from dotenv import dotenv_values, set_key, unset_key
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 
@@ -106,7 +106,6 @@ from trading_robot.sandbox_execution_adapter import (
     SandboxExecutionPolicy,
 )
 from trading_robot.secret_provider import (
-    EnvFileSecretProvider,
     SecretProvider,
     preferred_secret_provider,
     probe_secret_provider,
@@ -163,6 +162,18 @@ def _reports_initial_dir() -> str:
     """Return the reports directory for this exact source/portable runtime."""
 
     return str(ensure_export_directory(REPORTS_DIR))
+
+
+def _delete_dotenv_secret_exact(path: str | Path, key: str) -> None:
+    """Remove every dotenv-supported spelling and prove the key is absent."""
+
+    target = Path(path)
+    if not target.exists():
+        return
+    if key in dotenv_values(target):
+        unset_key(str(target), key)
+    if key in dotenv_values(target):
+        raise RuntimeError("LEGACY_ENV_SECRET_CLEANUP_FAILED")
 
 
 def _compose_production_gui_runtime(
@@ -389,6 +400,7 @@ class TradingRobotGUI(tk.Tk):
         self.backtest_result: BacktestResult | None = None
         self.account_records: dict[str, dict[str, Any]] = {}
         self._preferred_account_id = ""
+        self._connection_restart_required = False
         self._scroll_canvases: list[tk.Canvas] = []
         self.event_journal = EventJournal(EVENT_DB_PATH)
         self.strategy_profile_store = StrategyProfileStore(STRATEGY_PROFILE_PATH)
@@ -2312,7 +2324,7 @@ class TradingRobotGUI(tk.Tk):
             legacy_token = str(values.get("TBANK_SANDBOX_TOKEN") or "").strip()
             if legacy_token:
                 self.secret_provider.set("TBANK_SANDBOX_TOKEN", legacy_token)
-                EnvFileSecretProvider(ENV_PATH).delete("TBANK_SANDBOX_TOKEN")
+                _delete_dotenv_secret_exact(ENV_PATH, "TBANK_SANDBOX_TOKEN")
                 token = legacy_token
         if not account_id and self.secret_provider.secure:
             legacy_account_id = str(
@@ -2328,16 +2340,20 @@ class TradingRobotGUI(tk.Tk):
                 ):
                     self.secret_provider.delete("TBANK_SANDBOX_ACCOUNT_ID")
                     raise RuntimeError("PROTECTED_SANDBOX_ACCOUNT_READBACK_FAILED")
-                EnvFileSecretProvider(ENV_PATH).delete("TBANK_SANDBOX_ACCOUNT_ID")
+                _delete_dotenv_secret_exact(
+                    ENV_PATH, "TBANK_SANDBOX_ACCOUNT_ID"
+                )
                 account_id = legacy_account_id
         if token:
             self.sb_token.set(token)
             if self.secret_provider.secure:
-                EnvFileSecretProvider(ENV_PATH).delete("TBANK_SANDBOX_TOKEN")
+                _delete_dotenv_secret_exact(ENV_PATH, "TBANK_SANDBOX_TOKEN")
         if account_id:
             self._preferred_account_id = account_id
             if self.secret_provider.secure:
-                EnvFileSecretProvider(ENV_PATH).delete("TBANK_SANDBOX_ACCOUNT_ID")
+                _delete_dotenv_secret_exact(
+                    ENV_PATH, "TBANK_SANDBOX_ACCOUNT_ID"
+                )
         connection_mapping: list[tuple[tk.StringVar, str, str]] = [
             (self.sb_ca_bundle, "TBANK_CA_BUNDLE", ""),
             (self.sb_initial_rub, "SANDBOX_INITIAL_RUB", "1000000"),
@@ -2517,6 +2533,14 @@ class TradingRobotGUI(tk.Tk):
             raise RuntimeError("PROTECTED_CONNECTION_WRITE_FAILED") from exc
 
     def _save_settings_to_env(self) -> None:
+        if self.robot_thread and self.robot_thread.is_alive():
+            messagebox.showerror(
+                "Sandbox активен",
+                "Сначала остановите account-level Sandbox runtime, затем сохраните "
+                "подключение и перезапустите приложение.",
+                parent=self,
+            )
+            return
         try:
             connect_timeout, read_timeout = self._read_client_settings()
         except ValueError as exc:
@@ -2543,27 +2567,43 @@ class TradingRobotGUI(tk.Tk):
                 parent=self,
             )
             return
-        ENV_PATH.touch(exist_ok=True)
-        values = {
-            "TBANK_CA_BUNDLE": self.sb_ca_bundle.get().strip(),
-            "SANDBOX_INITIAL_RUB": self.sb_initial_rub.get().strip(),
-            "TBANK_CONNECT_TIMEOUT_SECONDS": str(connect_timeout),
-            "TBANK_READ_TIMEOUT_SECONDS": str(read_timeout),
-            "ARM_SANDBOX_TRADING": "NO",
-        }
-        for key, value in values.items():
-            set_key(str(ENV_PATH), key, value or "", quote_mode="auto")
-        if self.secret_provider.secure:
-            env_provider = EnvFileSecretProvider(ENV_PATH)
-            env_provider.delete("TBANK_SANDBOX_TOKEN")
-            env_provider.delete("TBANK_SANDBOX_ACCOUNT_ID")
-        elif account_id:
-            set_key(
-                str(ENV_PATH),
-                "TBANK_SANDBOX_ACCOUNT_ID",
-                account_id,
-                quote_mode="auto",
+        self._connection_restart_required = True
+        try:
+            ENV_PATH.touch(exist_ok=True)
+            values = {
+                "TBANK_CA_BUNDLE": self.sb_ca_bundle.get().strip(),
+                "SANDBOX_INITIAL_RUB": self.sb_initial_rub.get().strip(),
+                "TBANK_CONNECT_TIMEOUT_SECONDS": str(connect_timeout),
+                "TBANK_READ_TIMEOUT_SECONDS": str(read_timeout),
+                "ARM_SANDBOX_TRADING": "NO",
+            }
+            for key, value in values.items():
+                set_key(str(ENV_PATH), key, value or "", quote_mode="auto")
+            if self.secret_provider.secure:
+                _delete_dotenv_secret_exact(ENV_PATH, "TBANK_SANDBOX_TOKEN")
+                _delete_dotenv_secret_exact(
+                    ENV_PATH, "TBANK_SANDBOX_ACCOUNT_ID"
+                )
+            elif account_id:
+                set_key(
+                    str(ENV_PATH),
+                    "TBANK_SANDBOX_ACCOUNT_ID",
+                    account_id,
+                    quote_mode="auto",
+                )
+        except Exception:
+            self.logger.exception("Connection settings persistence failed")
+            self.sb_status.set(
+                "BLOCKED: подключение изменено; перезапустите приложение."
             )
+            messagebox.showerror(
+                "Ошибка сохранения",
+                "Защищённые данные подключения изменены, но локальные настройки "
+                "не удалось безопасно сохранить. Перезапустите приложение; "
+                "Start Sandbox заблокирован.",
+                parent=self,
+            )
+            return
         self.logger.info("Settings saved to %s", ENV_PATH)
         storage_note = (
             "Токен и выбранный счёт отсутствуют в .env."
@@ -3456,6 +3496,12 @@ class TradingRobotGUI(tk.Tk):
             return
         if self.robot_thread and self.robot_thread.is_alive():
             self.sb_status.set("Account-level scheduler уже работает.")
+            return
+        if self._connection_restart_required:
+            self.sb_status.set(
+                "BLOCKED: подключение изменено; перезапустите приложение "
+                "для пересборки runtime."
+            )
             return
         controller = self.gui_runtime_controller
         if controller is None or not controller.service_ready:
