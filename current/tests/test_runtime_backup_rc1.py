@@ -6,9 +6,19 @@ import zipfile
 from pathlib import Path
 
 import pytest
+
 from trading_robot.journal import EventJournal, JournalEvent
 from trading_robot.runtime_backup import RuntimeBackupError, RuntimeBackupManager
-from trading_robot.runtime_integrity import inspect_json_file, inspect_sqlite_file
+from trading_robot.runtime_cash_authority import (
+    RuntimeCashAuthorityManager,
+    RuntimeCashAuthorityState,
+    RuntimeCashAuthorityStore,
+)
+from trading_robot.runtime_integrity import (
+    inspect_json_file,
+    inspect_runtime_cash_authority,
+    inspect_sqlite_file,
+)
 from trading_robot.state_persistence import StatePersistenceError, atomic_write_json
 
 
@@ -249,6 +259,102 @@ def test_restore_repairs_missing_lastgood_for_unchanged_managed_entry(
     assert inspect_json_file(state, require_checksum=True).valid
     assert inspect_json_file(lastgood, require_checksum=True).valid
     assert not list(tmp_path.glob(f"{state.name}.pre_restore_*.bak"))
+
+
+def test_restore_revision_zero_authority_removes_newer_lastgood(
+    tmp_path: Path,
+):
+    create_runtime(tmp_path)
+    store = RuntimeCashAuthorityStore(tmp_path)
+    initial = store.bootstrap(transition_at="2026-09-13T00:00:00.000000000Z")
+    backup_manager = RuntimeBackupManager(tmp_path, app_version="0.3.10")
+    backup = backup_manager.create_backup(tmp_path / "backups" / "b0.zip")
+    authority_manager = RuntimeCashAuthorityManager(store)
+    with store.locked():
+        prepared = authority_manager._change(
+            store._load_unlocked(allow_missing_legacy=False),
+            at="2026-09-13T00:00:01.000000000Z",
+            kind="PREPARE_CUTOVER",
+            state=RuntimeCashAuthorityState.CUTOVER_PREPARED,
+            cutover_generation=1,
+            account_scope_sha256="1" * 64,
+            identity_key_id="TEST_RESTORE_KEY_V1",
+        )
+        store._commit_unlocked(
+            prepared,
+            expected_revision=initial.record_revision,
+            expected_sha256=initial.sha256,
+        )
+    cancelled = authority_manager.cancel(
+        transition_at="2026-09-13T00:00:02.000000000Z"
+    )
+    assert cancelled.record_revision == 2
+    assert store.lastgood_path.exists()
+
+    backup_manager.restore_backup(backup, confirmation="RESTORE RUNTIME")
+
+    restored = store.load(allow_missing_legacy=False)
+    assert restored.canonical_bytes == initial.canonical_bytes
+    assert not store.lastgood_path.exists()
+    assert inspect_runtime_cash_authority(tmp_path).valid
+
+
+def test_failed_revision_zero_restore_rolls_back_newer_authority_custody(
+    tmp_path: Path,
+    monkeypatch,
+):
+    create_runtime(tmp_path)
+    store = RuntimeCashAuthorityStore(tmp_path)
+    initial = store.bootstrap(transition_at="2026-09-13T00:00:00.000000000Z")
+    backup_manager = RuntimeBackupManager(tmp_path, app_version="0.3.10")
+    backup = backup_manager.create_backup(tmp_path / "backups" / "b0.zip")
+    authority_manager = RuntimeCashAuthorityManager(store)
+    with store.locked():
+        prepared = authority_manager._change(
+            store._load_unlocked(allow_missing_legacy=False),
+            at="2026-09-13T00:00:01.000000000Z",
+            kind="PREPARE_CUTOVER",
+            state=RuntimeCashAuthorityState.CUTOVER_PREPARED,
+            cutover_generation=1,
+            account_scope_sha256="1" * 64,
+            identity_key_id="TEST_RESTORE_KEY_V1",
+        )
+        store._commit_unlocked(
+            prepared,
+            expected_revision=initial.record_revision,
+            expected_sha256=initial.sha256,
+        )
+    cancelled = authority_manager.cancel(
+        transition_at="2026-09-13T00:00:02.000000000Z"
+    )
+    before = {
+        path.name: path.read_bytes()
+        for path in (store.path, store.checksum_path, store.lastgood_path)
+    }
+    risk_state = tmp_path / "risk_state.json"
+    risk_state.write_text(
+        json.dumps({"version": 2, "accounts": {"changed": {}}}),
+        encoding="utf-8",
+    )
+    inspect_member = backup_manager._inspect_member
+
+    def fail_late_postcondition(path: Path, name: str):
+        if path == risk_state:
+            raise RuntimeBackupError("synthetic late postcondition failure")
+        return inspect_member(path, name)
+
+    monkeypatch.setattr(backup_manager, "_inspect_member", fail_late_postcondition)
+
+    with pytest.raises(RuntimeBackupError, match="late postcondition failure"):
+        backup_manager.restore_backup(backup, confirmation="RESTORE RUNTIME")
+
+    restored = store.load(allow_missing_legacy=False)
+    assert restored.canonical_bytes == cancelled.canonical_bytes
+    assert before == {
+        path.name: path.read_bytes()
+        for path in (store.path, store.checksum_path, store.lastgood_path)
+    }
+    assert inspect_runtime_cash_authority(tmp_path).valid
 
 
 def test_failed_unchanged_recovery_maintenance_rolls_back_companions(

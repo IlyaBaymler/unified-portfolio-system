@@ -605,6 +605,7 @@ class RuntimeBackupManager:
                 entry_names = [
                     str(raw["name"]) for raw in verification.manifest["entries"]
                 ]
+                entry_name_set = set(entry_names)
                 with zipfile.ZipFile(target, "r") as archive:
                     for name in entry_names:
                         destination = staging / name
@@ -683,6 +684,15 @@ class RuntimeBackupManager:
                                 temporary.unlink(missing_ok=True)
                             applied.append(item.name)
                             self._refresh_json_recovery_files(destination)
+
+                    # CL7 revision zero intentionally has no last-good record.
+                    # Remove only authority recovery companions that are absent
+                    # from the verified backup. The pre-restore companion set is
+                    # restored by the transaction rollback on any later failure.
+                    if _AUTHORITY_ACTIVE_NAME in entry_name_set:
+                        self._remove_unrestored_authority_recovery_files(
+                            entry_name_set
+                        )
 
                     # Post-commit validation detects filesystem or antivirus corruption.
                     for item in transactional_items:
@@ -914,16 +924,19 @@ class RuntimeBackupManager:
 
     @staticmethod
     def _snapshot_json_recovery_files(destination: Path, rollback: Path) -> None:
+        recovery = rollback / "recovery-companions"
         for suffix in _JSON_RECOVERY_SUFFIXES:
             companion = destination.with_name(destination.name + suffix)
             if companion.is_file():
-                shutil.copy2(companion, rollback / companion.name)
+                recovery.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(companion, recovery / companion.name)
 
     @staticmethod
     def _restore_json_recovery_snapshot(destination: Path, rollback: Path) -> None:
+        recovery = rollback / "recovery-companions"
         for suffix in _JSON_RECOVERY_SUFFIXES:
             companion = destination.with_name(destination.name + suffix)
-            saved = rollback / companion.name
+            saved = recovery / companion.name
             if saved.is_file():
                 temporary = companion.with_name(
                     companion.name + f".{uuid4().hex}.rollback.tmp"
@@ -934,6 +947,16 @@ class RuntimeBackupManager:
                 finally:
                     temporary.unlink(missing_ok=True)
             else:
+                companion.unlink(missing_ok=True)
+
+    def _remove_unrestored_authority_recovery_files(
+        self,
+        restored_names: set[str],
+    ) -> None:
+        active = self.runtime_dir / _AUTHORITY_ACTIVE_NAME
+        for suffix in _JSON_RECOVERY_SUFFIXES:
+            companion = active.with_name(active.name + suffix)
+            if companion.name not in restored_names:
                 companion.unlink(missing_ok=True)
 
     @staticmethod
@@ -1235,7 +1258,7 @@ class RuntimeBackupManager:
 
     @staticmethod
     def _is_recovery_managed_primary(name: str) -> bool:
-        return name in (
+        return name == _AUTHORITY_ACTIVE_NAME or name in (
             _CHECKSUM_MANAGED_JSON_NAMES | _LAST_GOOD_MANAGED_JSON_NAMES
         )
 
