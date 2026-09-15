@@ -512,6 +512,121 @@ def test_blocked_controller_renders_selected_account_scope_without_raw_id():
     assert ACCOUNT not in rendered
 
 
+def test_multi_account_selection_is_explicit_and_provider_order_independent(
+    tmp_path, monkeypatch
+):
+    class Variable:
+        def __init__(self, value=""):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    account_a = "synthetic-account-a"
+    account_b = "synthetic-account-b"
+    blocked = GuiRuntimeController.blocked("GUI_RUNTIME_COMPOSITION_REQUIRED")
+    host = SimpleNamespace(
+        gui_runtime_controller=blocked,
+        account_records={},
+        account_combo={},
+        sb_account=Variable(),
+        sb_account_id_display=Variable(),
+        _preferred_account_id="",
+    )
+    host._selected_account_id = lambda optional=False: (
+        desktop_gui.TradingRobotGUI._selected_account_id(host, optional)
+    )
+    host._account_scope_display = lambda account_id: (
+        desktop_gui.TradingRobotGUI._account_scope_display(host, account_id)
+    )
+    host._set_account_id_display = lambda account_id=None: (
+        desktop_gui.TradingRobotGUI._set_account_id_display(host, account_id)
+    )
+
+    ordered = [
+        {"id": account_a, "name": "Sandbox A"},
+        {"id": account_b, "name": "Sandbox B"},
+    ]
+    desktop_gui.TradingRobotGUI._set_account_records(host, ordered)
+    assert host.sb_account.get() == ""
+    assert host.sb_account_id_display.get() == "—"
+    assert host._preferred_account_id == ""
+
+    desktop_gui.TradingRobotGUI._set_account_records(host, list(reversed(ordered)))
+    assert host.sb_account.get() == ""
+    assert host.sb_account_id_display.get() == "—"
+    assert host._preferred_account_id == ""
+
+    provider = FakeSecretProvider()
+    errors: list[tuple[str, str]] = []
+    host.secret_provider = provider
+    host.sb_token = Variable("synthetic-token")
+    host.sb_ca_bundle = Variable("")
+    host.sb_initial_rub = Variable("1000000")
+    host.sb_connect_timeout = Variable("8")
+    host.sb_read_timeout = Variable("25")
+    host.sb_status = Variable()
+    host.robot_thread = None
+    host._connection_restart_required = False
+    host._read_client_settings = lambda: (8.0, 25.0)
+    host._persist_connection_credentials = lambda token, account_id: (
+        desktop_gui.TradingRobotGUI._persist_connection_credentials(
+            host,
+            token,
+            account_id,
+        )
+    )
+    host.logger = SimpleNamespace(
+        info=lambda *_args: None,
+        exception=lambda *_args: None,
+    )
+    host._refresh_readiness = lambda: None
+    monkeypatch.setattr(desktop_gui, "ENV_PATH", tmp_path / ".env")
+    monkeypatch.setattr(
+        desktop_gui.messagebox,
+        "showinfo",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        desktop_gui.messagebox,
+        "showerror",
+        lambda title, message, **_kwargs: errors.append((title, message)),
+    )
+
+    desktop_gui.TradingRobotGUI._save_settings_to_env(host)
+
+    assert errors and errors[0][0] == "Нет счёта"
+    assert provider.writes == []
+    assert host._connection_restart_required is False
+
+    host._preferred_account_id = "missing-protected-account"
+    desktop_gui.TradingRobotGUI._set_account_records(host, ordered)
+    assert host.sb_account.get() == ""
+    assert host._preferred_account_id == "missing-protected-account"
+
+    host._preferred_account_id = ""
+    selected_label = next(
+        label
+        for label, account in host.account_records.items()
+        if account["id"] == account_a
+    )
+    host.sb_account.set(selected_label)
+    host._set_account_id_display()
+    assert host._preferred_account_id == account_a
+
+    desktop_gui.TradingRobotGUI._set_account_records(host, list(reversed(ordered)))
+    assert host._selected_account_id() == account_a
+
+    errors.clear()
+    desktop_gui.TradingRobotGUI._save_settings_to_env(host)
+
+    assert errors == []
+    assert provider.get("TBANK_SANDBOX_ACCOUNT_ID") == account_a
+
+
 def test_secure_account_load_keeps_raw_id_out_of_visible_combobox(
     tmp_path, monkeypatch
 ):

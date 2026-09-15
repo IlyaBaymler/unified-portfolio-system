@@ -3204,14 +3204,14 @@ class TradingRobotGUI(tk.Tk):
         self.account_combo["values"] = labels
         if hasattr(self, "diag_account_combo"):
             self.diag_account_combo["values"] = labels
-        requested = self._preferred_account_id or self.sb_account.get().strip()
+        requested = str(self._preferred_account_id or "").strip()
         selected = ""
         if requested:
             for label, account in self.account_records.items():
-                if str(account.get("id")) == requested or label == requested:
+                if str(account.get("id")) == requested:
                     selected = label
                     break
-        if not selected and labels:
+        if not selected and not requested and len(labels) == 1:
             selected = labels[0]
         self.sb_account.set(selected)
         if selected:
