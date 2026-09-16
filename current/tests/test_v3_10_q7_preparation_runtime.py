@@ -18,6 +18,7 @@ from tools import v3_10_runtime_cash_cutover as cutover
 from trading_robot import cash_ledger_opening_reconciliation as cl4
 from trading_robot import secret_provider as secret_provider_module
 from trading_robot.bot import BotConfig
+from trading_robot.broker_read_adapters import BrokerReadReason
 from trading_robot.config_persistence import bot_config_to_profile
 from trading_robot.gui_runtime_controller import (
     CL4MoneyNormalizingTransport,
@@ -1457,6 +1458,140 @@ def test_cl4_opening_dependency_reason_is_finite_and_privacy_safe():
         )
     )
     assert "dependency_reason" not in wrong_stage
+
+
+def test_cl3_sync_observability_is_finite_privacy_safe_and_wired(
+    monkeypatch, tmp_path, capsys
+):
+    tracking_id = "tracking-123"
+    provider_meta = {
+        "service": "SandboxService",
+        "method": "GetSandboxOperationsByCursor",
+        "status_code": None,
+        "error_class": "ConnectTimeout",
+        "transient": True,
+        "attempt_count": 1,
+        "tracking_id": tracking_id,
+        "error": "PRIVATE ERROR TEXT",
+        "authorization": "Bearer PRIVATE_TOKEN",
+        "account_id": "PRIVATE_ACCOUNT_ID",
+        "response_headers": {"private": "value"},
+    }
+
+    class FailingAuthority:
+        def prepare_runtime(self, **_kwargs):
+            raise CL7RuntimeError(
+                CL7RuntimeReason.BROKER_READ_FAILED,
+                BrokerReadReason.TRANSPORT_TIMEOUT.value,
+                stage="CL3_SYNC",
+                retryable=True,
+            )
+
+    runtime = SimpleNamespace(
+        authority=FailingAuthority(),
+        ledger=SimpleNamespace(close=lambda: None),
+        provider=SimpleNamespace(last_response_meta=provider_meta),
+        inputs=dict,
+    )
+    monkeypatch.setattr(cutover, "_open_runtime", lambda *_args, **_kwargs: runtime)
+
+    assert cutover.main(["prepare", "--runtime-dir", str(tmp_path)]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "reason": "BROKER_READ_FAILED",
+        "dependency_reason": "TRANSPORT_TIMEOUT",
+        "retryable": True,
+        "stage": "CL3_SYNC",
+        "status": "BLOCKED",
+        "provider_observability": {
+            "service": "SandboxService",
+            "method": "GetSandboxOperationsByCursor",
+            "status_code": None,
+            "error_class": "ConnectTimeout",
+            "transient": True,
+            "attempt_count": 1,
+            "tracking_id_sha256": sha256(tracking_id.encode("utf-8")).hexdigest(),
+        },
+    }
+    serialized = json.dumps(payload, sort_keys=True)
+    for private_value in (
+        "PRIVATE ERROR TEXT",
+        "PRIVATE_TOKEN",
+        "PRIVATE_ACCOUNT_ID",
+        tracking_id,
+    ):
+        assert private_value not in serialized
+
+
+def test_cl3_sync_observability_rejects_unknown_leaf_and_adversarial_types():
+    class StringSubclass(str):
+        pass
+
+    class IntegerSubclass(int):
+        pass
+
+    class DictSubclass(dict):
+        pass
+
+    finite = CL7RuntimeError(
+        CL7RuntimeReason.BROKER_READ_FAILED,
+        BrokerReadReason.TRANSPORT_CONNECTION_INTERRUPTED.value,
+        stage="CL3_SYNC",
+        retryable=True,
+    )
+    adversarial = cutover._blocked_payload(
+        finite,
+        provider_meta={
+            "service": StringSubclass("SandboxService"),
+            "method": StringSubclass("GetSandboxOperationsByCursor"),
+            "status_code": True,
+            "error_class": StringSubclass("ConnectTimeout"),
+            "transient": IntegerSubclass(1),
+            "attempt_count": True,
+            "tracking_id": StringSubclass("private-tracking-id"),
+        },
+    )
+    assert adversarial["dependency_reason"] == "TRANSPORT_CONNECTION_INTERRUPTED"
+    assert "provider_observability" not in adversarial
+
+    subclass_mapping = cutover._blocked_payload(
+        finite,
+        provider_meta=DictSubclass(
+            service="SandboxService",
+            method="GetSandboxOperationsByCursor",
+        ),
+    )
+    assert "provider_observability" not in subclass_mapping
+
+    unknown = cutover._blocked_payload(
+        CL7RuntimeError(
+            CL7RuntimeReason.BROKER_READ_FAILED,
+            "PRIVATE_CANARY",
+            stage="CL3_SYNC",
+            retryable=True,
+        ),
+        provider_meta={
+            "service": "SandboxService",
+            "method": "GetSandboxOperationsByCursor",
+        },
+    )
+    assert "dependency_reason" not in unknown
+    assert "provider_observability" not in unknown
+
+    wrong_stage = cutover._blocked_payload(
+        CL7RuntimeError(
+            CL7RuntimeReason.BROKER_READ_FAILED,
+            BrokerReadReason.TRANSPORT_TIMEOUT.value,
+            stage="CL4_OPENING",
+            retryable=True,
+        ),
+        provider_meta={
+            "service": "SandboxService",
+            "method": "GetSandboxOperationsByCursor",
+        },
+    )
+    assert "dependency_reason" not in wrong_stage
+    assert "provider_observability" not in wrong_stage
 
 
 def test_provider_to_cl4_money_normalization_is_exact_and_non_mutating():

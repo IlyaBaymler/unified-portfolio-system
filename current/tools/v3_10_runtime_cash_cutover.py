@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -16,7 +17,7 @@ CURRENT = Path(__file__).resolve().parents[1]
 if str(CURRENT) not in sys.path:
     sys.path.insert(0, str(CURRENT))
 
-from trading_robot.broker_read_adapters import TBANK_OPERATION_CODEC
+from trading_robot.broker_read_adapters import TBANK_OPERATION_CODEC, BrokerReadReason
 from trading_robot.cash_ledger_opening_reconciliation import (
     CL4_OPENING_CODEC,
     CL4Reason,
@@ -94,7 +95,55 @@ def _provider(token: str) -> CL4MoneyNormalizingTransport:
     return CL4MoneyNormalizingTransport(TBankSandboxClient(token=token, max_retries=0))
 
 
-def _blocked_payload(exc: CL7RuntimeError) -> dict[str, object]:
+def _safe_cl3_provider_observability(value: object) -> dict[str, object]:
+    if type(value) is not dict:
+        return {}
+    result: dict[str, object] = {}
+    service = value.get("service")
+    if type(service) is str and service == "SandboxService":
+        result["service"] = service
+    method = value.get("method")
+    if type(method) is str and method == "GetSandboxOperationsByCursor":
+        result["method"] = method
+    if "status_code" in value:
+        status_code = value.get("status_code")
+        if status_code is None or (
+            type(status_code) is int and 100 <= status_code <= 599
+        ):
+            result["status_code"] = status_code
+    error_class = value.get("error_class")
+    if (
+        type(error_class) is str
+        and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,95}", error_class) is not None
+    ):
+        result["error_class"] = error_class
+    transient = value.get("transient")
+    if type(transient) is bool:
+        result["transient"] = transient
+    attempt_count = value.get("attempt_count")
+    if type(attempt_count) is int and 1 <= attempt_count <= 1000:
+        result["attempt_count"] = attempt_count
+    if "tracking_id" in value:
+        tracking_id = value.get("tracking_id")
+        if tracking_id is None:
+            result["tracking_id_sha256"] = None
+        elif type(tracking_id) is str and 0 < len(tracking_id) <= 4096:
+            try:
+                tracking_id_bytes = tracking_id.encode("utf-8")
+            except UnicodeEncodeError:
+                pass
+            else:
+                result["tracking_id_sha256"] = hashlib.sha256(
+                    tracking_id_bytes
+                ).hexdigest()
+    return result
+
+
+def _blocked_payload(
+    exc: CL7RuntimeError,
+    *,
+    provider_meta: object = None,
+) -> dict[str, object]:
     payload: dict[str, object] = {
         "reason": exc.reason.value,
         "retryable": exc.retryable,
@@ -107,6 +156,15 @@ def _blocked_payload(exc: CL7RuntimeError) -> dict[str, object]:
         and exc.dependency_reason in {reason.value for reason in CL4Reason}
     ):
         payload["dependency_reason"] = exc.dependency_reason
+    if (
+        exc.reason is CL7RuntimeReason.BROKER_READ_FAILED
+        and exc.stage == "CL3_SYNC"
+        and exc.dependency_reason in {reason.value for reason in BrokerReadReason}
+    ):
+        payload["dependency_reason"] = exc.dependency_reason
+        observability = _safe_cl3_provider_observability(provider_meta)
+        if observability:
+            payload["provider_observability"] = observability
     return payload
 
 
@@ -462,7 +520,13 @@ def main(argv: list[str] | None = None) -> int:
         _print(payload)
         return 0
     except CL7RuntimeError as exc:
-        _print(_blocked_payload(exc))
+        provider_meta: object = None
+        if runtime is not None and runtime.provider is not None:
+            try:
+                provider_meta = runtime.provider.last_response_meta
+            except Exception:  # noqa: BLE001 - privacy-safe observability boundary
+                provider_meta = None
+        _print(_blocked_payload(exc, provider_meta=provider_meta))
         return 2
     except Q7SecretError as exc:
         _print(
