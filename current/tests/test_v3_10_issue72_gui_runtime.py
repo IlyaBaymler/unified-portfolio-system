@@ -109,17 +109,11 @@ CL8_Q7R_IMPLEMENTATION_PATHS = {
 CL8_CLEAN_ACCOUNT_HOTFIX_BRANCH = (
     "agent/v3-10-clean-account-preflight-gui-blocker-hotfix"
 )
-CL8_CLEAN_ACCOUNT_HOTFIX_BASE_BRANCH = (
-    "program/v3-10-v4-stable-line"
-)
+CL8_CLEAN_ACCOUNT_HOTFIX_BASE_BRANCH = "program/v3-10-v4-stable-line"
 CL8_CLEAN_ACCOUNT_HOTFIX_BASE = "ba46b8a2d9933560e0154d62c7f5c98ccf4118db"
 CL8_CLEAN_ACCOUNT_HOTFIX_BASE_TREE = "6ed2c04074632efa1d9ff28d1e427fe26de94959"
-CL8_CLEAN_ACCOUNT_HOTFIX_PARENT = (
-    "38e46a66a65ef3f3ccd723d94131ca8712c40f9e"
-)
-CL8_CLEAN_ACCOUNT_HOTFIX_PARENT_TREE = (
-    "68d5c5bdede419414549c5c3490620edc7aceb12"
-)
+CL8_CLEAN_ACCOUNT_HOTFIX_PARENT = "38e46a66a65ef3f3ccd723d94131ca8712c40f9e"
+CL8_CLEAN_ACCOUNT_HOTFIX_PARENT_TREE = "68d5c5bdede419414549c5c3490620edc7aceb12"
 CL8_CLEAN_ACCOUNT_HOTFIX_PATHS = {
     "current/desktop_gui.py",
     "current/tests/test_v3_10_issue72_gui_runtime.py",
@@ -223,13 +217,12 @@ def test_exact_contract_branch_and_fourteen_path_custody():
             )
         elif pull_request["head"]["ref"] == CL8_CLEAN_ACCOUNT_HOTFIX_BRANCH:
             hotfix_pr = pull_request
-            assert pull_request["base"]["ref"] == (
-                CL8_CLEAN_ACCOUNT_HOTFIX_BASE_BRANCH
-            )
+            assert pull_request["base"]["ref"] == (CL8_CLEAN_ACCOUNT_HOTFIX_BASE_BRANCH)
             assert pull_request["base"]["sha"] == CL8_CLEAN_ACCOUNT_HOTFIX_BASE
-            assert _git(
-                "rev-parse", f"{CL8_CLEAN_ACCOUNT_HOTFIX_BASE}^{{tree}}"
-            ) == CL8_CLEAN_ACCOUNT_HOTFIX_BASE_TREE
+            assert (
+                _git("rev-parse", f"{CL8_CLEAN_ACCOUNT_HOTFIX_BASE}^{{tree}}")
+                == CL8_CLEAN_ACCOUNT_HOTFIX_BASE_TREE
+            )
             head = pull_request["head"]["sha"]
             assert checked_out_head == os.environ.get("GITHUB_SHA")
             parents = _git("show", "-s", "--format=%P", checked_out_head).split()
@@ -238,9 +231,10 @@ def test_exact_contract_branch_and_fourteen_path_custody():
                 "rev-parse", f"{head}^{{tree}}"
             )
     if branch == CL8_Q7R_IMPLEMENTATION_BRANCH or q7r_pr is not None:
-        assert _git(
-            "rev-parse", f"{CL8_Q7R_ACCEPTED_CONTRACT}^{{tree}}"
-        ) == CL8_Q7R_ACCEPTED_CONTRACT_TREE
+        assert (
+            _git("rev-parse", f"{CL8_Q7R_ACCEPTED_CONTRACT}^{{tree}}")
+            == CL8_Q7R_ACCEPTED_CONTRACT_TREE
+        )
         assert _git("merge-base", CL8_Q7R_ACCEPTED_CONTRACT, head) == (
             CL8_Q7R_ACCEPTED_CONTRACT
         )
@@ -264,13 +258,16 @@ def test_exact_contract_branch_and_fourteen_path_custody():
         )
         if q7r_pr is None:
             changed.update(_git("diff", "--name-only").splitlines())
-            changed.update(_git("ls-files", "--others", "--exclude-standard").splitlines())
+            changed.update(
+                _git("ls-files", "--others", "--exclude-standard").splitlines()
+            )
         assert changed == CL8_Q7R_IMPLEMENTATION_PATHS
         return
     if branch == CL8_CLEAN_ACCOUNT_HOTFIX_BRANCH or hotfix_pr is not None:
-        assert _git(
-            "rev-parse", f"{CL8_CLEAN_ACCOUNT_HOTFIX_PARENT}^{{tree}}"
-        ) == CL8_CLEAN_ACCOUNT_HOTFIX_PARENT_TREE
+        assert (
+            _git("rev-parse", f"{CL8_CLEAN_ACCOUNT_HOTFIX_PARENT}^{{tree}}")
+            == CL8_CLEAN_ACCOUNT_HOTFIX_PARENT_TREE
+        )
         assert _git("merge-base", CL8_CLEAN_ACCOUNT_HOTFIX_PARENT, head) == (
             CL8_CLEAN_ACCOUNT_HOTFIX_PARENT
         )

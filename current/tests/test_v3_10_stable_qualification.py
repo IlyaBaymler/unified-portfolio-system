@@ -149,17 +149,11 @@ CL8_Q7R_IMPLEMENTATION_PATHS = {
 CL8_CLEAN_ACCOUNT_HOTFIX_BRANCH = (
     "agent/v3-10-clean-account-preflight-gui-blocker-hotfix"
 )
-CL8_CLEAN_ACCOUNT_HOTFIX_BASE_BRANCH = (
-    "program/v3-10-v4-stable-line"
-)
+CL8_CLEAN_ACCOUNT_HOTFIX_BASE_BRANCH = "program/v3-10-v4-stable-line"
 CL8_CLEAN_ACCOUNT_HOTFIX_BASE = "ba46b8a2d9933560e0154d62c7f5c98ccf4118db"
 CL8_CLEAN_ACCOUNT_HOTFIX_BASE_TREE = "6ed2c04074632efa1d9ff28d1e427fe26de94959"
-CL8_CLEAN_ACCOUNT_HOTFIX_PARENT = (
-    "38e46a66a65ef3f3ccd723d94131ca8712c40f9e"
-)
-CL8_CLEAN_ACCOUNT_HOTFIX_PARENT_TREE = (
-    "68d5c5bdede419414549c5c3490620edc7aceb12"
-)
+CL8_CLEAN_ACCOUNT_HOTFIX_PARENT = "38e46a66a65ef3f3ccd723d94131ca8712c40f9e"
+CL8_CLEAN_ACCOUNT_HOTFIX_PARENT_TREE = "68d5c5bdede419414549c5c3490620edc7aceb12"
 CL8_CLEAN_ACCOUNT_HOTFIX_PATHS = {
     "current/desktop_gui.py",
     "current/tests/test_v3_10_issue72_gui_runtime.py",
@@ -1461,8 +1455,7 @@ def test_v310_cl8_031_036_privacy_scans_and_no_provider_boundary() -> None:
     findings = scan_shareable_bytes(
         {
             "bad.json": (
-                b"Authorization"
-                + b": Bearer synthetic-secret C:\\Users\\person\\data"
+                b"Authorization" + b": Bearer synthetic-secret C:\\Users\\person\\data"
             )
         },
         canaries=("synthetic-secret",),
@@ -1940,8 +1933,7 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
             }
             if base[0] == CL8_Q7R_INTEGRATION_BRANCH:
                 assert (
-                    _git("rev-parse", f"{base[1]}^{{tree}}", text=True)
-                    .stdout.strip()
+                    _git("rev-parse", f"{base[1]}^{{tree}}", text=True).stdout.strip()
                     == CL8_Q7R_INTEGRATION_BASE_TREE
                 )
             head = pull_request["head"]["sha"]
@@ -1952,15 +1944,14 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
             )
             assert parents == [base[1], head]
             assert (
-                _git("rev-parse", f"{checked_out_head}^{{tree}}", text=True)
-                .stdout.strip()
+                _git(
+                    "rev-parse", f"{checked_out_head}^{{tree}}", text=True
+                ).stdout.strip()
                 == _git("rev-parse", f"{head}^{{tree}}", text=True).stdout.strip()
             )
         elif pull_request["head"]["ref"] == CL8_CLEAN_ACCOUNT_HOTFIX_BRANCH:
             hotfix_pr = pull_request
-            assert pull_request["base"]["ref"] == (
-                CL8_CLEAN_ACCOUNT_HOTFIX_BASE_BRANCH
-            )
+            assert pull_request["base"]["ref"] == (CL8_CLEAN_ACCOUNT_HOTFIX_BASE_BRANCH)
             assert pull_request["base"]["sha"] == CL8_CLEAN_ACCOUNT_HOTFIX_BASE
             assert (
                 _git(
@@ -1979,8 +1970,9 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
             )
             assert parents == [CL8_CLEAN_ACCOUNT_HOTFIX_BASE, head]
             assert (
-                _git("rev-parse", f"{checked_out_head}^{{tree}}", text=True)
-                .stdout.strip()
+                _git(
+                    "rev-parse", f"{checked_out_head}^{{tree}}", text=True
+                ).stdout.strip()
                 == _git("rev-parse", f"{head}^{{tree}}", text=True).stdout.strip()
             )
     if branch == CL8_Q7R_IMPLEMENTATION_BRANCH or q7r_pr is not None:
