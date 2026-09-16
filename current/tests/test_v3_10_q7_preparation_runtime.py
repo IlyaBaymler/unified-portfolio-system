@@ -33,6 +33,8 @@ from trading_robot.multi_instrument_config import (
     MultiInstrumentProfile,
     MultiInstrumentProfileStore,
 )
+from trading_robot.portfolio_model import PortfolioState
+from trading_robot.reporting_risk_cash_context import RiskCashContextReason
 from trading_robot.runtime_cash_authority import (
     CL7RuntimeError,
     CL7RuntimeReason,
@@ -1458,6 +1460,215 @@ def test_cl4_opening_dependency_reason_is_finite_and_privacy_safe():
         )
     )
     assert "dependency_reason" not in wrong_stage
+
+
+def test_cl6_context_dependency_reason_is_finite_and_privacy_safe():
+    for reason in RiskCashContextReason:
+        payload = cutover._blocked_payload(
+            CL7RuntimeError(
+                CL7RuntimeReason.CONTEXT_BLOCKED,
+                reason.value,
+                stage="CL6_CONTEXT",
+            )
+        )
+        if reason is RiskCashContextReason.READY:
+            assert "dependency_reason" not in payload
+        else:
+            assert payload["dependency_reason"] == reason.value
+
+    for dependency_reason, stage in (
+        ("PRIVATE_ACCOUNT_CANARY", "CL6_CONTEXT"),
+        (RiskCashContextReason.PORTFOLIO_NOT_READY.value, "CL4_OPENING"),
+    ):
+        payload = cutover._blocked_payload(
+            CL7RuntimeError(
+                CL7RuntimeReason.CONTEXT_BLOCKED,
+                dependency_reason,
+                stage=stage,
+            )
+        )
+        assert "dependency_reason" not in payload
+
+
+def test_cl6_context_dependency_reason_is_wired_to_cli_evidence(
+    monkeypatch, tmp_path, capsys
+):
+    class FailingAuthority:
+        def prepare_runtime(self, **_kwargs):
+            raise CL7RuntimeError(
+                CL7RuntimeReason.CONTEXT_BLOCKED,
+                RiskCashContextReason.PORTFOLIO_STALE.value,
+                stage="CL6_CONTEXT",
+            )
+
+    runtime = SimpleNamespace(
+        authority=FailingAuthority(),
+        ledger=SimpleNamespace(close=lambda: None),
+        provider=SimpleNamespace(last_response_meta={"private": "PRIVATE_CANARY"}),
+        inputs=dict,
+    )
+    monkeypatch.setattr(cutover, "_open_runtime", lambda *_args, **_kwargs: runtime)
+
+    assert cutover.main(["prepare", "--runtime-dir", str(tmp_path)]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "reason": "CONTEXT_BLOCKED",
+        "dependency_reason": "PORTFOLIO_STALE",
+        "retryable": False,
+        "stage": "CL6_CONTEXT",
+        "status": "BLOCKED",
+    }
+    assert "PRIVATE_CANARY" not in json.dumps(payload, sort_keys=True)
+
+
+def test_cutover_inputs_refresh_canonical_portfolio_before_exact_read_back():
+    events = []
+    state = PortfolioState.empty(
+        account_id=ACCOUNT,
+        now="2026-09-16T00:00:00+00:00",
+    )
+
+    class Manager:
+        def refresh(self, *, record_event):
+            events.append(("refresh", record_event))
+            return state
+
+    class Repository:
+        def load(self, *, expected_account_id):
+            events.append(("read_back", expected_account_id))
+            return state
+
+    repository = Repository()
+    runtime = cutover._Runtime(
+        root=Path("synthetic"),
+        authority=SimpleNamespace(),
+        ledger=SimpleNamespace(),
+        portfolio=repository,
+        profiles=SimpleNamespace(),
+        risk_state=SimpleNamespace(),
+        central=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        portfolio_manager=Manager(),
+        raw_account=ACCOUNT,
+        identity_key=b"k" * 32,
+        identity_key_id="Q7R_TEST_V1",
+    )
+
+    inputs = runtime.inputs()
+
+    assert events == [("refresh", False), ("read_back", ACCOUNT)]
+    assert inputs["portfolio_repository"] is repository
+
+
+@pytest.mark.parametrize("failure", ["refresh", "read_back", "mismatch"])
+def test_cutover_inputs_fail_closed_when_canonical_refresh_is_not_exact(failure):
+    published = PortfolioState.empty(
+        account_id=ACCOUNT,
+        now="2026-09-16T00:00:00+00:00",
+    )
+    different = PortfolioState.empty(
+        account_id=ACCOUNT,
+        now="2026-09-16T00:00:01+00:00",
+    )
+
+    class Manager:
+        def refresh(self, *, record_event):
+            assert record_event is False
+            if failure == "refresh":
+                raise RuntimeError("PRIVATE_REFRESH_CANARY")
+            return published
+
+    class Repository:
+        def load(self, *, expected_account_id):
+            assert expected_account_id == ACCOUNT
+            if failure == "read_back":
+                raise RuntimeError("PRIVATE_READ_BACK_CANARY")
+            return different if failure == "mismatch" else published
+
+    runtime = cutover._Runtime(
+        root=Path("synthetic"),
+        authority=SimpleNamespace(),
+        ledger=SimpleNamespace(),
+        portfolio=Repository(),
+        profiles=SimpleNamespace(),
+        risk_state=SimpleNamespace(),
+        central=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        portfolio_manager=Manager(),
+        raw_account=ACCOUNT,
+        identity_key=b"k" * 32,
+        identity_key_id="Q7R_TEST_V1",
+    )
+
+    with pytest.raises(CL7RuntimeError) as caught:
+        runtime.inputs()
+
+    assert caught.value.reason is CL7RuntimeReason.CONTEXT_BLOCKED
+    assert caught.value.stage == "CL6_CONTEXT"
+    assert (
+        caught.value.dependency_reason
+        == RiskCashContextReason.PORTFOLIO_NOT_READY.value
+    )
+    assert "PRIVATE" not in str(caught.value)
+
+
+def test_open_runtime_composes_existing_canonical_portfolio_owner(
+    monkeypatch, tmp_path
+):
+    captured = {}
+    provider = SimpleNamespace()
+    repository = SimpleNamespace()
+
+    class Manager:
+        def __init__(
+            self,
+            selected_provider,
+            account_id,
+            *,
+            robot_state_file,
+            portfolio_state_file,
+            journal_file,
+        ):
+            captured.update(
+                provider=selected_provider,
+                account_id=account_id,
+                robot_state_file=robot_state_file,
+                portfolio_state_file=portfolio_state_file,
+                journal_file=journal_file,
+            )
+            self.repository = repository
+
+    monkeypatch.setattr(cutover, "CanonicalPortfolioManager", Manager)
+    monkeypatch.setattr(cutover, "_provider", lambda token: provider)
+    monkeypatch.setattr(
+        cutover,
+        "resolve_q7_protected_secrets",
+        lambda **_kwargs: SimpleNamespace(
+            token="PRIVATE_TOKEN",
+            account_id=ACCOUNT,
+            identity_key=b"k" * 32,
+            identity_key_id="Q7R_TEST_V1",
+        ),
+    )
+
+    runtime = cutover._open_runtime(
+        tmp_path,
+        create_ledger=True,
+        require_provider=True,
+    )
+    try:
+        assert runtime.provider is provider
+        assert runtime.portfolio_manager.__class__ is Manager
+        assert runtime.portfolio is repository
+        assert captured == {
+            "provider": provider,
+            "account_id": ACCOUNT,
+            "robot_state_file": tmp_path / "robot_state.json",
+            "portfolio_state_file": tmp_path / "portfolio_state.json",
+            "journal_file": tmp_path / "trading_events.db",
+        }
+    finally:
+        runtime.ledger.close()
 
 
 def test_cl3_sync_observability_is_finite_privacy_safe_and_wired(

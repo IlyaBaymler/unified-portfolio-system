@@ -28,8 +28,11 @@ from trading_robot.central_order_manager import (
     CentralOrderStore,
 )
 from trading_robot.gui_runtime_controller import CL4MoneyNormalizingTransport
+from trading_robot.portfolio_manager import CanonicalPortfolioManager
+from trading_robot.portfolio_model import PortfolioState
 from trading_robot.portfolio_repository import PortfolioRepository
 from trading_robot.portfolio_risk_runtime import PortfolioRiskRuntime
+from trading_robot.reporting_risk_cash_context import RiskCashContextReason
 from trading_robot.risk_persistence import RiskProfileStore, RiskStateStore
 from trading_robot.risk_runtime import RiskRuntimeAdapter
 from trading_robot.runtime_cash_authority import (
@@ -230,6 +233,17 @@ def _blocked_payload(
         observability = _safe_cl3_provider_observability(provider_meta)
         if observability:
             payload["provider_observability"] = observability
+    if (
+        exc.reason is CL7RuntimeReason.CONTEXT_BLOCKED
+        and exc.stage == "CL6_CONTEXT"
+        and exc.dependency_reason
+        in {
+            reason.value
+            for reason in RiskCashContextReason
+            if reason is not RiskCashContextReason.READY
+        }
+    ):
+        payload["dependency_reason"] = exc.dependency_reason
     return payload
 
 
@@ -243,15 +257,35 @@ class _Runtime:
     risk_state: RiskStateStore
     central: CentralOrderManager
     provider: CL4MoneyNormalizingTransport | None
+    portfolio_manager: CanonicalPortfolioManager | None
     raw_account: str
     identity_key: bytes
     identity_key_id: str
 
     def inputs(self) -> dict[str, Any]:
-        if self.provider is None:
+        if self.provider is None or self.portfolio_manager is None:
             raise CL7RuntimeError(
                 CL7RuntimeReason.BROKER_READ_FAILED,
                 stage="PROVIDER_CREDENTIALS",
+            )
+        try:
+            published = self.portfolio_manager.refresh(record_event=False)
+            read_back = self.portfolio.load(expected_account_id=self.raw_account)
+        except Exception:
+            raise CL7RuntimeError(
+                CL7RuntimeReason.CONTEXT_BLOCKED,
+                RiskCashContextReason.PORTFOLIO_NOT_READY.value,
+                stage="CL6_CONTEXT",
+            ) from None
+        if (
+            type(published) is not PortfolioState
+            or type(read_back) is not PortfolioState
+            or published.to_dict() != read_back.to_dict()
+        ):
+            raise CL7RuntimeError(
+                CL7RuntimeReason.CONTEXT_BLOCKED,
+                RiskCashContextReason.PORTFOLIO_NOT_READY.value,
+                stage="CL6_CONTEXT",
             )
         return {
             "ledger_store": self.ledger,
@@ -332,15 +366,32 @@ def _open_runtime(
         CentralOrderStore(selected / "central_order_state.json"),
         account_id=raw_account,
     )
+    provider = _provider(resolved.token) if require_provider else None
+    portfolio_manager = (
+        CanonicalPortfolioManager(
+            provider,
+            raw_account,
+            robot_state_file=selected / "robot_state.json",
+            portfolio_state_file=selected / "portfolio_state.json",
+            journal_file=selected / "trading_events.db",
+        )
+        if provider is not None
+        else None
+    )
     return _Runtime(
         root=selected,
         authority=authority,
         ledger=ledger,
-        portfolio=PortfolioRepository(selected / "portfolio_state.json"),
+        portfolio=(
+            portfolio_manager.repository
+            if portfolio_manager is not None
+            else PortfolioRepository(selected / "portfolio_state.json")
+        ),
         profiles=profiles,
         risk_state=risk_state,
         central=central,
-        provider=_provider(resolved.token) if require_provider else None,
+        provider=provider,
+        portfolio_manager=portfolio_manager,
         raw_account=raw_account,
         identity_key=key,
         identity_key_id=key_id,
