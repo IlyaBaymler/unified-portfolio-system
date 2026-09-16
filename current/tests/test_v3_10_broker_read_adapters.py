@@ -648,6 +648,54 @@ def test_v310_cl3_11_retry_status_and_backoff() -> None:
         cl3.collect_tbank_operations(request)
         assert waits == [3]
         assert [call[1] for call in transport.calls] == [10, 10]
+
+    provider_time = cl3.BrokerTransportFailure(
+        cl3.BrokerTransportFailureKind.REQUEST_TIME_NOT_REACHED
+    )
+    transport = _Transport([provider_time, _KNOWN["response"]])
+    waits = []
+    batch = cl3.collect_tbank_operations(
+        _request(
+            transport=transport,
+            wait=waits.append,
+            clock=_Clock([0, 1, 2]),
+            absolute_deadline_ns=60_000_000_000,
+            retry_policy=cl3.RetryPolicy(3, 10_000_000_000, (100_000_000, 500_000_000)),
+        )
+    )
+    assert batch.watermark.from_inclusive == _KNOWN["request"]["from_inclusive"]
+    assert waits == [100_000_000]
+    assert len(transport.calls) == 2
+    assert transport.calls[0][0] == transport.calls[1][0]
+    assert transport.calls[0][1] == transport.calls[1][1] == 10_000_000_000
+
+    exhausted_provider_time = _Transport(
+        [provider_time, provider_time, provider_time]
+    )
+    waits = []
+    exhausted_error = _error(
+        lambda: cl3.collect_tbank_operations(
+            _request(
+                transport=exhausted_provider_time,
+                wait=waits.append,
+                clock=_Clock([0, 1, 2, 3, 4]),
+                absolute_deadline_ns=60_000_000_000,
+                retry_policy=cl3.RetryPolicy(
+                    3,
+                    10_000_000_000,
+                    (100_000_000, 500_000_000),
+                ),
+            )
+        ),
+        cl3.BrokerReadReason.TRANSPORT_HTTP_RETRY_EXHAUSTED,
+    )
+    assert exhausted_error.evidence["attempt_no"] == 3
+    assert waits == [100_000_000, 500_000_000]
+    assert len(exhausted_provider_time.calls) == 3
+    assert all(
+        call[0] == exhausted_provider_time.calls[0][0]
+        for call in exhausted_provider_time.calls
+    )
     for kind, reason in (
         (
             cl3.BrokerTransportFailureKind.TIMEOUT,
@@ -919,8 +967,15 @@ def test_request_payload_and_policy_validation() -> None:
 
 def test_transport_failure_shape() -> None:
     timeout = cl3.BrokerTransportFailure(cl3.BrokerTransportFailureKind.TIMEOUT)
+    provider_time = cl3.BrokerTransportFailure(
+        cl3.BrokerTransportFailureKind.REQUEST_TIME_NOT_REACHED
+    )
     status = cl3.BrokerTransportFailure(cl3.BrokerTransportFailureKind.HTTP_STATUS, 503)
     assert str(timeout) == "TIMEOUT" and "503" not in repr(timeout)
+    assert str(provider_time) == "REQUEST_TIME_NOT_REACHED"
+    assert repr(provider_time) == (
+        "BrokerTransportFailure(kind='REQUEST_TIME_NOT_REACHED')"
+    )
     assert (
         str(status) == "HTTP_STATUS:503"
         and repr(status)
@@ -928,6 +983,13 @@ def test_transport_failure_shape() -> None:
     )
     _error(
         lambda: cl3.BrokerTransportFailure(cl3.BrokerTransportFailureKind.TIMEOUT, 500),
+        cl3.BrokerReadReason.CONFIGURATION_INVALID,
+    )
+    _error(
+        lambda: cl3.BrokerTransportFailure(
+            cl3.BrokerTransportFailureKind.REQUEST_TIME_NOT_REACHED,
+            400,
+        ),
         cl3.BrokerReadReason.CONFIGURATION_INVALID,
     )
     _error(

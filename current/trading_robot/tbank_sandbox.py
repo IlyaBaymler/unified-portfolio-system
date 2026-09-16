@@ -1057,12 +1057,13 @@ class TBankSandboxClient:
             )
         except TBankAPIError as exc:
             meta = dict(self._last_response_meta)
-            if (
+            exact_cursor_method = (
                 type(meta.get("service")) is str
                 and meta.get("service") == "SandboxService"
                 and type(meta.get("method")) is str
                 and meta.get("method") == "GetSandboxOperationsByCursor"
-            ):
+            )
+            if exact_cursor_method:
                 meta.update(boundary)
                 meta.update(_safe_provider_error_identity(exc.status_code, exc.details))
                 self._last_response_meta = meta
@@ -1071,6 +1072,18 @@ class TBankSandboxClient:
                 BrokerTransportFailureKind,
             )
 
+            if (
+                exact_cursor_method
+                and type(exc.status_code) is int
+                and exc.status_code == 400
+                and frozenset(boundary)
+                == {"request_from_inclusive", "request_to_exclusive"}
+                and type(meta.get("provider_error_code")) is str
+                and meta.get("provider_error_code") == "30070"
+            ):
+                raise BrokerTransportFailure(
+                    BrokerTransportFailureKind.REQUEST_TIME_NOT_REACHED
+                ) from None
             if exc.status_code is not None:
                 raise BrokerTransportFailure(
                     BrokerTransportFailureKind.HTTP_STATUS,

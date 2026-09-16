@@ -173,6 +173,7 @@ class BrokerReadError(RuntimeError):
 class BrokerTransportFailureKind(_StrEnum):
     TIMEOUT = "TIMEOUT"
     CONNECTION_INTERRUPTED = "CONNECTION_INTERRUPTED"
+    REQUEST_TIME_NOT_REACHED = "REQUEST_TIME_NOT_REACHED"
     HTTP_STATUS = "HTTP_STATUS"
 
 
@@ -1166,14 +1167,21 @@ def _terminal_transport_reason(failure: BrokerTransportFailure) -> BrokerReadRea
         return BrokerReadReason.TRANSPORT_TIMEOUT
     if failure.kind is BrokerTransportFailureKind.CONNECTION_INTERRUPTED:
         return BrokerReadReason.TRANSPORT_CONNECTION_INTERRUPTED
+    if failure.kind is BrokerTransportFailureKind.REQUEST_TIME_NOT_REACHED:
+        return BrokerReadReason.TRANSPORT_HTTP_RETRY_EXHAUSTED
     if failure.http_status in _RETRYABLE_HTTP:
         return BrokerReadReason.TRANSPORT_HTTP_RETRY_EXHAUSTED
     return BrokerReadReason.TRANSPORT_HTTP_PERMANENT
 
 
 def _transport_is_retryable(failure: BrokerTransportFailure) -> bool:
-    return failure.kind is not BrokerTransportFailureKind.HTTP_STATUS or (
-        failure.http_status in _RETRYABLE_HTTP
+    return failure.kind in {
+        BrokerTransportFailureKind.TIMEOUT,
+        BrokerTransportFailureKind.CONNECTION_INTERRUPTED,
+        BrokerTransportFailureKind.REQUEST_TIME_NOT_REACHED,
+    } or (
+        failure.kind is BrokerTransportFailureKind.HTTP_STATUS
+        and failure.http_status in _RETRYABLE_HTTP
     )
 
 

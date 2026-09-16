@@ -15,6 +15,7 @@ from dotenv import dotenv_values
 import desktop_gui
 from tools import v3_10_q7_prepare_runtime as q7
 from tools import v3_10_runtime_cash_cutover as cutover
+from trading_robot import broker_read_adapters as cl3
 from trading_robot import cash_ledger_opening_reconciliation as cl4
 from trading_robot import secret_provider as secret_provider_module
 from trading_robot.bot import BotConfig
@@ -46,6 +47,7 @@ from trading_robot.secret_provider import (
     provision_q7_identity,
     resolve_q7_protected_secrets,
 )
+from trading_robot.tbank_sandbox import TBankSandboxClient
 
 ROOT = Path(__file__).resolve().parents[2]
 CURRENT = ROOT / "current"
@@ -1923,6 +1925,97 @@ def test_cl3_sync_observability_requires_exact_service_method_pair(provider_meta
     assert "provider_observability" not in payload
     serialized = json.dumps(payload, sort_keys=True)
     assert "tracking-id" not in serialized
+
+
+@pytest.mark.parametrize("exhausted", [False, True], ids=("recovers", "exhausted"))
+def test_stage_b_cl3_transport_retries_only_exact_30070_without_effects(
+    monkeypatch,
+    exhausted,
+):
+    class Response:
+        def __init__(self, *, ok, status_code, payload):
+            self.ok = ok
+            self.status_code = status_code
+            self.payload = payload
+            self.headers = {}
+            self.history = ()
+            self.text = "PRIVATE_PROVIDER_TEXT"
+
+        def json(self):
+            return self.payload
+
+    failures = 3 if exhausted else 1
+    outcomes = [
+        Response(
+            ok=False,
+            status_code=400,
+            payload={"message": "30070", "description": "PRIVATE_DESCRIPTION"},
+        )
+        for _ in range(failures)
+    ]
+    if not exhausted:
+        outcomes.append(
+            Response(
+                ok=True,
+                status_code=200,
+                payload={"hasNext": False, "items": [], "nextCursor": ""},
+            )
+        )
+    calls = []
+
+    def post(url, **options):
+        calls.append((url, json.loads(json.dumps(options["json"]))))
+        return outcomes.pop(0)
+
+    client = TBankSandboxClient("dummy-token", max_retries=0)
+    monkeypatch.setattr(client._session, "post", post)
+    monotonic_values = iter([0, 1, 2, 3, 4])
+    waits = []
+    effects = []
+    request = cl3.BrokerReadRequest(
+        environment=cl3.BrokerEnvironment.SANDBOX,
+        raw_account_id=ACCOUNT,
+        identity_key=b"k" * 32,
+        identity_key_id="CL8_Q7_30070_TEST",
+        from_inclusive="2026-09-16T19:39:41.218912001Z",
+        to_exclusive="2026-09-16T19:39:41.295448000Z",
+        limit=1000,
+        max_pages=1,
+        max_items=1,
+        absolute_deadline_ns=60_000_000_000,
+        retry_policy=cl3.RetryPolicy(
+            max_attempts=3,
+            per_attempt_timeout_ns=10_000_000_000,
+            backoff_ns=(100_000_000, 500_000_000),
+        ),
+        transport=client.get_operations_by_cursor_once,
+        monotonic_ns=lambda: next(monotonic_values),
+        wait_ns=waits.append,
+    )
+    try:
+        if exhausted:
+            with pytest.raises(cl3.BrokerReadError) as captured:
+                cl3.collect_tbank_operations(request)
+            assert (
+                captured.value.reason
+                is cl3.BrokerReadReason.TRANSPORT_HTTP_RETRY_EXHAUSTED
+            )
+            assert effects == []
+            assert waits == [100_000_000, 500_000_000]
+        else:
+            batch = cl3.collect_tbank_operations(request)
+            effects.append(batch.watermark.to_exclusive)
+            assert effects == ["2026-09-16T19:39:41.295448000Z"]
+            assert waits == [100_000_000]
+        expected_calls = 3 if exhausted else 2
+        assert len(calls) == expected_calls
+        assert all(call[1] == calls[0][1] for call in calls)
+        assert all(
+            call[0].endswith("/GetSandboxOperationsByCursor") for call in calls
+        )
+        assert all("PostSandboxOrder" not in call[0] for call in calls)
+    finally:
+        client.close()
 
 
 def test_provider_to_cl4_money_normalization_is_exact_and_non_mutating():

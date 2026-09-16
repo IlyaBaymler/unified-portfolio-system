@@ -6,7 +6,10 @@ import pandas as pd
 import pytest
 import requests
 
-from trading_robot.broker_read_adapters import BrokerTransportFailure
+from trading_robot.broker_read_adapters import (
+    BrokerTransportFailure,
+    BrokerTransportFailureKind,
+)
 from trading_robot.tbank_sandbox import (
     TBankAPIError,
     TBankSandboxClient,
@@ -363,8 +366,10 @@ def test_cursor_http_error_preserves_only_finite_identity_and_exact_boundary(
         "withoutTrades": False,
     }
     try:
-        with pytest.raises(BrokerTransportFailure):
+        with pytest.raises(BrokerTransportFailure) as captured:
             client.get_operations_by_cursor_once(payload, 10_000_000_000)
+        assert captured.value.kind is BrokerTransportFailureKind.HTTP_STATUS
+        assert captured.value.http_status == 400
         assert client.last_response_meta["provider_error_code"] == "30014"
         assert (
             client.last_response_meta["provider_error_category"] == "REQUEST_REJECTED"
@@ -389,6 +394,7 @@ def test_cursor_http_error_preserves_only_finite_identity_and_exact_boundary(
     [
         {"message": "PRIVATE_TEXT", "description": "PRIVATE_DESCRIPTION"},
         {"message": type("StringSubclass", (str,), {})("30014")},
+        {"message": type("StringSubclass", (str,), {})("30070")},
         {"code": True},
         ["30014"],
     ],
@@ -410,7 +416,7 @@ def test_cursor_error_identity_falls_back_without_copying_untrusted_details(
     client = TBankSandboxClient("dummy-token", max_retries=0)
     monkeypatch.setattr(client._session, "post", lambda *_args, **_kwargs: Response())
     try:
-        with pytest.raises(BrokerTransportFailure):
+        with pytest.raises(BrokerTransportFailure) as captured:
             client.get_operations_by_cursor_once(
                 {
                     "accountId": "PRIVATE_ACCOUNT_ID",
@@ -419,6 +425,8 @@ def test_cursor_error_identity_falls_back_without_copying_untrusted_details(
                 },
                 10_000_000_000,
             )
+        assert captured.value.kind is BrokerTransportFailureKind.HTTP_STATUS
+        assert captured.value.http_status == 400
         assert client.last_response_meta["provider_error_code"] == "HTTP_400"
         assert (
             client.last_response_meta["provider_error_category"] == "REQUEST_REJECTED"
@@ -428,6 +436,102 @@ def test_cursor_error_identity_falls_back_without_copying_untrusted_details(
         serialized = json.dumps(client.last_response_meta)
         assert "PRIVATE_" not in serialized
         assert "30014" not in serialized
+        assert "30070" not in serialized
+    finally:
+        client.close()
+
+
+def test_cursor_30070_is_the_only_provider_time_retry_signal(monkeypatch):
+    class Response:
+        ok = False
+        status_code = 400
+        headers: ClassVar[dict[str, str]] = {}
+        history = ()
+        text = "PRIVATE_RESPONSE_TEXT"
+
+        @staticmethod
+        def json():
+            return {"message": "30070", "description": "PRIVATE_DESCRIPTION"}
+
+    payload = {
+        "accountId": "PRIVATE_ACCOUNT_ID",
+        "cursor": "",
+        "from": "2026-09-16T16:39:11.459527001Z",
+        "limit": 1000,
+        "operationTypes": [],
+        "state": "OPERATION_STATE_UNSPECIFIED",
+        "to": "2026-09-16T16:39:11.545931000Z",
+        "withoutCommissions": False,
+        "withoutOvernights": False,
+        "withoutTrades": False,
+    }
+    client = TBankSandboxClient("dummy-token", max_retries=0)
+    monkeypatch.setattr(client._session, "post", lambda *_args, **_kwargs: Response())
+    try:
+        with pytest.raises(BrokerTransportFailure) as captured:
+            client.get_operations_by_cursor_once(payload, 10_000_000_000)
+        assert (
+            captured.value.kind
+            is BrokerTransportFailureKind.REQUEST_TIME_NOT_REACHED
+        )
+        assert captured.value.http_status is None
+        assert client.last_response_meta["provider_error_code"] == "30070"
+        assert (
+            client.last_response_meta["request_from_inclusive"]
+            == payload["from"]
+        )
+        assert client.last_response_meta["request_to_exclusive"] == payload["to"]
+        serialized = json.dumps(client.last_response_meta, sort_keys=True)
+        assert "PRIVATE_RESPONSE_TEXT" not in serialized
+        assert "PRIVATE_DESCRIPTION" not in serialized
+        assert "PRIVATE_ACCOUNT_ID" not in serialized
+
+        with pytest.raises(BrokerTransportFailure) as missing_boundary:
+            client.get_operations_by_cursor_once(
+                {"accountId": "PRIVATE_ACCOUNT_ID"},
+                10_000_000_000,
+            )
+        assert missing_boundary.value.kind is BrokerTransportFailureKind.HTTP_STATUS
+        assert missing_boundary.value.http_status == 400
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    ("service", "method"),
+    [
+        ("OtherService", "GetSandboxOperationsByCursor"),
+        ("SandboxService", "GetSandboxPortfolio"),
+        ("SandboxService", None),
+    ],
+)
+def test_cursor_30070_requires_exact_service_and_method(monkeypatch, service, method):
+    client = TBankSandboxClient("dummy-token", max_retries=0)
+
+    def fail(self, *_args, **_kwargs):
+        assert self is client
+        client._last_response_meta = {"service": service}
+        if method is not None:
+            client._last_response_meta["method"] = method
+        raise TBankAPIError(
+            "PRIVATE_PROVIDER_TEXT",
+            status_code=400,
+            details={"message": "30070"},
+        )
+
+    monkeypatch.setattr(TBankSandboxClient, "_post", fail)
+    try:
+        with pytest.raises(BrokerTransportFailure) as captured:
+            client.get_operations_by_cursor_once(
+                {
+                    "accountId": "PRIVATE_ACCOUNT_ID",
+                    "from": "2026-09-16T16:39:11.459527001Z",
+                    "to": "2026-09-16T16:39:11.545931000Z",
+                },
+                10_000_000_000,
+            )
+        assert captured.value.kind is BrokerTransportFailureKind.HTTP_STATUS
+        assert captured.value.http_status == 400
     finally:
         client.close()
 
