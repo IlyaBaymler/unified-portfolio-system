@@ -107,6 +107,8 @@ class CL7RuntimeError(RuntimeError):
         *,
         stage: str | None = None,
         retryable: bool = False,
+        availability_status: str | None = None,
+        availability_reason: str | None = None,
     ) -> None:
         if type(reason) is not CL7RuntimeReason:
             raise TypeError("reason must be CL7RuntimeReason")
@@ -114,6 +116,8 @@ class CL7RuntimeError(RuntimeError):
         self.dependency_reason = _safe_token(dependency_reason)
         self.stage = _safe_token(stage)
         self.retryable = bool(retryable)
+        self.availability_status = _safe_exact_token(availability_status)
+        self.availability_reason = _safe_exact_token(availability_reason)
         super().__init__(reason.value)
 
     def __str__(self) -> str:
@@ -131,12 +135,16 @@ def _fail(
     *,
     stage: str | None = None,
     retryable: bool = False,
+    availability_status: str | None = None,
+    availability_reason: str | None = None,
 ) -> None:
     raise CL7RuntimeError(
         reason,
         dependency_reason,
         stage=stage,
         retryable=retryable,
+        availability_status=availability_status,
+        availability_reason=availability_reason,
     ) from None
 
 
@@ -145,6 +153,22 @@ def _safe_token(value: object) -> str | None:
         return None
     text = str(value)
     return text if re.fullmatch(r"[A-Z0-9_]{1,96}", text) else None
+
+
+def _safe_exact_token(value: object) -> str | None:
+    if type(value) is not str:
+        return None
+    return value if re.fullmatch(r"[A-Z0-9_]{1,96}", value) else None
+
+
+def _fail_context_not_ready(context: object) -> None:
+    _fail(
+        CL7RuntimeReason.CONTEXT_BLOCKED,
+        getattr(getattr(context, "reason", None), "value", None),
+        stage="CL6_CONTEXT",
+        availability_status=getattr(context, "availability_status", None),
+        availability_reason=getattr(context, "availability_reason", None),
+    )
 
 
 def _plain_int(value: object, reason: CL7RuntimeReason) -> int:
@@ -1236,11 +1260,7 @@ class RuntimeCashAuthorityManager:
         except Exception:
             _fail(CL7RuntimeReason.INTERNAL_BOUNDARY_FAILED, stage="EVIDENCE_BUILD")
         if require_ready and getattr(getattr(context, "status", None), "value", None) != "READY_FOR_LOCKED_REVALIDATION":
-            _fail(
-                CL7RuntimeReason.CONTEXT_BLOCKED,
-                getattr(getattr(context, "reason", None), "value", None),
-                stage="CL6_CONTEXT",
-            )
+            _fail_context_not_ready(context)
         snapshot = ledger_store.snapshot()
         if (
             context.ledger_revision != snapshot.ledger_revision

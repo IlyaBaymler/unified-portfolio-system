@@ -16,7 +16,9 @@ import desktop_gui
 from tools import v3_10_q7_prepare_runtime as q7
 from tools import v3_10_runtime_cash_cutover as cutover
 from trading_robot import broker_read_adapters as cl3
+from trading_robot import cash_availability as cl5
 from trading_robot import cash_ledger_opening_reconciliation as cl4
+from trading_robot import runtime_cash_authority as cl7
 from trading_robot import secret_provider as secret_provider_module
 from trading_robot.bot import BotConfig
 from trading_robot.broker_read_adapters import BrokerReadReason
@@ -1492,6 +1494,174 @@ def test_cl6_context_dependency_reason_is_finite_and_privacy_safe():
         assert "dependency_reason" not in payload
 
 
+@pytest.mark.parametrize(
+    "status,reason",
+    [
+        (cl5.AvailabilityStatus.BLOCKED, cl5.AvailabilityReason.CL4_NOT_READY),
+        (
+            cl5.AvailabilityStatus.BLOCKED,
+            cl5.AvailabilityReason.BROKER_PROOF_STALE,
+        ),
+        (
+            cl5.AvailabilityStatus.BLOCKED,
+            cl5.AvailabilityReason.CENTRAL_PROJECTION_STALE,
+        ),
+        (
+            cl5.AvailabilityStatus.BLOCKED,
+            cl5.AvailabilityReason.MIXED_EVIDENCE_SNAPSHOT,
+        ),
+        (
+            cl5.AvailabilityStatus.BLOCKED,
+            cl5.AvailabilityReason.BROKER_VIEW_MISMATCH,
+        ),
+        (
+            cl5.AvailabilityStatus.BLOCKED,
+            cl5.AvailabilityReason.FOREIGN_CASH_PRESENT,
+        ),
+        (
+            cl5.AvailabilityStatus.BLOCKED,
+            cl5.AvailabilityReason.INSUFFICIENT_AFTER_RESERVATIONS,
+        ),
+        (
+            cl5.AvailabilityStatus.MANUAL_REVIEW_REQUIRED,
+            cl5.AvailabilityReason.CENTRAL_PROVIDER_OVERLAP_UNKNOWN,
+        ),
+    ],
+)
+def test_cl5_availability_observability_is_finite_and_pair_bound(status, reason):
+    payload = cutover._blocked_payload(
+        CL7RuntimeError(
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            stage="CL6_CONTEXT",
+            availability_status=status.value,
+            availability_reason=reason.value,
+        )
+    )
+    assert payload["availability_status"] == status.value
+    assert payload["availability_reason"] == reason.value
+
+
+@pytest.mark.parametrize(
+    "outer_reason,dependency_reason,stage,status,reason",
+    [
+        (
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            "CL6_CONTEXT",
+            cl5.AvailabilityStatus.READY.value,
+            cl5.AvailabilityReason.READY.value,
+        ),
+        (
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            "CL6_CONTEXT",
+            cl5.AvailabilityStatus.BLOCKED.value,
+            cl5.AvailabilityReason.CENTRAL_PROVIDER_OVERLAP_UNKNOWN.value,
+        ),
+        (
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.PORTFOLIO_NOT_READY.value,
+            "CL6_CONTEXT",
+            cl5.AvailabilityStatus.BLOCKED.value,
+            cl5.AvailabilityReason.CL4_NOT_READY.value,
+        ),
+        (
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            "CL5_AVAILABILITY",
+            cl5.AvailabilityStatus.BLOCKED.value,
+            cl5.AvailabilityReason.CL4_NOT_READY.value,
+        ),
+        (
+            CL7RuntimeReason.INTERNAL_BOUNDARY_FAILED,
+            RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            "CL6_CONTEXT",
+            cl5.AvailabilityStatus.BLOCKED.value,
+            cl5.AvailabilityReason.CL4_NOT_READY.value,
+        ),
+        (
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            "CL6_CONTEXT",
+            "PRIVATE_STATUS_CANARY",
+            "PRIVATE_REASON_CANARY",
+        ),
+    ],
+)
+def test_cl5_availability_observability_fails_closed_outside_exact_boundary(
+    outer_reason, dependency_reason, stage, status, reason
+):
+    payload = cutover._blocked_payload(
+        CL7RuntimeError(
+            outer_reason,
+            dependency_reason,
+            stage=stage,
+            availability_status=status,
+            availability_reason=reason,
+        )
+    )
+    assert "availability_status" not in payload
+    assert "availability_reason" not in payload
+    assert "PRIVATE" not in json.dumps(payload, sort_keys=True)
+
+
+def test_cl5_availability_observability_rejects_non_exact_string_types():
+    class StringSubclass(str):
+        pass
+
+    class EqualToBlocked:
+        def __eq__(self, other):
+            return other == cl5.AvailabilityStatus.BLOCKED.value
+
+        def __str__(self):
+            return cl5.AvailabilityStatus.BLOCKED.value
+
+    invalid_values = (StringSubclass("BLOCKED"), EqualToBlocked())
+    invalid_pairs = [
+        (value, cl5.AvailabilityReason.CL4_NOT_READY.value)
+        for value in invalid_values
+    ] + [
+        (cl5.AvailabilityStatus.BLOCKED.value, value)
+        for value in invalid_values
+    ]
+    for status, reason in invalid_pairs:
+        error = CL7RuntimeError(
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            stage="CL6_CONTEXT",
+            availability_status=cl5.AvailabilityStatus.BLOCKED.value,
+            availability_reason=cl5.AvailabilityReason.CL4_NOT_READY.value,
+        )
+        error.availability_status = status
+        error.availability_reason = reason
+        payload = cutover._blocked_payload(error)
+        assert "availability_status" not in payload
+        assert "availability_reason" not in payload
+
+
+def test_cl7_not_ready_context_preserves_cl5_observability_at_error_boundary():
+    context = SimpleNamespace(
+        reason=RiskCashContextReason.CASH_AVAILABILITY_NOT_READY,
+        availability_status=cl5.AvailabilityStatus.BLOCKED.value,
+        availability_reason=cl5.AvailabilityReason.INSUFFICIENT_AFTER_RESERVATIONS.value,
+    )
+    with pytest.raises(CL7RuntimeError) as caught:
+        cl7._fail_context_not_ready(context)
+
+    assert caught.value.reason is CL7RuntimeReason.CONTEXT_BLOCKED
+    assert caught.value.stage == "CL6_CONTEXT"
+    assert (
+        caught.value.dependency_reason
+        == RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value
+    )
+    assert caught.value.availability_status == cl5.AvailabilityStatus.BLOCKED.value
+    assert (
+        caught.value.availability_reason
+        == cl5.AvailabilityReason.INSUFFICIENT_AFTER_RESERVATIONS.value
+    )
+
+
 def test_cl6_context_dependency_reason_is_wired_to_cli_evidence(
     monkeypatch, tmp_path, capsys
 ):
@@ -1516,6 +1686,41 @@ def test_cl6_context_dependency_reason_is_wired_to_cli_evidence(
     assert payload == {
         "reason": "CONTEXT_BLOCKED",
         "dependency_reason": "PORTFOLIO_STALE",
+        "retryable": False,
+        "stage": "CL6_CONTEXT",
+        "status": "BLOCKED",
+    }
+    assert "PRIVATE_CANARY" not in json.dumps(payload, sort_keys=True)
+
+
+def test_cl5_availability_observability_is_wired_to_cli_evidence(
+    monkeypatch, tmp_path, capsys
+):
+    class FailingAuthority:
+        def prepare_runtime(self, **_kwargs):
+            raise CL7RuntimeError(
+                CL7RuntimeReason.CONTEXT_BLOCKED,
+                RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+                stage="CL6_CONTEXT",
+                availability_status=cl5.AvailabilityStatus.BLOCKED.value,
+                availability_reason=cl5.AvailabilityReason.BROKER_VIEW_MISMATCH.value,
+            )
+
+    runtime = SimpleNamespace(
+        authority=FailingAuthority(),
+        ledger=SimpleNamespace(close=lambda: None),
+        provider=SimpleNamespace(last_response_meta={"private": "PRIVATE_CANARY"}),
+        inputs=dict,
+    )
+    monkeypatch.setattr(cutover, "_open_runtime", lambda *_args, **_kwargs: runtime)
+
+    assert cutover.main(["prepare", "--runtime-dir", str(tmp_path)]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "reason": "CONTEXT_BLOCKED",
+        "dependency_reason": "CASH_AVAILABILITY_NOT_READY",
+        "availability_status": "BLOCKED",
+        "availability_reason": "BROKER_VIEW_MISMATCH",
         "retryable": False,
         "stage": "CL6_CONTEXT",
         "status": "BLOCKED",

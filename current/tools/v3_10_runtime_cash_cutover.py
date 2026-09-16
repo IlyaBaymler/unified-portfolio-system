@@ -18,6 +18,7 @@ if str(CURRENT) not in sys.path:
     sys.path.insert(0, str(CURRENT))
 
 from trading_robot.broker_read_adapters import TBANK_OPERATION_CODEC, BrokerReadReason
+from trading_robot.cash_availability import AvailabilityReason, AvailabilityStatus
 from trading_robot.cash_ledger_opening_reconciliation import (
     CL4_OPENING_CODEC,
     CL4Reason,
@@ -244,6 +245,37 @@ def _blocked_payload(
         }
     ):
         payload["dependency_reason"] = exc.dependency_reason
+        if (
+            exc.dependency_reason
+            == RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value
+        ):
+            blocked_reasons = {
+                AvailabilityReason.CL4_NOT_READY.value,
+                AvailabilityReason.BROKER_PROOF_STALE.value,
+                AvailabilityReason.CENTRAL_PROJECTION_STALE.value,
+                AvailabilityReason.MIXED_EVIDENCE_SNAPSHOT.value,
+                AvailabilityReason.BROKER_VIEW_MISMATCH.value,
+                AvailabilityReason.FOREIGN_CASH_PRESENT.value,
+                AvailabilityReason.INSUFFICIENT_AFTER_RESERVATIONS.value,
+            }
+            allowed_pairs = {
+                (AvailabilityStatus.BLOCKED.value, reason)
+                for reason in blocked_reasons
+            }
+            allowed_pairs.add(
+                (
+                    AvailabilityStatus.MANUAL_REVIEW_REQUIRED.value,
+                    AvailabilityReason.CENTRAL_PROVIDER_OVERLAP_UNKNOWN.value,
+                )
+            )
+            pair = (exc.availability_status, exc.availability_reason)
+            if (
+                type(pair[0]) is str
+                and type(pair[1]) is str
+                and pair in allowed_pairs
+            ):
+                payload["availability_status"] = pair[0]
+                payload["availability_reason"] = pair[1]
     return payload
 
 
