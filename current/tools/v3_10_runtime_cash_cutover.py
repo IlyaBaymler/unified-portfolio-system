@@ -362,7 +362,10 @@ def main(argv: list[str] | None = None) -> int:
                     allow_missing_legacy=False
                 )
                 adapter = runtime.adapter()
-                if record.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING:
+                if (
+                    record.state
+                    is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+                ):
                     intent = runtime.authority._recovery_intent_locked(
                         record,
                         central_manager=runtime.central,
@@ -394,7 +397,10 @@ def main(argv: list[str] | None = None) -> int:
                 record = runtime.authority.store._load_unlocked(
                     allow_missing_legacy=False
                 )
-                if record.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING:
+                if (
+                    record.state
+                    is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+                ):
                     blocker = runtime.authority._recovery_intent_locked(
                         record,
                         central_manager=runtime.central,
@@ -408,9 +414,7 @@ def main(argv: list[str] | None = None) -> int:
                         adapter = runtime.adapter()
                         inspection = adapter._inspect_order(blocker)
                         if inspection.status != "ORDER_OBSERVED":
-                            raise CL7RuntimeError(
-                                CL7RuntimeReason.RECOVERY_REQUIRED
-                            )
+                            raise CL7RuntimeError(CL7RuntimeReason.RECOVERY_REQUIRED)
                         if blocker.status == "IN_FLIGHT":
                             if inspection.broker_order_id is None:
                                 raise CL7RuntimeError(
@@ -421,13 +425,9 @@ def main(argv: list[str] | None = None) -> int:
                                 broker_order_id=inspection.broker_order_id,
                             )
                         if not inspection.terminal:
-                            raise CL7RuntimeError(
-                                CL7RuntimeReason.RECOVERY_REQUIRED
-                            )
+                            raise CL7RuntimeError(CL7RuntimeReason.RECOVERY_REQUIRED)
                         if blocker.status not in {"SUBMITTED", "UNCERTAIN"}:
-                            raise CL7RuntimeError(
-                                CL7RuntimeReason.RECOVERY_REQUIRED
-                            )
+                            raise CL7RuntimeError(CL7RuntimeReason.RECOVERY_REQUIRED)
                         runtime.central.mark_reconciled(
                             blocker.intent_id,
                             portfolio_repository=runtime.portfolio,

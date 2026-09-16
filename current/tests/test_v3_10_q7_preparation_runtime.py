@@ -1630,9 +1630,7 @@ def test_cl4_money_normalizing_provider_delegates_all_other_calls():
     provider = CL4MoneyNormalizingTransport(delegate)
 
     assert (
-        provider.get_portfolio("synthetic-account")["totalAmountCurrencies"][
-            "currency"
-        ]
+        provider.get_portfolio("synthetic-account")["totalAmountCurrencies"]["currency"]
         == "RUB"
     )
     assert provider.get_positions("synthetic-account") == {"money": []}
