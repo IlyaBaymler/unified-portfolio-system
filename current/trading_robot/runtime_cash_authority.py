@@ -395,7 +395,10 @@ class RuntimeCashAuthorityRecord:
         if self.operations_complete_through is not None:
             _timestamp(self.operations_complete_through)
         _timestamp(self.transition_at)
-        if type(self.transition_kind) is not str or self.transition_kind not in _TRANSITION_KINDS:
+        if (
+            type(self.transition_kind) is not str
+            or self.transition_kind not in _TRANSITION_KINDS
+        ):
             _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
         if self.record_revision == 0:
             if (
@@ -434,7 +437,10 @@ class RuntimeCashAuthorityRecord:
             self.operations_complete_through,
         )
         if self.state is RuntimeCashAuthorityState.CUTOVER_PREPARED:
-            bound = self.transition_kind in {"PREPARATION_EVIDENCE_BOUND", "SYNC_ADVANCED"}
+            bound = self.transition_kind in {
+                "PREPARATION_EVIDENCE_BOUND",
+                "SYNC_ADVANCED",
+            }
             if self.account_scope_sha256 is None or self.identity_key_id is None:
                 _fail(CL7RuntimeReason.STATE_INVALID)
             if bound and any(item is None for item in evidence):
@@ -444,10 +450,16 @@ class RuntimeCashAuthorityRecord:
             if self.activation_context_sha256 is not None:
                 _fail(CL7RuntimeReason.STATE_INVALID)
         elif self.state is RuntimeCashAuthorityState.CUTOVER_CONFIRMED:
-            if any(item is None for item in evidence) or self.activation_context_sha256 is not None:
+            if (
+                any(item is None for item in evidence)
+                or self.activation_context_sha256 is not None
+            ):
                 _fail(CL7RuntimeReason.STATE_INVALID)
         elif exact:
-            if any(item is None for item in evidence) or self.activation_context_sha256 is None:
+            if (
+                any(item is None for item in evidence)
+                or self.activation_context_sha256 is None
+            ):
                 _fail(CL7RuntimeReason.STATE_INVALID)
             if not self.ever_exact_activated:
                 _fail(CL7RuntimeReason.STATE_INVALID)
@@ -495,7 +507,9 @@ class RuntimeCashAuthorityRecord:
             "ever_exact_activated": self.ever_exact_activated,
             "identity_key_id": self.identity_key_id,
             "ledger_head_sha256": self.ledger_head_sha256,
-            "ledger_revision": None if self.ledger_revision is None else str(self.ledger_revision),
+            "ledger_revision": None
+            if self.ledger_revision is None
+            else str(self.ledger_revision),
             "opening_cutoff": self.opening_cutoff,
             "opening_record_sha256": self.opening_record_sha256,
             "operations_complete_through": self.operations_complete_through,
@@ -528,21 +542,45 @@ class RuntimeCashAuthorityRecord:
         except (TypeError, ValueError):
             _fail(CL7RuntimeReason.STATE_INVALID)
         return cls(
-            account_scope_sha256=_optional_hash(value["account_scope_sha256"], CL7RuntimeReason.STATE_INVALID),
-            activation_context_sha256=_optional_hash(value["activation_context_sha256"], CL7RuntimeReason.STATE_INVALID),
-            cutover_generation=_parse_uint(value["cutover_generation"], CL7RuntimeReason.STATE_INVALID),
+            account_scope_sha256=_optional_hash(
+                value["account_scope_sha256"], CL7RuntimeReason.STATE_INVALID
+            ),
+            activation_context_sha256=_optional_hash(
+                value["activation_context_sha256"], CL7RuntimeReason.STATE_INVALID
+            ),
+            cutover_generation=_parse_uint(
+                value["cutover_generation"], CL7RuntimeReason.STATE_INVALID
+            ),
             environment=value["environment"],
             ever_exact_activated=value["ever_exact_activated"],
             identity_key_id=value["identity_key_id"],
-            ledger_head_sha256=_optional_hash(value["ledger_head_sha256"], CL7RuntimeReason.STATE_INVALID),
-            ledger_revision=(None if value["ledger_revision"] is None else _parse_uint(value["ledger_revision"], CL7RuntimeReason.STATE_INVALID)),
+            ledger_head_sha256=_optional_hash(
+                value["ledger_head_sha256"], CL7RuntimeReason.STATE_INVALID
+            ),
+            ledger_revision=(
+                None
+                if value["ledger_revision"] is None
+                else _parse_uint(
+                    value["ledger_revision"], CL7RuntimeReason.STATE_INVALID
+                )
+            ),
             opening_cutoff=value["opening_cutoff"],
-            opening_record_sha256=_optional_hash(value["opening_record_sha256"], CL7RuntimeReason.STATE_INVALID),
+            opening_record_sha256=_optional_hash(
+                value["opening_record_sha256"], CL7RuntimeReason.STATE_INVALID
+            ),
             operations_complete_through=value["operations_complete_through"],
-            pending_dispatch_proof_sha256=_optional_hash(value["pending_dispatch_proof_sha256"], CL7RuntimeReason.STATE_INVALID),
-            post_attempt_count=_parse_uint(value["post_attempt_count"], CL7RuntimeReason.STATE_INVALID),
-            previous_record_sha256=_optional_hash(value["previous_record_sha256"], CL7RuntimeReason.STATE_INVALID),
-            record_revision=_parse_uint(value["record_revision"], CL7RuntimeReason.STATE_INVALID),
+            pending_dispatch_proof_sha256=_optional_hash(
+                value["pending_dispatch_proof_sha256"], CL7RuntimeReason.STATE_INVALID
+            ),
+            post_attempt_count=_parse_uint(
+                value["post_attempt_count"], CL7RuntimeReason.STATE_INVALID
+            ),
+            previous_record_sha256=_optional_hash(
+                value["previous_record_sha256"], CL7RuntimeReason.STATE_INVALID
+            ),
+            record_revision=_parse_uint(
+                value["record_revision"], CL7RuntimeReason.STATE_INVALID
+            ),
             state=state,
             transition_at=value["transition_at"],
             transition_kind=value["transition_kind"],
@@ -566,7 +604,9 @@ class RuntimeCashAuthorityRecord:
             parsed = json.loads(
                 value.decode("ascii"),
                 object_pairs_hook=pairs,
-                parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("constant")),
+                parse_constant=lambda _value: (_ for _ in ()).throw(
+                    ValueError("constant")
+                ),
             )
         except (UnicodeError, ValueError, json.JSONDecodeError):
             _fail(CL7RuntimeReason.AUTHORITY_RECORD_CORRUPT)
@@ -578,14 +618,33 @@ class RuntimeCashAuthorityRecord:
 
 _PROOF_FIELDS = frozenset(
     {
-        "account_scope_sha256", "authority_record_revision", "authority_record_sha256",
-        "availability_sha256", "central_order_revision", "central_reservation_projection_hash",
-        "cl6_context_identity_sha256", "cl6_context_sha256", "current_lots", "direction",
-        "domain", "evaluated_at", "free_investable_cash", "identity_key_id",
-        "intent_scope_sha256", "ledger_head_sha256", "ledger_revision",
-        "portfolio_decision_checksum", "portfolio_document_checksum", "portfolio_revision",
-        "proof_identity_sha256", "reconciliation_sha256", "reserved_cash",
-        "risk_policy_hash", "risk_state_guard_hash", "target_lots", "version",
+        "account_scope_sha256",
+        "authority_record_revision",
+        "authority_record_sha256",
+        "availability_sha256",
+        "central_order_revision",
+        "central_reservation_projection_hash",
+        "cl6_context_identity_sha256",
+        "cl6_context_sha256",
+        "current_lots",
+        "direction",
+        "domain",
+        "evaluated_at",
+        "free_investable_cash",
+        "identity_key_id",
+        "intent_scope_sha256",
+        "ledger_head_sha256",
+        "ledger_revision",
+        "portfolio_decision_checksum",
+        "portfolio_document_checksum",
+        "portfolio_revision",
+        "proof_identity_sha256",
+        "reconciliation_sha256",
+        "reserved_cash",
+        "risk_policy_hash",
+        "risk_state_guard_hash",
+        "target_lots",
+        "version",
     }
 )
 
@@ -623,29 +682,48 @@ class LockedDispatchProof:
         if type(self.version) is not int or self.version != _VERSION:
             _fail(CL7RuntimeReason.VERSION_UNSUPPORTED)
         for value in (
-            self.account_scope_sha256, self.authority_record_sha256,
-            self.availability_sha256, self.central_reservation_projection_hash,
-            self.cl6_context_identity_sha256, self.cl6_context_sha256,
-            self.intent_scope_sha256, self.ledger_head_sha256,
-            self.portfolio_decision_checksum, self.portfolio_document_checksum,
-            self.reconciliation_sha256, self.risk_policy_hash,
-            self.risk_state_guard_hash, self.proof_identity_sha256,
+            self.account_scope_sha256,
+            self.authority_record_sha256,
+            self.availability_sha256,
+            self.central_reservation_projection_hash,
+            self.cl6_context_identity_sha256,
+            self.cl6_context_sha256,
+            self.intent_scope_sha256,
+            self.ledger_head_sha256,
+            self.portfolio_decision_checksum,
+            self.portfolio_document_checksum,
+            self.reconciliation_sha256,
+            self.risk_policy_hash,
+            self.risk_state_guard_hash,
+            self.proof_identity_sha256,
         ):
             _hash(value, CL7RuntimeReason.DISPATCH_PROOF_INVALID)
         for value in (
-            self.authority_record_revision, self.central_order_revision,
-            self.current_lots, self.ledger_revision, self.portfolio_revision,
+            self.authority_record_revision,
+            self.central_order_revision,
+            self.current_lots,
+            self.ledger_revision,
+            self.portfolio_revision,
             self.target_lots,
         ):
             _plain_int(value, CL7RuntimeReason.DISPATCH_PROOF_INVALID)
         if self.direction not in {"BUY", "SELL"} or type(self.direction) is not str:
             _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
         _timestamp(self.evaluated_at)
-        if type(self.identity_key_id) is not str or _KEY_ID_RE.fullmatch(self.identity_key_id) is None:
+        if (
+            type(self.identity_key_id) is not str
+            or _KEY_ID_RE.fullmatch(self.identity_key_id) is None
+        ):
             _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
-        if type(self.free_investable_cash) is not Money or type(self.reserved_cash) is not Money:
+        if (
+            type(self.free_investable_cash) is not Money
+            or type(self.reserved_cash) is not Money
+        ):
             _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
-        if self.free_investable_cash.currency != "RUB" or self.reserved_cash.currency != "RUB":
+        if (
+            self.free_investable_cash.currency != "RUB"
+            or self.reserved_cash.currency != "RUB"
+        ):
             _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
 
     def _base_dict(self, *, domain: str) -> dict[str, object]:
@@ -702,9 +780,15 @@ class LockedDispatchProof:
         values = dict(values)
         key_id = values.pop("identity_key_id", None)
         key, checked_key_id = _key(identity_key, key_id)
-        if type(raw_intent_id) is not str or not raw_intent_id or len(raw_intent_id) > 256:
+        if (
+            type(raw_intent_id) is not str
+            or not raw_intent_id
+            or len(raw_intent_id) > 256
+        ):
             _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
-        account = _hash(values.get("account_scope_sha256"), CL7RuntimeReason.DISPATCH_PROOF_INVALID)
+        account = _hash(
+            values.get("account_scope_sha256"), CL7RuntimeReason.DISPATCH_PROOF_INVALID
+        )
         intent_scope = _hmac_sha256(
             key,
             {
@@ -720,12 +804,18 @@ class LockedDispatchProof:
             intent_scope_sha256=intent_scope,
             proof_identity_sha256="0" * 64,
         )
-        identity = _hmac_sha256(key, placeholder._base_dict(domain=_PROOF_IDENTITY_DOMAIN))
+        identity = _hmac_sha256(
+            key, placeholder._base_dict(domain=_PROOF_IDENTITY_DOMAIN)
+        )
         return replace(placeholder, proof_identity_sha256=identity)
 
     @classmethod
     def from_canonical_dict(cls, value: object) -> LockedDispatchProof:
-        if not isinstance(value, Mapping) or frozenset(value) != _PROOF_FIELDS or value.get("domain") != _PROOF_DOMAIN:
+        if (
+            not isinstance(value, Mapping)
+            or frozenset(value) != _PROOF_FIELDS
+            or value.get("domain") != _PROOF_DOMAIN
+        ):
             _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
         try:
             free = Money.from_canonical_dict(value["free_investable_cash"])
@@ -734,26 +824,46 @@ class LockedDispatchProof:
             _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
         return cls(
             account_scope_sha256=value["account_scope_sha256"],
-            authority_record_revision=_parse_uint(value["authority_record_revision"], CL7RuntimeReason.DISPATCH_PROOF_INVALID),
+            authority_record_revision=_parse_uint(
+                value["authority_record_revision"],
+                CL7RuntimeReason.DISPATCH_PROOF_INVALID,
+            ),
             authority_record_sha256=value["authority_record_sha256"],
             availability_sha256=value["availability_sha256"],
-            central_order_revision=_parse_uint(value["central_order_revision"], CL7RuntimeReason.DISPATCH_PROOF_INVALID),
-            central_reservation_projection_hash=value["central_reservation_projection_hash"],
+            central_order_revision=_parse_uint(
+                value["central_order_revision"], CL7RuntimeReason.DISPATCH_PROOF_INVALID
+            ),
+            central_reservation_projection_hash=value[
+                "central_reservation_projection_hash"
+            ],
             cl6_context_identity_sha256=value["cl6_context_identity_sha256"],
             cl6_context_sha256=value["cl6_context_sha256"],
-            current_lots=_plain_int(value["current_lots"], CL7RuntimeReason.DISPATCH_PROOF_INVALID),
-            direction=value["direction"], evaluated_at=value["evaluated_at"],
-            free_investable_cash=free, identity_key_id=value["identity_key_id"],
+            current_lots=_plain_int(
+                value["current_lots"], CL7RuntimeReason.DISPATCH_PROOF_INVALID
+            ),
+            direction=value["direction"],
+            evaluated_at=value["evaluated_at"],
+            free_investable_cash=free,
+            identity_key_id=value["identity_key_id"],
             intent_scope_sha256=value["intent_scope_sha256"],
             ledger_head_sha256=value["ledger_head_sha256"],
-            ledger_revision=_parse_uint(value["ledger_revision"], CL7RuntimeReason.DISPATCH_PROOF_INVALID),
+            ledger_revision=_parse_uint(
+                value["ledger_revision"], CL7RuntimeReason.DISPATCH_PROOF_INVALID
+            ),
             portfolio_decision_checksum=value["portfolio_decision_checksum"],
             portfolio_document_checksum=value["portfolio_document_checksum"],
-            portfolio_revision=_parse_uint(value["portfolio_revision"], CL7RuntimeReason.DISPATCH_PROOF_INVALID),
-            reconciliation_sha256=value["reconciliation_sha256"], reserved_cash=reserved,
-            risk_policy_hash=value["risk_policy_hash"], risk_state_guard_hash=value["risk_state_guard_hash"],
-            target_lots=_plain_int(value["target_lots"], CL7RuntimeReason.DISPATCH_PROOF_INVALID),
-            proof_identity_sha256=value["proof_identity_sha256"], version=value["version"],
+            portfolio_revision=_parse_uint(
+                value["portfolio_revision"], CL7RuntimeReason.DISPATCH_PROOF_INVALID
+            ),
+            reconciliation_sha256=value["reconciliation_sha256"],
+            reserved_cash=reserved,
+            risk_policy_hash=value["risk_policy_hash"],
+            risk_state_guard_hash=value["risk_state_guard_hash"],
+            target_lots=_plain_int(
+                value["target_lots"], CL7RuntimeReason.DISPATCH_PROOF_INVALID
+            ),
+            proof_identity_sha256=value["proof_identity_sha256"],
+            version=value["version"],
         )
 
     def verify_identity(self, *, raw_intent_id: str, identity_key: bytes) -> None:
@@ -770,21 +880,71 @@ class LockedDispatchProof:
             _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
 
 
-def _transition_pair(previous: RuntimeCashAuthorityRecord, current: RuntimeCashAuthorityRecord) -> None:
-    allowed: dict[str, tuple[set[RuntimeCashAuthorityState], RuntimeCashAuthorityState]] = {
-        "PREPARE_CUTOVER": ({RuntimeCashAuthorityState.LEGACY_ACTIVE}, RuntimeCashAuthorityState.CUTOVER_PREPARED),
-        "PREPARATION_EVIDENCE_BOUND": ({RuntimeCashAuthorityState.CUTOVER_PREPARED}, RuntimeCashAuthorityState.CUTOVER_PREPARED),
-        "CONFIRM_CUTOVER": ({RuntimeCashAuthorityState.CUTOVER_PREPARED}, RuntimeCashAuthorityState.CUTOVER_CONFIRMED),
-        "CANCEL_CUTOVER": ({RuntimeCashAuthorityState.CUTOVER_PREPARED, RuntimeCashAuthorityState.CUTOVER_CONFIRMED}, RuntimeCashAuthorityState.LEGACY_ACTIVE),
-        "ACTIVATE_EXACT": ({RuntimeCashAuthorityState.CUTOVER_CONFIRMED}, RuntimeCashAuthorityState.EXACT_CASH_DISARMED),
-        "ARM_EXACT": ({RuntimeCashAuthorityState.EXACT_CASH_DISARMED}, RuntimeCashAuthorityState.EXACT_CASH_ARMED),
-        "DISARM_EXACT": ({RuntimeCashAuthorityState.EXACT_CASH_ARMED}, RuntimeCashAuthorityState.EXACT_CASH_DISARMED),
-        "SYNC_ADVANCED": ({RuntimeCashAuthorityState.CUTOVER_PREPARED, RuntimeCashAuthorityState.EXACT_CASH_DISARMED, RuntimeCashAuthorityState.EXACT_CASH_ARMED}, current.state),
-        "DISPATCH_ATTEMPT_RECORDED": ({RuntimeCashAuthorityState.EXACT_CASH_ARMED}, RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING),
-        "DISPATCH_REJECTED_REARMED": ({RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING}, RuntimeCashAuthorityState.EXACT_CASH_ARMED),
-        "DISPATCH_ACCOUNTED_REARMED": ({RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING}, RuntimeCashAuthorityState.EXACT_CASH_ARMED),
-        "RECOVERY_CLOSED_DISARMED": ({RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING}, RuntimeCashAuthorityState.EXACT_CASH_DISARMED),
-        "ROLLBACK_TO_LEGACY": ({RuntimeCashAuthorityState.EXACT_CASH_DISARMED}, RuntimeCashAuthorityState.LEGACY_ACTIVE),
+def _transition_pair(
+    previous: RuntimeCashAuthorityRecord, current: RuntimeCashAuthorityRecord
+) -> None:
+    allowed: dict[
+        str, tuple[set[RuntimeCashAuthorityState], RuntimeCashAuthorityState]
+    ] = {
+        "PREPARE_CUTOVER": (
+            {RuntimeCashAuthorityState.LEGACY_ACTIVE},
+            RuntimeCashAuthorityState.CUTOVER_PREPARED,
+        ),
+        "PREPARATION_EVIDENCE_BOUND": (
+            {RuntimeCashAuthorityState.CUTOVER_PREPARED},
+            RuntimeCashAuthorityState.CUTOVER_PREPARED,
+        ),
+        "CONFIRM_CUTOVER": (
+            {RuntimeCashAuthorityState.CUTOVER_PREPARED},
+            RuntimeCashAuthorityState.CUTOVER_CONFIRMED,
+        ),
+        "CANCEL_CUTOVER": (
+            {
+                RuntimeCashAuthorityState.CUTOVER_PREPARED,
+                RuntimeCashAuthorityState.CUTOVER_CONFIRMED,
+            },
+            RuntimeCashAuthorityState.LEGACY_ACTIVE,
+        ),
+        "ACTIVATE_EXACT": (
+            {RuntimeCashAuthorityState.CUTOVER_CONFIRMED},
+            RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+        ),
+        "ARM_EXACT": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_ARMED,
+        ),
+        "DISARM_EXACT": (
+            {RuntimeCashAuthorityState.EXACT_CASH_ARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+        ),
+        "SYNC_ADVANCED": (
+            {
+                RuntimeCashAuthorityState.CUTOVER_PREPARED,
+                RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+                RuntimeCashAuthorityState.EXACT_CASH_ARMED,
+            },
+            current.state,
+        ),
+        "DISPATCH_ATTEMPT_RECORDED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_ARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING,
+        ),
+        "DISPATCH_REJECTED_REARMED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_ARMED,
+        ),
+        "DISPATCH_ACCOUNTED_REARMED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_ARMED,
+        ),
+        "RECOVERY_CLOSED_DISARMED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+        ),
+        "ROLLBACK_TO_LEGACY": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISARMED},
+            RuntimeCashAuthorityState.LEGACY_ACTIVE,
+        ),
     }
     pair = allowed.get(current.transition_kind)
     if pair is None or previous.state not in pair[0] or current.state is not pair[1]:
@@ -793,37 +953,56 @@ def _transition_pair(previous: RuntimeCashAuthorityRecord, current: RuntimeCashA
         _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
     if current.previous_record_sha256 != previous.sha256:
         _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-    expected_generation = previous.cutover_generation + (current.transition_kind == "PREPARE_CUTOVER")
+    expected_generation = previous.cutover_generation + (
+        current.transition_kind == "PREPARE_CUTOVER"
+    )
     if current.cutover_generation != expected_generation:
         _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-    if current.post_attempt_count != previous.post_attempt_count + (current.transition_kind == "DISPATCH_ATTEMPT_RECORDED"):
+    if current.post_attempt_count != previous.post_attempt_count + (
+        current.transition_kind == "DISPATCH_ATTEMPT_RECORDED"
+    ):
         _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
     if previous.ever_exact_activated and not current.ever_exact_activated:
         _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
     mutable_by_kind = {
         "PREPARE_CUTOVER": {
-            "cutover_generation", "account_scope_sha256", "identity_key_id",
-            "activation_context_sha256", "ledger_head_sha256", "ledger_revision",
-            "opening_cutoff", "opening_record_sha256",
-            "operations_complete_through", "pending_dispatch_proof_sha256",
+            "cutover_generation",
+            "account_scope_sha256",
+            "identity_key_id",
+            "activation_context_sha256",
+            "ledger_head_sha256",
+            "ledger_revision",
+            "opening_cutoff",
+            "opening_record_sha256",
+            "operations_complete_through",
+            "pending_dispatch_proof_sha256",
         },
         "PREPARATION_EVIDENCE_BOUND": {
-            "ledger_head_sha256", "ledger_revision", "opening_cutoff",
-            "opening_record_sha256", "operations_complete_through",
+            "ledger_head_sha256",
+            "ledger_revision",
+            "opening_cutoff",
+            "opening_record_sha256",
+            "operations_complete_through",
         },
         "CONFIRM_CUTOVER": set(),
         "CANCEL_CUTOVER": set(),
         "ACTIVATE_EXACT": {
-            "activation_context_sha256", "ever_exact_activated",
-            "ledger_head_sha256", "ledger_revision", "operations_complete_through",
+            "activation_context_sha256",
+            "ever_exact_activated",
+            "ledger_head_sha256",
+            "ledger_revision",
+            "operations_complete_through",
         },
         "ARM_EXACT": set(),
         "DISARM_EXACT": set(),
         "SYNC_ADVANCED": {
-            "ledger_head_sha256", "ledger_revision", "operations_complete_through",
+            "ledger_head_sha256",
+            "ledger_revision",
+            "operations_complete_through",
         },
         "DISPATCH_ATTEMPT_RECORDED": {
-            "pending_dispatch_proof_sha256", "post_attempt_count",
+            "pending_dispatch_proof_sha256",
+            "post_attempt_count",
         },
         "DISPATCH_REJECTED_REARMED": {"pending_dispatch_proof_sha256"},
         "DISPATCH_ACCOUNTED_REARMED": {"pending_dispatch_proof_sha256"},
@@ -831,12 +1010,17 @@ def _transition_pair(previous: RuntimeCashAuthorityRecord, current: RuntimeCashA
         "ROLLBACK_TO_LEGACY": set(),
     }
     always = {
-        "record_revision", "previous_record_sha256", "transition_at",
-        "transition_kind", "state",
+        "record_revision",
+        "previous_record_sha256",
+        "transition_at",
+        "transition_kind",
+        "state",
     }
     allowed_changes = always | mutable_by_kind[current.transition_kind]
     for item in fields(RuntimeCashAuthorityRecord):
-        if item.name not in allowed_changes and getattr(previous, item.name) != getattr(current, item.name):
+        if item.name not in allowed_changes and getattr(previous, item.name) != getattr(
+            current, item.name
+        ):
             _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
 
 
@@ -845,7 +1029,11 @@ class RuntimeCashAuthorityStore:
 
     def __init__(self, path: str | Path, *, lock_timeout_seconds: float = 5.0) -> None:
         selected = Path(path)
-        self.path = selected / "runtime_cash_authority.json" if selected.suffix.lower() != ".json" else selected
+        self.path = (
+            selected / "runtime_cash_authority.json"
+            if selected.suffix.lower() != ".json"
+            else selected
+        )
         self.checksum_path = self.path.with_name(self.path.name + ".sha256")
         self.lastgood_path = self.path.with_name(self.path.name + ".lastgood")
         self.lock_path = self.path.with_name(self.path.name + ".lock")
@@ -855,23 +1043,42 @@ class RuntimeCashAuthorityStore:
     @contextmanager
     def locked(self) -> Iterator[RuntimeCashAuthorityStore]:
         try:
-            with InterProcessFileLock(self.lock_path, timeout_seconds=self.lock_timeout_seconds):
+            with InterProcessFileLock(
+                self.lock_path, timeout_seconds=self.lock_timeout_seconds
+            ):
                 yield self
         except LockUnavailableError:
             _fail(CL7RuntimeReason.LOCK_UNAVAILABLE, retryable=True)
 
     def custody_exists(self) -> bool:
-        return any(path.exists() for path in (self.path, self.checksum_path, self.lastgood_path, self.ledger_path))
+        return any(
+            path.exists()
+            for path in (
+                self.path,
+                self.checksum_path,
+                self.lastgood_path,
+                self.ledger_path,
+            )
+        )
 
     def load(self, *, allow_missing_legacy: bool = True) -> RuntimeCashAuthorityRecord:
         with self.locked():
             return self._load_unlocked(allow_missing_legacy=allow_missing_legacy)
 
-    def _load_unlocked(self, *, allow_missing_legacy: bool = True) -> RuntimeCashAuthorityRecord:
-        custody = (self.path.exists(), self.checksum_path.exists(), self.lastgood_path.exists(), self.ledger_path.exists())
+    def _load_unlocked(
+        self, *, allow_missing_legacy: bool = True
+    ) -> RuntimeCashAuthorityRecord:
+        custody = (
+            self.path.exists(),
+            self.checksum_path.exists(),
+            self.lastgood_path.exists(),
+            self.ledger_path.exists(),
+        )
         if not custody[0]:
             if allow_missing_legacy and not any(custody):
-                return RuntimeCashAuthorityRecord.bootstrap("1970-01-01T00:00:00.000000000Z")
+                return RuntimeCashAuthorityRecord.bootstrap(
+                    "1970-01-01T00:00:00.000000000Z"
+                )
             _fail(CL7RuntimeReason.AUTHORITY_RECORD_MISSING)
         if not custody[1]:
             _fail(CL7RuntimeReason.AUTHORITY_CHECKSUM_INVALID)
@@ -934,7 +1141,9 @@ class RuntimeCashAuthorityStore:
         expected_sha256: str,
     ) -> RuntimeCashAuthorityRecord:
         current = self._load_unlocked(allow_missing_legacy=False)
-        if current.record_revision != expected_revision or not hmac.compare_digest(current.sha256, expected_sha256):
+        if current.record_revision != expected_revision or not hmac.compare_digest(
+            current.sha256, expected_sha256
+        ):
             _fail(CL7RuntimeReason.CAS_CONFLICT)
         _transition_pair(current, candidate)
         next_temp = self._write_temp(self.path, candidate.canonical_bytes)
@@ -1259,7 +1468,11 @@ class RuntimeCashAuthorityManager:
             raise
         except Exception:
             _fail(CL7RuntimeReason.INTERNAL_BOUNDARY_FAILED, stage="EVIDENCE_BUILD")
-        if require_ready and getattr(getattr(context, "status", None), "value", None) != "READY_FOR_LOCKED_REVALIDATION":
+        if (
+            require_ready
+            and getattr(getattr(context, "status", None), "value", None)
+            != "READY_FOR_LOCKED_REVALIDATION"
+        ):
             _fail_context_not_ready(context)
         snapshot = ledger_store.snapshot()
         if (
@@ -1304,11 +1517,14 @@ class RuntimeCashAuthorityManager:
         from .portfolio_preflight import PortfolioSnapshotLease
 
         try:
-            with portfolio_repository.locked_snapshot(
-                expected_account_id=raw_account_id
-            ) as portfolio_state, InterProcessFileLock(
-                risk_profile_store.lock_path,
-                timeout_seconds=self.store.lock_timeout_seconds,
+            with (
+                portfolio_repository.locked_snapshot(
+                    expected_account_id=raw_account_id
+                ) as portfolio_state,
+                InterProcessFileLock(
+                    risk_profile_store.lock_path,
+                    timeout_seconds=self.store.lock_timeout_seconds,
+                ),
             ):
                 loaded = risk_profile_store.require_profile("SANDBOX_EXECUTION")
                 policy = loaded["policy"]
@@ -1322,6 +1538,7 @@ class RuntimeCashAuthorityManager:
                         leased_at=_timestamp_to_iso(evaluated_at),
                     )
                     with self.ledger_guard(ledger_store):
+
                         def build(central: Any) -> Any:
                             evidence = self.build_runtime_context(
                                 current=current,
@@ -1690,6 +1907,7 @@ class RuntimeCashAuthorityManager:
             current = self.store._load_unlocked(allow_missing_legacy=False)
             if current.canonical_bytes != observed.canonical_bytes:
                 _fail(CL7RuntimeReason.CAS_CONFLICT)
+
             def finalize(
                 synced: RuntimeCashAuthorityRecord,
                 batch: Any,
@@ -1712,9 +1930,7 @@ class RuntimeCashAuthorityManager:
                     activation_context_sha256=evidence.context.sha256,
                     ledger_revision=snapshot.ledger_revision,
                     ledger_head_sha256=snapshot.ledger_head_sha256,
-                    operations_complete_through=(
-                        batch.watermark.to_exclusive
-                    ),
+                    operations_complete_through=(batch.watermark.to_exclusive),
                 )
                 return self.store._commit_unlocked(
                     candidate,
@@ -1858,8 +2074,7 @@ class RuntimeCashAuthorityManager:
                 continue
             proof = LockedDispatchProof.from_canonical_dict(proof_raw)
             pending_match = (
-                current.state
-                is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+                current.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
                 and proof.sha256 == current.pending_dispatch_proof_sha256
                 and proof.authority_record_revision + 1 == current.record_revision
                 and proof.authority_record_sha256 == current.previous_record_sha256
@@ -1885,8 +2100,10 @@ class RuntimeCashAuthorityManager:
                 ):
                     _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
                 matches.append((item, proof))
-        if not matches and allow_absent_d3 and (
-            current.state is RuntimeCashAuthorityState.EXACT_CASH_ARMED
+        if (
+            not matches
+            and allow_absent_d3
+            and (current.state is RuntimeCashAuthorityState.EXACT_CASH_ARMED)
         ):
             return None
         if len(matches) != 1:
@@ -1967,8 +2184,7 @@ class RuntimeCashAuthorityManager:
                 identity_key=identity_key,
             )
             fully_resolved = (
-                intent.status == "FAILED"
-                and intent.outcome == "SUBMISSION_REJECTED"
+                intent.status == "FAILED" and intent.outcome == "SUBMISSION_REJECTED"
             ) or intent.status == "RECONCILED"
             if not fully_resolved:
                 _fail(CL7RuntimeReason.RECOVERY_REQUIRED)
@@ -1998,14 +2214,24 @@ class RuntimeCashAuthorityManager:
         if type(value) is not str or value.strip() != expected:
             _fail(CL7RuntimeReason.CONFIRMATION_INVALID)
 
-    def _change(self, current: RuntimeCashAuthorityRecord, *, at: str, kind: str, state: RuntimeCashAuthorityState, **changes: object) -> RuntimeCashAuthorityRecord:
+    def _change(
+        self,
+        current: RuntimeCashAuthorityRecord,
+        *,
+        at: str,
+        kind: str,
+        state: RuntimeCashAuthorityState,
+        **changes: object,
+    ) -> RuntimeCashAuthorityRecord:
         if current.record_revision >= _INT64_MAX:
             _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
         return replace(
             current,
             record_revision=current.record_revision + 1,
             previous_record_sha256=current.sha256,
-            transition_at=_timestamp(at), transition_kind=kind, state=state,
+            transition_at=_timestamp(at),
+            transition_kind=kind,
+            state=state,
             **changes,
         )
 
@@ -2013,7 +2239,11 @@ class RuntimeCashAuthorityManager:
         with self.store.locked():
             current = self.store._load_unlocked(allow_missing_legacy=False)
             candidate = builder(current)
-            return self.store._commit_unlocked(candidate, expected_revision=current.record_revision, expected_sha256=current.sha256)
+            return self.store._commit_unlocked(
+                candidate,
+                expected_revision=current.record_revision,
+                expected_sha256=current.sha256,
+            )
 
     def _commit_after_precheck(
         self,
@@ -2031,12 +2261,31 @@ class RuntimeCashAuthorityManager:
                 expected_sha256=current.sha256,
             )
 
-    def _account(self, current: RuntimeCashAuthorityRecord, raw_account_id: str, identity_key: bytes, identity_key_id: str) -> None:
-        account = derive_account_scope(raw_account_id, identity_key=identity_key, identity_key_id=identity_key_id)
-        if current.account_scope_sha256 != account or current.identity_key_id != identity_key_id:
+    def _account(
+        self,
+        current: RuntimeCashAuthorityRecord,
+        raw_account_id: str,
+        identity_key: bytes,
+        identity_key_id: str,
+    ) -> None:
+        account = derive_account_scope(
+            raw_account_id, identity_key=identity_key, identity_key_id=identity_key_id
+        )
+        if (
+            current.account_scope_sha256 != account
+            or current.identity_key_id != identity_key_id
+        ):
             _fail(CL7RuntimeReason.ACCOUNT_SCOPE_INVALID)
 
-    def arm(self, *, raw_account_id: str, identity_key: bytes, identity_key_id: str, confirmation: str, transition_at: str) -> RuntimeCashAuthorityRecord:
+    def arm(
+        self,
+        *,
+        raw_account_id: str,
+        identity_key: bytes,
+        identity_key_id: str,
+        confirmation: str,
+        transition_at: str,
+    ) -> RuntimeCashAuthorityRecord:
         observed = self.store.load(allow_missing_legacy=False)
         if observed.state is not RuntimeCashAuthorityState.EXACT_CASH_DISARMED:
             _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
@@ -2044,21 +2293,56 @@ class RuntimeCashAuthorityManager:
             _fail(CL7RuntimeReason.DISPATCH_PENDING)
         self._phrase(confirmation, self.ARM_PHRASE)
         self._account(observed, raw_account_id, identity_key, identity_key_id)
+
         def build(current: RuntimeCashAuthorityRecord) -> RuntimeCashAuthorityRecord:
-            if current.state is not RuntimeCashAuthorityState.EXACT_CASH_DISARMED or current.pending_dispatch_proof_sha256 is not None:
+            if (
+                current.state is not RuntimeCashAuthorityState.EXACT_CASH_DISARMED
+                or current.pending_dispatch_proof_sha256 is not None
+            ):
                 _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
             self._account(current, raw_account_id, identity_key, identity_key_id)
-            return self._change(current, at=transition_at, kind="ARM_EXACT", state=RuntimeCashAuthorityState.EXACT_CASH_ARMED)
+            return self._change(
+                current,
+                at=transition_at,
+                kind="ARM_EXACT",
+                state=RuntimeCashAuthorityState.EXACT_CASH_ARMED,
+            )
+
         return self._commit_after_precheck(observed, build)
 
     def disarm(self, *, transition_at: str) -> RuntimeCashAuthorityRecord:
-        return self._locked_change(lambda current: self._change(current, at=transition_at, kind="DISARM_EXACT", state=RuntimeCashAuthorityState.EXACT_CASH_DISARMED) if current.state is RuntimeCashAuthorityState.EXACT_CASH_ARMED else (_fail(CL7RuntimeReason.DISPATCH_PENDING) if current.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING else _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)))
+        return self._locked_change(
+            lambda current: (
+                self._change(
+                    current,
+                    at=transition_at,
+                    kind="DISARM_EXACT",
+                    state=RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+                )
+                if current.state is RuntimeCashAuthorityState.EXACT_CASH_ARMED
+                else (
+                    _fail(CL7RuntimeReason.DISPATCH_PENDING)
+                    if current.state
+                    is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+                    else _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+                )
+            )
+        )
 
     def cancel(self, *, transition_at: str) -> RuntimeCashAuthorityRecord:
         def build(current: RuntimeCashAuthorityRecord) -> RuntimeCashAuthorityRecord:
-            if current.state not in {RuntimeCashAuthorityState.CUTOVER_PREPARED, RuntimeCashAuthorityState.CUTOVER_CONFIRMED}:
+            if current.state not in {
+                RuntimeCashAuthorityState.CUTOVER_PREPARED,
+                RuntimeCashAuthorityState.CUTOVER_CONFIRMED,
+            }:
                 _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
-            return self._change(current, at=transition_at, kind="CANCEL_CUTOVER", state=RuntimeCashAuthorityState.LEGACY_ACTIVE)
+            return self._change(
+                current,
+                at=transition_at,
+                kind="CANCEL_CUTOVER",
+                state=RuntimeCashAuthorityState.LEGACY_ACTIVE,
+            )
+
         return self._locked_change(build)
 
     def synchronize_operations(
@@ -2124,7 +2408,10 @@ class RuntimeCashAuthorityManager:
         from . import broker_read_adapters as broker
         from . import cash_ledger_persistence as persistence
 
-        if type(current) is not RuntimeCashAuthorityRecord or type(commit_authority) is not bool:
+        if (
+            type(current) is not RuntimeCashAuthorityRecord
+            or type(commit_authority) is not bool
+        ):
             _fail(CL7RuntimeReason.TYPE_INVALID)
         if current.state not in {
             RuntimeCashAuthorityState.CUTOVER_PREPARED,
@@ -2138,7 +2425,11 @@ class RuntimeCashAuthorityManager:
         self._account(current, raw_account_id, identity_key, identity_key_id)
         if current.operations_complete_through is None:
             _fail(CL7RuntimeReason.OPENING_INVALID)
-        if not callable(transport) or not callable(monotonic_ns) or not callable(wait_ns):
+        if (
+            not callable(transport)
+            or not callable(monotonic_ns)
+            or not callable(wait_ns)
+        ):
             _fail(CL7RuntimeReason.TYPE_INVALID)
         try:
             request = broker.BrokerReadRequest(
@@ -2210,7 +2501,10 @@ class RuntimeCashAuthorityManager:
                         # A replay may find the observation already advanced by
                         # the identical event.  Exact event identity is checked
                         # by the accepted CL2 idempotency path before returning.
-                        if exc.reason is not persistence.PersistenceReason.STATUS_TRANSITION_INVALID:
+                        if (
+                            exc.reason
+                            is not persistence.PersistenceReason.STATUS_TRANSITION_INVALID
+                        ):
                             raise
                         ledger_store.append_status_event(
                             event,
@@ -2338,7 +2632,8 @@ class RuntimeCashAuthorityManager:
             kind = None
         if (
             kind is None
-            or current.state is not RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+            or current.state
+            is not RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
             or current.pending_dispatch_proof_sha256 != proof.sha256
         ):
             _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
@@ -2356,12 +2651,24 @@ class RuntimeCashAuthorityManager:
         )
 
     @staticmethod
-    def build_locked_dispatch_proof(*, context: Any, authority_record: RuntimeCashAuthorityRecord, raw_intent_id: str, identity_key: bytes, reserved_cash: Money, current_lots: int, target_lots: int, direction: str, evaluated_at: str) -> LockedDispatchProof:
+    def build_locked_dispatch_proof(
+        *,
+        context: Any,
+        authority_record: RuntimeCashAuthorityRecord,
+        raw_intent_id: str,
+        identity_key: bytes,
+        reserved_cash: Money,
+        current_lots: int,
+        target_lots: int,
+        direction: str,
+        evaluated_at: str,
+    ) -> LockedDispatchProof:
         context_status = getattr(context, "status", None)
         if getattr(context_status, "value", None) != "READY_FOR_LOCKED_REVALIDATION":
             _fail(CL7RuntimeReason.CONTEXT_BLOCKED)
         return LockedDispatchProof.build(
-            raw_intent_id=raw_intent_id, identity_key=identity_key,
+            raw_intent_id=raw_intent_id,
+            identity_key=identity_key,
             account_scope_sha256=context.account_scope_sha256,
             authority_record_revision=authority_record.record_revision,
             authority_record_sha256=authority_record.sha256,
@@ -2370,7 +2677,9 @@ class RuntimeCashAuthorityManager:
             central_reservation_projection_hash=context.reservation_projection_hash,
             cl6_context_identity_sha256=context.context_identity_sha256,
             cl6_context_sha256=context.sha256,
-            current_lots=current_lots, direction=direction, evaluated_at=evaluated_at,
+            current_lots=current_lots,
+            direction=direction,
+            evaluated_at=evaluated_at,
             free_investable_cash=context.free_investable_cash,
             identity_key_id=context.identity_key_id,
             ledger_head_sha256=context.ledger_head_sha256,
@@ -2387,7 +2696,9 @@ class RuntimeCashAuthorityManager:
 
 
 @contextmanager
-def legacy_execution_guard(store: RuntimeCashAuthorityStore) -> Iterator[RuntimeCashAuthorityRecord]:
+def legacy_execution_guard(
+    store: RuntimeCashAuthorityStore,
+) -> Iterator[RuntimeCashAuthorityRecord]:
     """Hold the outer authority lock across one legacy economic mutation."""
 
     if type(store) is not RuntimeCashAuthorityStore:

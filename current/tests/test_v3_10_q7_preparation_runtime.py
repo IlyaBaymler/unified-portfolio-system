@@ -1619,12 +1619,8 @@ def test_cl5_availability_observability_rejects_non_exact_string_types():
 
     invalid_values = (StringSubclass("BLOCKED"), EqualToBlocked())
     invalid_pairs = [
-        (value, cl5.AvailabilityReason.CL4_NOT_READY.value)
-        for value in invalid_values
-    ] + [
-        (cl5.AvailabilityStatus.BLOCKED.value, value)
-        for value in invalid_values
-    ]
+        (value, cl5.AvailabilityReason.CL4_NOT_READY.value) for value in invalid_values
+    ] + [(cl5.AvailabilityStatus.BLOCKED.value, value) for value in invalid_values]
     for status, reason in invalid_pairs:
         error = CL7RuntimeError(
             CL7RuntimeReason.CONTEXT_BLOCKED,

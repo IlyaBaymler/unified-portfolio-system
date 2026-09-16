@@ -259,8 +259,7 @@ def _blocked_payload(
                 AvailabilityReason.INSUFFICIENT_AFTER_RESERVATIONS.value,
             }
             allowed_pairs = {
-                (AvailabilityStatus.BLOCKED.value, reason)
-                for reason in blocked_reasons
+                (AvailabilityStatus.BLOCKED.value, reason) for reason in blocked_reasons
             }
             allowed_pairs.add(
                 (
@@ -269,11 +268,7 @@ def _blocked_payload(
                 )
             )
             pair = (exc.availability_status, exc.availability_reason)
-            if (
-                type(pair[0]) is str
-                and type(pair[1]) is str
-                and pair in allowed_pairs
-            ):
+            if type(pair[0]) is str and type(pair[1]) is str and pair in allowed_pairs:
                 payload["availability_status"] = pair[0]
                 payload["availability_reason"] = pair[1]
     return payload
