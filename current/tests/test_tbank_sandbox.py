@@ -184,9 +184,7 @@ def test_get_candles_uses_exchange_source_without_limit(monkeypatch):
             limit=None,
         )
         assert "limit" not in captured["payload"]
-        assert captured["payload"]["candleSourceType"] == (
-            "CANDLE_SOURCE_EXCHANGE"
-        )
+        assert captured["payload"]["candleSourceType"] == ("CANDLE_SOURCE_EXCHANGE")
     finally:
         client.close()
 
@@ -286,9 +284,7 @@ def test_client_uses_separate_connect_and_read_timeouts(monkeypatch):
     class Response:
         ok = True
         status_code = 200
-        headers: ClassVar[dict[str, str]] = {
-            "x-tracking-id": "tracking-123"
-        }
+        headers: ClassVar[dict[str, str]] = {"x-tracking-id": "tracking-123"}
 
         @staticmethod
         def json():
@@ -331,7 +327,9 @@ def test_connect_timeout_is_marked_transient(monkeypatch):
         client.close()
 
 
-def test_cursor_http_error_preserves_only_finite_identity_and_exact_boundary(monkeypatch):
+def test_cursor_http_error_preserves_only_finite_identity_and_exact_boundary(
+    monkeypatch,
+):
     private_description = "PRIVATE provider prose with account/token canaries"
 
     class Response:
@@ -368,7 +366,9 @@ def test_cursor_http_error_preserves_only_finite_identity_and_exact_boundary(mon
         with pytest.raises(BrokerTransportFailure):
             client.get_operations_by_cursor_once(payload, 10_000_000_000)
         assert client.last_response_meta["provider_error_code"] == "30014"
-        assert client.last_response_meta["provider_error_category"] == "REQUEST_REJECTED"
+        assert (
+            client.last_response_meta["provider_error_category"] == "REQUEST_REJECTED"
+        )
         assert client.last_response_meta["error"] == "HTTP 400"
         assert (
             client.last_response_meta["request_from_inclusive"]
@@ -420,7 +420,9 @@ def test_cursor_error_identity_falls_back_without_copying_untrusted_details(
                 10_000_000_000,
             )
         assert client.last_response_meta["provider_error_code"] == "HTTP_400"
-        assert client.last_response_meta["provider_error_category"] == "REQUEST_REJECTED"
+        assert (
+            client.last_response_meta["provider_error_category"] == "REQUEST_REJECTED"
+        )
         assert client.last_response_meta["error"] == "HTTP 400"
         assert "provider_error_description" not in client.last_response_meta
         serialized = json.dumps(client.last_response_meta)
@@ -452,20 +454,26 @@ def test_cursor_observability_helpers_reject_substitution_and_invalid_dates():
         "provider_error_category": "REQUEST_REJECTED",
     }
     assert _safe_provider_error_identity(True, {"message": "30014"}) == {}
-    assert _safe_cursor_request_boundary(
-        {
-            "from": "2026-02-30T00:00:00.000000000Z",
-            "to": "2026-03-01T00:00:00.000000000Z",
-        }
-    ) == {}
-    assert _safe_cursor_request_boundary(
-        DictSubclass(
+    assert (
+        _safe_cursor_request_boundary(
             {
-                "from": "2026-09-16T00:00:00.000000000Z",
-                "to": "2026-09-16T00:00:01.000000000Z",
+                "from": "2026-02-30T00:00:00.000000000Z",
+                "to": "2026-03-01T00:00:00.000000000Z",
             }
         )
-    ) == {}
+        == {}
+    )
+    assert (
+        _safe_cursor_request_boundary(
+            DictSubclass(
+                {
+                    "from": "2026-09-16T00:00:00.000000000Z",
+                    "to": "2026-09-16T00:00:01.000000000Z",
+                }
+            )
+        )
+        == {}
+    )
 
 
 def test_retry_telemetry_reports_recovery(monkeypatch):
@@ -475,9 +483,7 @@ def test_retry_telemetry_reports_recovery(monkeypatch):
     class Response:
         ok = True
         status_code = 200
-        headers: ClassVar[dict[str, str]] = {
-            "x-tracking-id": "tracking-recovered"
-        }
+        headers: ClassVar[dict[str, str]] = {"x-tracking-id": "tracking-recovered"}
 
         @staticmethod
         def json():
@@ -565,6 +571,7 @@ def test_retry_telemetry_reports_recovery_and_precise_timing(monkeypatch):
     assert recovered["tracking_id"] == "retry-tracking-id"
     assert client.last_response_meta["event_type"] == "API_RETRY_RECOVERED"
 
+
 def test_get_instrument_by_id_uses_official_method_and_cache(monkeypatch):
     TBankSandboxClient._INSTRUMENT_ID_CACHE.clear()
     calls = []
@@ -606,4 +613,3 @@ def test_get_instrument_by_id_uses_official_method_and_cache(monkeypatch):
     finally:
         client.close()
         TBankSandboxClient._INSTRUMENT_ID_CACHE.clear()
-

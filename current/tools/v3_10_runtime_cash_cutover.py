@@ -162,9 +162,7 @@ def _safe_cl3_provider_observability(value: object) -> dict[str, object]:
         )
     if (
         type(provider_error_code) is str
-        and re.fullmatch(
-            r"(?:[0-9]{1,10}|HTTP_[1-5][0-9]{2})", provider_error_code
-        )
+        and re.fullmatch(r"(?:[0-9]{1,10}|HTTP_[1-5][0-9]{2})", provider_error_code)
         is not None
         and type(provider_error_category) is str
         and provider_error_category == expected_category
@@ -183,9 +181,7 @@ def _safe_cl3_provider_observability(value: object) -> dict[str, object]:
         re.ASCII,
     )
     request_from_match = (
-        timestamp_pattern.fullmatch(request_from)
-        if type(request_from) is str
-        else None
+        timestamp_pattern.fullmatch(request_from) if type(request_from) is str else None
     )
     request_to_match = (
         timestamp_pattern.fullmatch(request_to) if type(request_to) is str else None

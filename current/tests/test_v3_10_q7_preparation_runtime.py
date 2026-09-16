@@ -1650,8 +1650,14 @@ def test_cl3_sync_observability_rejects_unsafe_error_and_boundary_fields(unsafe_
         "attempt_count": 1,
     }
     payload = cutover._safe_cl3_provider_observability({**base, **unsafe_meta})
-    assert "provider_error_code" not in payload or payload["provider_error_code"] == "30014"
-    assert "provider_error_category" not in payload or payload["provider_error_category"] == "REQUEST_REJECTED"
+    assert (
+        "provider_error_code" not in payload
+        or payload["provider_error_code"] == "30014"
+    )
+    assert (
+        "provider_error_category" not in payload
+        or payload["provider_error_category"] == "REQUEST_REJECTED"
+    )
     assert "request_from_inclusive" not in payload
     assert "request_to_exclusive" not in payload
     serialized = json.dumps(payload, sort_keys=True)
