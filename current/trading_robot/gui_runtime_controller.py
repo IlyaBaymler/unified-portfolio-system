@@ -36,6 +36,46 @@ from .runtime_cash_authority import (
 )
 from .sandbox_execution_adapter import SandboxExecutionAdapter, SandboxExecutionPolicy
 
+_CL4_MONEY_KEYS = frozenset({"currency", "nano", "units"})
+
+
+def normalize_cl4_portfolio_response(response: object) -> object:
+    """Map the exact T-Bank RUB wire token into the frozen CL4 token."""
+
+    if type(response) is not dict:
+        return response
+    cash = response.get("totalAmountCurrencies")
+    currency = cash.get("currency") if type(cash) is dict else None
+    if (
+        type(cash) is not dict
+        or frozenset(cash) != _CL4_MONEY_KEYS
+        or type(currency) is not str
+        or currency != "rub"
+    ):
+        return response
+    normalized_cash = dict(cash)
+    normalized_cash["currency"] = "RUB"
+    normalized = dict(response)
+    normalized["totalAmountCurrencies"] = normalized_cash
+    return normalized
+
+
+class CL4MoneyNormalizingTransport:
+    """Ephemeral CL4 view; all other provider calls remain pass-through."""
+
+    def __init__(self, delegate: Any) -> None:
+        self._delegate = delegate
+
+    def get_portfolio(self, account_id: str) -> dict[str, Any]:
+        response = self._delegate.get_portfolio(account_id)
+        normalized = normalize_cl4_portfolio_response(response)
+        if type(normalized) is not dict:
+            return response
+        return normalized
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
 
 class GuiRuntimeBlockedError(RuntimeError):
     """Fail-closed account-level GUI runtime gate."""
@@ -429,7 +469,7 @@ class GuiRuntimeController:
             portfolio_risk_runtime=portfolio_risk_runtime,
         )
         adapter = SandboxExecutionAdapter(
-            execution_transport,
+            CL4MoneyNormalizingTransport(execution_transport),
             central_manager,
             execution_policy,
             risk_runtime=risk_runtime,

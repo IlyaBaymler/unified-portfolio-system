@@ -14,10 +14,16 @@ from dotenv import dotenv_values
 
 import desktop_gui
 from tools import v3_10_q7_prepare_runtime as q7
+from tools import v3_10_runtime_cash_cutover as cutover
+from trading_robot import cash_ledger_opening_reconciliation as cl4
 from trading_robot import secret_provider as secret_provider_module
 from trading_robot.bot import BotConfig
 from trading_robot.config_persistence import bot_config_to_profile
-from trading_robot.gui_runtime_controller import GuiRuntimeController
+from trading_robot.gui_runtime_controller import (
+    CL4MoneyNormalizingTransport,
+    GuiRuntimeController,
+    normalize_cl4_portfolio_response,
+)
 from trading_robot.instrument_runtime import (
     InstrumentRuntimeStateError,
     InstrumentRuntimeStore,
@@ -26,7 +32,11 @@ from trading_robot.multi_instrument_config import (
     MultiInstrumentProfile,
     MultiInstrumentProfileStore,
 )
-from trading_robot.runtime_cash_authority import RuntimeCashAuthorityState
+from trading_robot.runtime_cash_authority import (
+    CL7RuntimeError,
+    CL7RuntimeReason,
+    RuntimeCashAuthorityState,
+)
 from trading_robot.secret_provider import (
     Q7_IDENTITY_CONFIRMATION,
     Q7SecretError,
@@ -221,6 +231,10 @@ def test_q7r_01_03_production_composition_success_missing_and_duplication(
     assert first is second
     assert first.service_ready is True
     assert len(transports) == 1
+    assert isinstance(
+        first.execution_adapter.transport,
+        CL4MoneyNormalizingTransport,
+    )
 
     monkeypatch.setattr(desktop_gui, "_PRODUCTION_COMPOSITION", None)
     incomplete = _provider(V310_CL_IDENTITY_KEY_HEX="")
@@ -1408,3 +1422,241 @@ def test_closed_q7r_case_set_has_behavioral_nodes():
     }
     assert len(names) >= 13
     assert "results" not in VECTORS
+
+
+def test_cl4_opening_dependency_reason_is_finite_and_privacy_safe():
+    visible = cutover._blocked_payload(
+        CL7RuntimeError(
+            CL7RuntimeReason.OPENING_INVALID,
+            "MONEY_INVALID",
+            stage="CL4_OPENING",
+        )
+    )
+    assert visible == {
+        "reason": "OPENING_INVALID",
+        "dependency_reason": "MONEY_INVALID",
+        "retryable": False,
+        "stage": "CL4_OPENING",
+        "status": "BLOCKED",
+    }
+
+    unsafe = cutover._blocked_payload(
+        CL7RuntimeError(
+            CL7RuntimeReason.OPENING_INVALID,
+            "PRIVATE_CANARY",
+            stage="CL4_OPENING",
+        )
+    )
+    assert "dependency_reason" not in unsafe
+
+    wrong_stage = cutover._blocked_payload(
+        CL7RuntimeError(
+            CL7RuntimeReason.OPENING_INVALID,
+            "MONEY_INVALID",
+            stage="CL3_SYNC",
+        )
+    )
+    assert "dependency_reason" not in wrong_stage
+
+
+def test_provider_to_cl4_money_normalization_is_exact_and_non_mutating():
+    raw_cash = {"currency": "rub", "units": "49998", "nano": 383235000}
+    untouched = {"currency": "rub", "units": "7", "nano": 0}
+    raw = {
+        "totalAmountCurrencies": raw_cash,
+        "totalAmountPortfolio": untouched,
+    }
+
+    normalized = normalize_cl4_portfolio_response(raw)
+
+    assert normalized is not raw
+    assert normalized["totalAmountCurrencies"] == {
+        "currency": "RUB",
+        "units": "49998",
+        "nano": 383235000,
+    }
+    assert normalized["totalAmountCurrencies"] is not raw_cash
+    assert normalized["totalAmountPortfolio"] is untouched
+    assert raw["totalAmountCurrencies"]["currency"] == "rub"
+
+    proof = cl4.build_broker_cash_proof(
+        normalized,
+        account_scope_sha256="1" * 64,
+        environment=cl4._BrokerEnvironment.SANDBOX,
+        as_of="2026-09-16T00:00:00.000000000Z",
+        evaluated_at="2026-09-16T00:00:00.000000000Z",
+        response_complete=True,
+        identity_key=b"synthetic-q7-money-normalization-key",
+        identity_key_id="CL8_Q7_MONEY_TEST",
+    )
+    assert proof.cash.currency == "RUB"
+    assert proof.cash.minor_units == 49_998_383_235_000
+
+
+@pytest.mark.parametrize(
+    ("cash", "normalizes"),
+    [
+        ({"currency": "RUB", "units": "1", "nano": 0}, False),
+        ({"currency": "Rub", "units": "1", "nano": 0}, False),
+        ({"currency": "rUB", "units": "1", "nano": 0}, False),
+        ({"currency": "usd", "units": "1", "nano": 0}, False),
+        ({"currency": 643, "units": "1", "nano": 0}, False),
+        ({"units": "1", "nano": 0}, False),
+        ({"currency": "rub", "units": 1, "nano": 0}, True),
+        ({"currency": "rub", "units": "1", "nano": "0"}, True),
+        ({"currency": "rub", "units": "1", "nano": 1_000_000_000}, True),
+        ({"currency": "rub", "units": "1", "nano": 0, "extra": 0}, False),
+    ],
+)
+def test_provider_to_cl4_money_normalization_does_not_over_accept(cash, normalizes):
+    response = {"totalAmountCurrencies": cash}
+    normalized = normalize_cl4_portfolio_response(response)
+    if cash == {"currency": "RUB", "units": "1", "nano": 0}:
+        assert normalized is response
+        assert (
+            cl4.build_broker_cash_proof(
+                normalized,
+                account_scope_sha256="2" * 64,
+                environment=cl4._BrokerEnvironment.SANDBOX,
+                as_of="2026-09-16T00:00:00.000000000Z",
+                evaluated_at="2026-09-16T00:00:00.000000000Z",
+                response_complete=True,
+                identity_key=b"synthetic-q7-money-rejection-key",
+                identity_key_id="CL8_Q7_MONEY_REJECTION",
+            ).cash.currency
+            == "RUB"
+        )
+        return
+    if normalizes:
+        assert normalized is not response
+        assert normalized["totalAmountCurrencies"]["currency"] == "RUB"
+    else:
+        assert normalized is response
+    with pytest.raises(cl4.CL4Error):
+        cl4.build_broker_cash_proof(
+            normalized,
+            account_scope_sha256="2" * 64,
+            environment=cl4._BrokerEnvironment.SANDBOX,
+            as_of="2026-09-16T00:00:00.000000000Z",
+            evaluated_at="2026-09-16T00:00:00.000000000Z",
+            response_complete=True,
+            identity_key=b"synthetic-q7-money-rejection-key",
+            identity_key_id="CL8_Q7_MONEY_REJECTION",
+        )
+
+
+class _RubSubclass(str):
+    pass
+
+
+class _RubEqualitySpoof:
+    def __eq__(self, other):
+        return other == "rub"
+
+
+@pytest.mark.parametrize(
+    "currency",
+    (_RubSubclass("rub"), _RubEqualitySpoof()),
+    ids=("str-subclass", "custom-equality"),
+)
+def test_provider_to_cl4_money_normalization_requires_exact_string(currency):
+    response = {
+        "totalAmountCurrencies": {
+            "currency": currency,
+            "units": "1",
+            "nano": 0,
+        }
+    }
+
+    assert normalize_cl4_portfolio_response(response) is response
+    with pytest.raises(cl4.CL4Error):
+        cl4.build_broker_cash_proof(
+            response,
+            account_scope_sha256="4" * 64,
+            environment=cl4._BrokerEnvironment.SANDBOX,
+            as_of="2026-09-16T00:00:00.000000000Z",
+            evaluated_at="2026-09-16T00:00:00.000000000Z",
+            response_complete=True,
+            identity_key=b"synthetic-q7-money-rejection-key",
+            identity_key_id="CL8_Q7_MONEY_REJECTION",
+        )
+
+
+def test_provider_to_cl4_money_normalization_rejects_container_substitution():
+    class DictSubclass(dict):
+        pass
+
+    values = (
+        None,
+        [],
+        DictSubclass(
+            totalAmountCurrencies={"currency": "rub", "units": "1", "nano": 0}
+        ),
+        {"totalAmountCurrencies": []},
+        {
+            "totalAmountCurrencies": DictSubclass(
+                currency="rub",
+                units="1",
+                nano=0,
+            )
+        },
+    )
+    for value in values:
+        assert normalize_cl4_portfolio_response(value) is value
+
+
+def test_cl4_money_normalizing_provider_delegates_all_other_calls():
+    class Delegate:
+        def __init__(self):
+            self.response = {
+                "totalAmountCurrencies": {
+                    "currency": "rub",
+                    "units": "5",
+                    "nano": 0,
+                }
+            }
+            self.last_response_meta = {"method": "GetSandboxPortfolio"}
+            self.calls = []
+
+        def get_portfolio(self, account_id):
+            self.calls.append(("get_portfolio", account_id))
+            return self.response
+
+        def get_positions(self, account_id):
+            self.calls.append(("get_positions", account_id))
+            return {"money": []}
+
+    delegate = Delegate()
+    provider = CL4MoneyNormalizingTransport(delegate)
+
+    assert (
+        provider.get_portfolio("synthetic-account")["totalAmountCurrencies"][
+            "currency"
+        ]
+        == "RUB"
+    )
+    assert provider.get_positions("synthetic-account") == {"money": []}
+    assert provider.last_response_meta == {"method": "GetSandboxPortfolio"}
+    assert delegate.response["totalAmountCurrencies"]["currency"] == "rub"
+    assert delegate.calls == [
+        ("get_portfolio", "synthetic-account"),
+        ("get_positions", "synthetic-account"),
+    ]
+
+
+def test_cutover_provider_uses_the_same_normalizing_transport(monkeypatch):
+    class Delegate:
+        pass
+
+    delegate = Delegate()
+
+    def factory(*, token, max_retries):
+        assert token == "synthetic-token"
+        assert max_retries == 0
+        return delegate
+
+    monkeypatch.setattr(cutover, "TBankSandboxClient", factory)
+    provider = cutover._provider("synthetic-token")
+
+    assert isinstance(provider, CL4MoneyNormalizingTransport)
+    assert provider._delegate is delegate

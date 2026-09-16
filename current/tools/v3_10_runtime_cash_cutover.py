@@ -19,12 +19,14 @@ if str(CURRENT) not in sys.path:
 from trading_robot.broker_read_adapters import TBANK_OPERATION_CODEC
 from trading_robot.cash_ledger_opening_reconciliation import (
     CL4_OPENING_CODEC,
+    CL4Reason,
 )
 from trading_robot.cash_ledger_persistence import CashLedgerStore
 from trading_robot.central_order_manager import (
     CentralOrderManager,
     CentralOrderStore,
 )
+from trading_robot.gui_runtime_controller import CL4MoneyNormalizingTransport
 from trading_robot.portfolio_repository import PortfolioRepository
 from trading_robot.portfolio_risk_runtime import PortfolioRiskRuntime
 from trading_robot.risk_persistence import RiskProfileStore, RiskStateStore
@@ -88,8 +90,24 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _provider(token: str) -> TBankSandboxClient:
-    return TBankSandboxClient(token=token, max_retries=0)
+def _provider(token: str) -> CL4MoneyNormalizingTransport:
+    return CL4MoneyNormalizingTransport(TBankSandboxClient(token=token, max_retries=0))
+
+
+def _blocked_payload(exc: CL7RuntimeError) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "reason": exc.reason.value,
+        "retryable": exc.retryable,
+        "stage": exc.stage,
+        "status": "BLOCKED",
+    }
+    if (
+        exc.reason is CL7RuntimeReason.OPENING_INVALID
+        and exc.stage == "CL4_OPENING"
+        and exc.dependency_reason in {reason.value for reason in CL4Reason}
+    ):
+        payload["dependency_reason"] = exc.dependency_reason
+    return payload
 
 
 @dataclass(slots=True)
@@ -101,7 +119,7 @@ class _Runtime:
     profiles: RiskProfileStore
     risk_state: RiskStateStore
     central: CentralOrderManager
-    provider: TBankSandboxClient | None
+    provider: CL4MoneyNormalizingTransport | None
     raw_account: str
     identity_key: bytes
     identity_key_id: str
@@ -444,14 +462,7 @@ def main(argv: list[str] | None = None) -> int:
         _print(payload)
         return 0
     except CL7RuntimeError as exc:
-        _print(
-            {
-                "reason": exc.reason.value,
-                "retryable": exc.retryable,
-                "stage": exc.stage,
-                "status": "BLOCKED",
-            }
-        )
+        _print(_blocked_payload(exc))
         return 2
     except Q7SecretError as exc:
         _print(
