@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import ClassVar
 
@@ -5,7 +6,13 @@ import pandas as pd
 import pytest
 import requests
 
-from trading_robot.tbank_sandbox import TBankAPIError, TBankSandboxClient
+from trading_robot.broker_read_adapters import BrokerTransportFailure
+from trading_robot.tbank_sandbox import (
+    TBankAPIError,
+    TBankSandboxClient,
+    _safe_cursor_request_boundary,
+    _safe_provider_error_identity,
+)
 
 
 def test_position_lots_uses_quantity_lots_not_piece_quantity():
@@ -322,6 +329,143 @@ def test_connect_timeout_is_marked_transient(monkeypatch):
         assert captured.value.method == "GetSandboxAccounts"
     finally:
         client.close()
+
+
+def test_cursor_http_error_preserves_only_finite_identity_and_exact_boundary(monkeypatch):
+    private_description = "PRIVATE provider prose with account/token canaries"
+
+    class Response:
+        ok = False
+        status_code = 400
+        headers: ClassVar[dict[str, str]] = {}
+        history = ()
+        text = private_description
+
+        @staticmethod
+        def json():
+            return {
+                "code": 3,
+                "message": "30014",
+                "description": private_description,
+                "details": [private_description],
+            }
+
+    client = TBankSandboxClient("dummy-token", max_retries=0)
+    monkeypatch.setattr(client._session, "post", lambda *_args, **_kwargs: Response())
+    payload = {
+        "accountId": "PRIVATE_ACCOUNT_ID",
+        "cursor": "",
+        "from": "2026-09-16T16:39:11.459527001Z",
+        "limit": 1000,
+        "operationTypes": [],
+        "state": "OPERATION_STATE_UNSPECIFIED",
+        "to": "2026-09-16T16:39:11.545931000Z",
+        "withoutCommissions": False,
+        "withoutOvernights": False,
+        "withoutTrades": False,
+    }
+    try:
+        with pytest.raises(BrokerTransportFailure):
+            client.get_operations_by_cursor_once(payload, 10_000_000_000)
+        assert client.last_response_meta["provider_error_code"] == "30014"
+        assert client.last_response_meta["provider_error_category"] == "REQUEST_REJECTED"
+        assert client.last_response_meta["error"] == "HTTP 400"
+        assert (
+            client.last_response_meta["request_from_inclusive"]
+            == "2026-09-16T16:39:11.459527001Z"
+        )
+        assert (
+            client.last_response_meta["request_to_exclusive"]
+            == "2026-09-16T16:39:11.545931000Z"
+        )
+        assert private_description not in json.dumps(client.last_response_meta)
+        assert "PRIVATE_ACCOUNT_ID" not in json.dumps(client.last_response_meta)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"message": "PRIVATE_TEXT", "description": "PRIVATE_DESCRIPTION"},
+        {"message": type("StringSubclass", (str,), {})("30014")},
+        {"code": True},
+        ["30014"],
+    ],
+)
+def test_cursor_error_identity_falls_back_without_copying_untrusted_details(
+    monkeypatch, details
+):
+    class Response:
+        ok = False
+        status_code = 400
+        headers: ClassVar[dict[str, str]] = {}
+        history = ()
+        text = "PRIVATE_RESPONSE_TEXT"
+
+        @staticmethod
+        def json():
+            return details
+
+    client = TBankSandboxClient("dummy-token", max_retries=0)
+    monkeypatch.setattr(client._session, "post", lambda *_args, **_kwargs: Response())
+    try:
+        with pytest.raises(BrokerTransportFailure):
+            client.get_operations_by_cursor_once(
+                {
+                    "accountId": "PRIVATE_ACCOUNT_ID",
+                    "from": "2026-09-16T16:39:11.459527001Z",
+                    "to": "2026-09-16T16:39:11.545931000Z",
+                },
+                10_000_000_000,
+            )
+        assert client.last_response_meta["provider_error_code"] == "HTTP_400"
+        assert client.last_response_meta["provider_error_category"] == "REQUEST_REJECTED"
+        assert client.last_response_meta["error"] == "HTTP 400"
+        assert "provider_error_description" not in client.last_response_meta
+        serialized = json.dumps(client.last_response_meta)
+        assert "PRIVATE_" not in serialized
+        assert "30014" not in serialized
+    finally:
+        client.close()
+
+
+def test_cursor_observability_helpers_reject_substitution_and_invalid_dates():
+    class DictSubclass(dict):
+        pass
+
+    class StringSubclass(str):
+        pass
+
+    assert _safe_provider_error_identity(
+        400,
+        DictSubclass(message="30014"),
+    ) == {
+        "provider_error_code": "HTTP_400",
+        "provider_error_category": "REQUEST_REJECTED",
+    }
+    assert _safe_provider_error_identity(
+        400,
+        {"message": StringSubclass("30014"), "code": True},
+    ) == {
+        "provider_error_code": "HTTP_400",
+        "provider_error_category": "REQUEST_REJECTED",
+    }
+    assert _safe_provider_error_identity(True, {"message": "30014"}) == {}
+    assert _safe_cursor_request_boundary(
+        {
+            "from": "2026-02-30T00:00:00.000000000Z",
+            "to": "2026-03-01T00:00:00.000000000Z",
+        }
+    ) == {}
+    assert _safe_cursor_request_boundary(
+        DictSubclass(
+            {
+                "from": "2026-09-16T00:00:00.000000000Z",
+                "to": "2026-09-16T00:00:01.000000000Z",
+            }
+        )
+    ) == {}
 
 
 def test_retry_telemetry_reports_recovery(monkeypatch):

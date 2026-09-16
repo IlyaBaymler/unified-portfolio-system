@@ -1467,11 +1467,14 @@ def test_cl3_sync_observability_is_finite_privacy_safe_and_wired(
     provider_meta = {
         "service": "SandboxService",
         "method": "GetSandboxOperationsByCursor",
-        "status_code": None,
-        "error_class": "ConnectTimeout",
-        "transient": True,
+        "status_code": 400,
+        "transient": False,
         "attempt_count": 1,
         "tracking_id": tracking_id,
+        "provider_error_code": "30014",
+        "provider_error_category": "REQUEST_REJECTED",
+        "request_from_inclusive": "2026-09-16T16:39:11.459527001Z",
+        "request_to_exclusive": "2026-09-16T16:39:11.545931000Z",
         "error": "PRIVATE ERROR TEXT",
         "authorization": "Bearer PRIVATE_TOKEN",
         "account_id": "PRIVATE_ACCOUNT_ID",
@@ -1482,7 +1485,7 @@ def test_cl3_sync_observability_is_finite_privacy_safe_and_wired(
         def prepare_runtime(self, **_kwargs):
             raise CL7RuntimeError(
                 CL7RuntimeReason.BROKER_READ_FAILED,
-                BrokerReadReason.TRANSPORT_TIMEOUT.value,
+                BrokerReadReason.TRANSPORT_HTTP_PERMANENT.value,
                 stage="CL3_SYNC",
                 retryable=True,
             )
@@ -1499,18 +1502,21 @@ def test_cl3_sync_observability_is_finite_privacy_safe_and_wired(
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "reason": "BROKER_READ_FAILED",
-        "dependency_reason": "TRANSPORT_TIMEOUT",
+        "dependency_reason": "TRANSPORT_HTTP_PERMANENT",
         "retryable": True,
         "stage": "CL3_SYNC",
         "status": "BLOCKED",
         "provider_observability": {
             "service": "SandboxService",
             "method": "GetSandboxOperationsByCursor",
-            "status_code": None,
-            "error_class": "ConnectTimeout",
-            "transient": True,
+            "status_code": 400,
+            "transient": False,
             "attempt_count": 1,
             "tracking_id_sha256": sha256(tracking_id.encode("utf-8")).hexdigest(),
+            "provider_error_code": "30014",
+            "provider_error_category": "REQUEST_REJECTED",
+            "request_from_inclusive": "2026-09-16T16:39:11.459527001Z",
+            "request_to_exclusive": "2026-09-16T16:39:11.545931000Z",
         },
     }
     serialized = json.dumps(payload, sort_keys=True)
@@ -1592,6 +1598,65 @@ def test_cl3_sync_observability_rejects_unknown_leaf_and_adversarial_types():
     )
     assert "dependency_reason" not in wrong_stage
     assert "provider_observability" not in wrong_stage
+
+
+@pytest.mark.parametrize(
+    "unsafe_meta",
+    [
+        {
+            "provider_error_code": "private prose",
+            "provider_error_category": "REQUEST_REJECTED",
+        },
+        {
+            "provider_error_code": "30014",
+            "provider_error_category": "PRIVATE_CATEGORY",
+        },
+        {
+            "provider_error_code": "30014",
+            "provider_error_category": "REQUEST_REJECTED",
+            "request_from_inclusive": "PRIVATE_FROM",
+            "request_to_exclusive": "PRIVATE_TO",
+        },
+        {
+            "provider_error_code": "30014",
+            "provider_error_category": "REQUEST_REJECTED",
+            "request_from_inclusive": "2026-09-16T16:39:12.000000000Z",
+            "request_to_exclusive": "2026-09-16T16:39:11.000000000Z",
+        },
+        {
+            "status_code": 500,
+            "provider_error_code": "HTTP_400",
+            "provider_error_category": "SERVER_REJECTED",
+        },
+        {
+            "status_code": 500,
+            "provider_error_code": "30014",
+            "provider_error_category": "REQUEST_REJECTED",
+        },
+        {
+            "provider_error_code": "30014",
+            "provider_error_category": "REQUEST_REJECTED",
+            "request_from_inclusive": "2026-02-30T00:00:00.000000000Z",
+            "request_to_exclusive": "2026-03-01T00:00:00.000000000Z",
+        },
+    ],
+)
+def test_cl3_sync_observability_rejects_unsafe_error_and_boundary_fields(unsafe_meta):
+    base = {
+        "service": "SandboxService",
+        "method": "GetSandboxOperationsByCursor",
+        "status_code": 400,
+        "transient": False,
+        "attempt_count": 1,
+    }
+    payload = cutover._safe_cl3_provider_observability({**base, **unsafe_meta})
+    assert "provider_error_code" not in payload or payload["provider_error_code"] == "30014"
+    assert "provider_error_category" not in payload or payload["provider_error_category"] == "REQUEST_REJECTED"
+    assert "request_from_inclusive" not in payload
+    assert "request_to_exclusive" not in payload
+    serialized = json.dumps(payload, sort_keys=True)
+    assert "private prose" not in serialized
+    assert "PRIVATE_" not in serialized
 
 
 @pytest.mark.parametrize(

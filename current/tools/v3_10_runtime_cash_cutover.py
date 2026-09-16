@@ -111,8 +111,8 @@ def _safe_cl3_provider_observability(value: object) -> dict[str, object]:
         "service": service,
         "method": method,
     }
+    status_code = value.get("status_code")
     if "status_code" in value:
-        status_code = value.get("status_code")
         if status_code is None or (
             type(status_code) is int and 100 <= status_code <= 599
         ):
@@ -142,6 +142,69 @@ def _safe_cl3_provider_observability(value: object) -> dict[str, object]:
                 result["tracking_id_sha256"] = hashlib.sha256(
                     tracking_id_bytes
                 ).hexdigest()
+    provider_error_code = value.get("provider_error_code")
+    provider_error_category = value.get("provider_error_category")
+    categories_by_status = {
+        400: "REQUEST_REJECTED",
+        401: "AUTHENTICATION_REJECTED",
+        403: "AUTHORIZATION_REJECTED",
+        404: "RESOURCE_NOT_FOUND",
+        408: "REQUEST_TIMEOUT",
+        409: "REQUEST_CONFLICT",
+        429: "RATE_LIMITED",
+    }
+    expected_category = None
+    if type(status_code) is int and 100 <= status_code <= 599:
+        expected_category = (
+            "SERVER_REJECTED"
+            if status_code >= 500
+            else categories_by_status.get(status_code, "HTTP_REJECTED")
+        )
+    if (
+        type(provider_error_code) is str
+        and re.fullmatch(
+            r"(?:[0-9]{1,10}|HTTP_[1-5][0-9]{2})", provider_error_code
+        )
+        is not None
+        and type(provider_error_category) is str
+        and provider_error_category == expected_category
+        and (
+            not provider_error_code.startswith("HTTP_")
+            or provider_error_code == f"HTTP_{status_code}"
+        )
+    ):
+        result["provider_error_code"] = provider_error_code
+        result["provider_error_category"] = provider_error_category
+    request_from = value.get("request_from_inclusive")
+    request_to = value.get("request_to_exclusive")
+    timestamp_pattern = re.compile(
+        r"([0-9]{4})-([0-9]{2})-([0-9]{2})T"
+        r"([0-9]{2}):([0-9]{2}):([0-9]{2})\.([0-9]{9})Z",
+        re.ASCII,
+    )
+    request_from_match = (
+        timestamp_pattern.fullmatch(request_from)
+        if type(request_from) is str
+        else None
+    )
+    request_to_match = (
+        timestamp_pattern.fullmatch(request_to) if type(request_to) is str else None
+    )
+    if (
+        type(request_from) is str
+        and type(request_to) is str
+        and request_from_match is not None
+        and request_to_match is not None
+        and request_from < request_to
+    ):
+        try:
+            datetime(*map(int, request_from_match.groups()[:6]), tzinfo=timezone.utc)
+            datetime(*map(int, request_to_match.groups()[:6]), tzinfo=timezone.utc)
+        except ValueError:
+            pass
+        else:
+            result["request_from_inclusive"] = request_from
+            result["request_to_exclusive"] = request_to
     return result
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,91 @@ import requests
 from urllib3.exceptions import ProtocolError
 
 logger = logging.getLogger(__name__)
+
+_CL1_REQUEST_TIMESTAMP_RE = re.compile(
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})T"
+    r"([0-9]{2}):([0-9]{2}):([0-9]{2})\.([0-9]{9})Z",
+    re.ASCII,
+)
+_PROVIDER_ERROR_CODE_RE = re.compile(r"[0-9]{1,10}", re.ASCII)
+_PROVIDER_ERROR_CATEGORIES = {
+    400: "REQUEST_REJECTED",
+    401: "AUTHENTICATION_REJECTED",
+    403: "AUTHORIZATION_REJECTED",
+    404: "RESOURCE_NOT_FOUND",
+    408: "REQUEST_TIMEOUT",
+    409: "REQUEST_CONFLICT",
+    429: "RATE_LIMITED",
+}
+
+
+def _safe_provider_error_identity(
+    status_code: object,
+    details: object,
+) -> dict[str, str]:
+    """Return a finite error identity without copying provider prose."""
+
+    if type(status_code) is not int or not 100 <= status_code <= 599:
+        return {}
+    provider_error_code: str | None = None
+    if type(details) is dict:
+        for key in ("message", "description"):
+            value = details.get(key)
+            if type(value) is str and _PROVIDER_ERROR_CODE_RE.fullmatch(value):
+                provider_error_code = value
+                break
+        if provider_error_code is None:
+            value = details.get("code")
+            if type(value) is int and 0 <= value <= 999_999_999:
+                provider_error_code = str(value)
+            elif type(value) is str and _PROVIDER_ERROR_CODE_RE.fullmatch(value):
+                provider_error_code = value
+    if provider_error_code is None:
+        provider_error_code = f"HTTP_{status_code}"
+    if status_code >= 500:
+        category = "SERVER_REJECTED"
+    else:
+        category = _PROVIDER_ERROR_CATEGORIES.get(status_code, "HTTP_REJECTED")
+    return {
+        "provider_error_code": provider_error_code,
+        "provider_error_category": category,
+    }
+
+
+def _safe_cursor_request_boundary(payload: object) -> dict[str, str]:
+    """Extract only the exact non-secret CL1 cursor time interval."""
+
+    if type(payload) is not dict:
+        return {}
+    from_inclusive = payload.get("from")
+    to_exclusive = payload.get("to")
+    from_match = (
+        _CL1_REQUEST_TIMESTAMP_RE.fullmatch(from_inclusive)
+        if type(from_inclusive) is str
+        else None
+    )
+    to_match = (
+        _CL1_REQUEST_TIMESTAMP_RE.fullmatch(to_exclusive)
+        if type(to_exclusive) is str
+        else None
+    )
+    if not (
+        type(from_inclusive) is str
+        and type(to_exclusive) is str
+        and from_match is not None
+        and to_match is not None
+        and from_inclusive < to_exclusive
+    ):
+        return {}
+    try:
+        datetime(*map(int, from_match.groups()[:6]), tzinfo=timezone.utc)
+        datetime(*map(int, to_match.groups()[:6]), tzinfo=timezone.utc)
+    except ValueError:
+        return {}
+    return {
+        "request_from_inclusive": from_inclusive,
+        "request_to_exclusive": to_exclusive,
+    }
 
 
 class TBankAPIError(RuntimeError):
@@ -505,7 +591,7 @@ class TBankSandboxClient:
                 retry_delays=retry_delays,
                 status_code=response.status_code,
                 tracking_id=tracking_id,
-                error=message,
+                error=f"HTTP {response.status_code}",
                 transient=transient,
                 response_headers=dict(response.headers),
             )
@@ -959,8 +1045,9 @@ class TBankSandboxClient:
             or timeout_ns <= 0
         ):
             raise ValueError("payload and timeout_ns are invalid.")
+        boundary = _safe_cursor_request_boundary(payload)
         try:
-            return self._post(
+            response = self._post(
                 "SandboxService",
                 "GetSandboxOperationsByCursor",
                 dict(payload),
@@ -969,6 +1056,16 @@ class TBankSandboxClient:
                 timeout_seconds=timeout_ns / 1_000_000_000,
             )
         except TBankAPIError as exc:
+            meta = dict(self._last_response_meta)
+            if (
+                type(meta.get("service")) is str
+                and meta.get("service") == "SandboxService"
+                and type(meta.get("method")) is str
+                and meta.get("method") == "GetSandboxOperationsByCursor"
+            ):
+                meta.update(boundary)
+                meta.update(_safe_provider_error_identity(exc.status_code, exc.details))
+                self._last_response_meta = meta
             from .broker_read_adapters import (
                 BrokerTransportFailure,
                 BrokerTransportFailureKind,
@@ -985,6 +1082,16 @@ class TBankSandboxClient:
                 else BrokerTransportFailureKind.CONNECTION_INTERRUPTED
             )
             raise BrokerTransportFailure(kind) from None
+        meta = dict(self._last_response_meta)
+        if (
+            type(meta.get("service")) is str
+            and meta.get("service") == "SandboxService"
+            and type(meta.get("method")) is str
+            and meta.get("method") == "GetSandboxOperationsByCursor"
+        ):
+            meta.update(boundary)
+            self._last_response_meta = meta
+        return response
 
     def post_order(
         self,
