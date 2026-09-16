@@ -1594,6 +1594,55 @@ def test_cl3_sync_observability_rejects_unknown_leaf_and_adversarial_types():
     assert "provider_observability" not in wrong_stage
 
 
+@pytest.mark.parametrize(
+    "provider_meta",
+    [
+        {
+            "service": "SandboxService",
+            "method": "GetSandboxPortfolio",
+            "status_code": 200,
+            "error_class": "HTTPResponse",
+            "transient": False,
+            "attempt_count": 1,
+            "tracking_id": "stale-opening-tracking-id",
+        },
+        {
+            "service": "SandboxService",
+            "status_code": 504,
+            "error_class": "ReadTimeout",
+            "transient": True,
+            "attempt_count": 3,
+            "tracking_id": "missing-method-tracking-id",
+        },
+        {
+            "service": "OtherService",
+            "method": "GetSandboxOperationsByCursor",
+            "status_code": 503,
+            "error_class": "ConnectTimeout",
+            "transient": True,
+            "attempt_count": 3,
+            "tracking_id": "wrong-service-tracking-id",
+        },
+    ],
+    ids=("stale-portfolio", "missing-method", "wrong-service"),
+)
+def test_cl3_sync_observability_requires_exact_service_method_pair(provider_meta):
+    payload = cutover._blocked_payload(
+        CL7RuntimeError(
+            CL7RuntimeReason.BROKER_READ_FAILED,
+            BrokerReadReason.CLOCK_FAILURE.value,
+            stage="CL3_SYNC",
+            retryable=True,
+        ),
+        provider_meta=provider_meta,
+    )
+
+    assert payload["dependency_reason"] == "CLOCK_FAILURE"
+    assert "provider_observability" not in payload
+    serialized = json.dumps(payload, sort_keys=True)
+    assert "tracking-id" not in serialized
+
+
 def test_provider_to_cl4_money_normalization_is_exact_and_non_mutating():
     raw_cash = {"currency": "rub", "units": "49998", "nano": 383235000}
     untouched = {"currency": "rub", "units": "7", "nano": 0}

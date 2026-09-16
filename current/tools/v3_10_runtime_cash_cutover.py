@@ -98,13 +98,19 @@ def _provider(token: str) -> CL4MoneyNormalizingTransport:
 def _safe_cl3_provider_observability(value: object) -> dict[str, object]:
     if type(value) is not dict:
         return {}
-    result: dict[str, object] = {}
     service = value.get("service")
-    if type(service) is str and service == "SandboxService":
-        result["service"] = service
     method = value.get("method")
-    if type(method) is str and method == "GetSandboxOperationsByCursor":
-        result["method"] = method
+    if not (
+        type(service) is str
+        and service == "SandboxService"
+        and type(method) is str
+        and method == "GetSandboxOperationsByCursor"
+    ):
+        return {}
+    result: dict[str, object] = {
+        "service": service,
+        "method": method,
+    }
     if "status_code" in value:
         status_code = value.get("status_code")
         if status_code is None or (
