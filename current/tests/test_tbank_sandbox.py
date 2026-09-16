@@ -471,15 +471,11 @@ def test_cursor_30070_is_the_only_provider_time_retry_signal(monkeypatch):
         with pytest.raises(BrokerTransportFailure) as captured:
             client.get_operations_by_cursor_once(payload, 10_000_000_000)
         assert (
-            captured.value.kind
-            is BrokerTransportFailureKind.REQUEST_TIME_NOT_REACHED
+            captured.value.kind is BrokerTransportFailureKind.REQUEST_TIME_NOT_REACHED
         )
         assert captured.value.http_status is None
         assert client.last_response_meta["provider_error_code"] == "30070"
-        assert (
-            client.last_response_meta["request_from_inclusive"]
-            == payload["from"]
-        )
+        assert client.last_response_meta["request_from_inclusive"] == payload["from"]
         assert client.last_response_meta["request_to_exclusive"] == payload["to"]
         serialized = json.dumps(client.last_response_meta, sort_keys=True)
         assert "PRIVATE_RESPONSE_TEXT" not in serialized

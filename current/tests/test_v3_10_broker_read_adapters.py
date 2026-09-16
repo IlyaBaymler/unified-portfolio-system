@@ -669,9 +669,7 @@ def test_v310_cl3_11_retry_status_and_backoff() -> None:
     assert transport.calls[0][0] == transport.calls[1][0]
     assert transport.calls[0][1] == transport.calls[1][1] == 10_000_000_000
 
-    exhausted_provider_time = _Transport(
-        [provider_time, provider_time, provider_time]
-    )
+    exhausted_provider_time = _Transport([provider_time, provider_time, provider_time])
     waits = []
     exhausted_error = _error(
         lambda: cl3.collect_tbank_operations(

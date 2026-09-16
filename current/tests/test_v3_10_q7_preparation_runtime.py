@@ -2010,9 +2010,7 @@ def test_stage_b_cl3_transport_retries_only_exact_30070_without_effects(
         expected_calls = 3 if exhausted else 2
         assert len(calls) == expected_calls
         assert all(call[1] == calls[0][1] for call in calls)
-        assert all(
-            call[0].endswith("/GetSandboxOperationsByCursor") for call in calls
-        )
+        assert all(call[0].endswith("/GetSandboxOperationsByCursor") for call in calls)
         assert all("PostSandboxOrder" not in call[0] for call in calls)
     finally:
         client.close()
