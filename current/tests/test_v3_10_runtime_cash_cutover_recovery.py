@@ -14,7 +14,9 @@ from typing import ClassVar
 
 import pytest
 import requests
+
 from trading_robot import broker_read_adapters as cl3
+from trading_robot import cash_availability as cl5
 from trading_robot import cash_ledger_opening_reconciliation as cl4
 from trading_robot import cash_ledger_persistence as persistence
 from trading_robot import runtime_cash_authority as cl7
@@ -1284,16 +1286,17 @@ def test_full_prepare_confirm_activate_arm_uses_fresh_cl2_to_cl6_evidence(
             }
 
         @staticmethod
-        def get_positions(_account: str) -> dict[str, object]:
-            return {
-                "accountId": RAW_ACCOUNT,
+        def get_withdraw_limits(_account: str):
+            return cl5.WithdrawLimitsTransportObservation(
+                raw_request_account_id=RAW_ACCOUNT,
+                service="SandboxService",
+                method="GetSandboxWithdrawLimits",
+                response={
                 "blocked": [],
-                "futures": [],
-                "limitsLoadingInProgress": False,
+                "blockedGuarantee": [],
                 "money": [{"currency": "RUB", "nano": 0, "units": "150"}],
-                "options": [],
-                "securities": [],
-            }
+                },
+            )
 
         @staticmethod
         def get_operations_by_cursor_once(_payload, _timeout):
@@ -1410,8 +1413,13 @@ class _ExactTransport:
         return {"synthetic": "portfolio"}
 
     @staticmethod
-    def get_positions(_account_id: str) -> dict[str, object]:
-        return {"synthetic": "positions"}
+    def get_withdraw_limits(_account_id: str):
+        return cl5.WithdrawLimitsTransportObservation(
+            RAW_ACCOUNT,
+            "SandboxService",
+            "GetSandboxWithdrawLimits",
+            {"money": [], "blocked": [], "blockedGuarantee": []},
+        )
 
     def post_order_once(self, *_args, order_id: str, **_kwargs):
         self.post_calls += 1

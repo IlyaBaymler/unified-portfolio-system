@@ -1380,7 +1380,7 @@ class RuntimeCashAuthorityStore:
 class _RuntimeEvidenceSet:
     ledger_export_bytes: bytes
     broker_cash_proof: Any
-    broker_positions_proof: Any
+    broker_withdraw_limits_proof: Any
     reconciliation: Any
     reservations: Any
     availability: Any
@@ -1510,9 +1510,9 @@ class RuntimeCashAuthorityManager:
         current: RuntimeCashAuthorityRecord,
         ledger_store: Any,
         portfolio_response: object,
-        positions_response: object,
+        withdraw_limits_observation: object,
         broker_cash_as_of: str,
-        broker_positions_as_of: str,
+        broker_withdraw_limits_as_of: str,
         central_state: Any,
         portfolio_lease: Any,
         risk_policy: Any,
@@ -1545,11 +1545,11 @@ class RuntimeCashAuthorityManager:
                 identity_key=identity_key,
                 identity_key_id=identity_key_id,
             )
-            positions = cl5.build_broker_positions_cash_proof(
-                positions_response,
+            withdraw_limits = cl5.build_broker_withdraw_limits_cash_proof(
+                withdraw_limits_observation,
                 account_scope_sha256=current.account_scope_sha256,
                 environment=broker.BrokerEnvironment.SANDBOX,
-                as_of=_timestamp(broker_positions_as_of),
+                as_of=_timestamp(broker_withdraw_limits_as_of),
                 evaluated_at=evaluated_at,
                 response_complete=True,
                 identity_key=identity_key,
@@ -1572,7 +1572,7 @@ class RuntimeCashAuthorityManager:
             availability = cl5.build_cash_availability(
                 ledger_export,
                 reconciliation,
-                positions,
+                withdraw_limits,
                 reservations,
                 evaluated_at=evaluated_at,
                 identity_key=identity_key,
@@ -1599,7 +1599,7 @@ class RuntimeCashAuthorityManager:
             context = cl6.build_portfolio_risk_cash_context(
                 ledger_export,
                 reconciliation,
-                positions,
+                withdraw_limits,
                 reservations,
                 availability,
                 portfolio,
@@ -1635,27 +1635,7 @@ class RuntimeCashAuthorityManager:
             and getattr(getattr(context, "status", None), "value", None)
             != "READY_FOR_LOCKED_REVALIDATION"
         ):
-            broker_view_observability = None
-            if (
-                getattr(context, "reason", None)
-                is cl6.RiskCashContextReason.CASH_AVAILABILITY_NOT_READY
-                and availability.status is cl5.AvailabilityStatus.BLOCKED
-                and availability.availability_reason
-                is cl5.AvailabilityReason.BROKER_VIEW_MISMATCH
-            ):
-                try:
-                    broker_view_observability = _build_broker_view_observability(
-                        broker_total_cash=reconciliation.broker_cash,
-                        positions_money_rub=positions.positions_money_rub,
-                        blocked_rub=positions.blocked_rub,
-                        identity_key=identity_key,
-                    )
-                except Exception:
-                    broker_view_observability = None
-            _fail_context_not_ready(
-                context,
-                broker_view_observability=broker_view_observability,
-            )
+            _fail_context_not_ready(context)
         snapshot = ledger_store.snapshot()
         if (
             context.ledger_revision != snapshot.ledger_revision
@@ -1665,7 +1645,7 @@ class RuntimeCashAuthorityManager:
         return _RuntimeEvidenceSet(
             ledger_export_bytes=ledger_export,
             broker_cash_proof=cash,
-            broker_positions_proof=positions,
+            broker_withdraw_limits_proof=withdraw_limits,
             reconciliation=reconciliation,
             reservations=reservations,
             availability=availability,
@@ -1684,9 +1664,9 @@ class RuntimeCashAuthorityManager:
         risk_state_store: Any,
         central_manager: Any,
         portfolio_response: object,
-        positions_response: object,
+        withdraw_limits_observation: object,
         broker_cash_as_of: str,
-        broker_positions_as_of: str,
+        broker_withdraw_limits_as_of: str,
         raw_account_id: str,
         identity_key: bytes,
         identity_key_id: str,
@@ -1726,9 +1706,13 @@ class RuntimeCashAuthorityManager:
                                 current=current,
                                 ledger_store=ledger_store,
                                 portfolio_response=portfolio_response,
-                                positions_response=positions_response,
+                                withdraw_limits_observation=(
+                                    withdraw_limits_observation
+                                ),
                                 broker_cash_as_of=broker_cash_as_of,
-                                broker_positions_as_of=broker_positions_as_of,
+                                broker_withdraw_limits_as_of=(
+                                    broker_withdraw_limits_as_of
+                                ),
                                 central_state=central,
                                 portfolio_lease=lease,
                                 risk_policy=policy,
@@ -1858,12 +1842,14 @@ class RuntimeCashAuthorityManager:
         )
         try:
             portfolio_response = provider.get_portfolio(raw_account_id)
-            positions_response = provider.get_positions(raw_account_id)
+            withdraw_limits_observation = provider.get_withdraw_limits(
+                raw_account_id
+            )
             provider_as_of = _timestamp(clock())
         except Exception:
             _fail(
                 CL7RuntimeReason.BROKER_READ_FAILED,
-                stage="CURRENT_CASH_POSITIONS",
+                stage="CURRENT_CASH_WITHDRAW_LIMITS",
                 retryable=True,
             )
         evaluated_at = _timestamp(clock())
@@ -1883,9 +1869,9 @@ class RuntimeCashAuthorityManager:
             risk_state_store=risk_state_store,
             central_manager=central_manager,
             portfolio_response=portfolio_response,
-            positions_response=positions_response,
+            withdraw_limits_observation=withdraw_limits_observation,
             broker_cash_as_of=provider_as_of,
-            broker_positions_as_of=provider_as_of,
+            broker_withdraw_limits_as_of=provider_as_of,
             raw_account_id=raw_account_id,
             identity_key=identity_key,
             identity_key_id=identity_key_id,

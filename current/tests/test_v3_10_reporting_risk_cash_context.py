@@ -232,7 +232,7 @@ def _cash_inputs(
     vectors: dict[str, object],
 ) -> tuple[
     cl4.CashReconciliation,
-    cl5.BrokerPositionsCashProof,
+    cl5.BrokerWithdrawLimitsCashProof,
     cl5.CentralReservationProjection,
     cl5.CashAvailabilitySnapshot,
 ]:
@@ -253,16 +253,17 @@ def _cash_inputs(
         evaluated_at=END,
         identity_key=KEY,
     )
-    positions = cl5.build_broker_positions_cash_proof(
-        {
-            "accountId": RAW_ACCOUNT,
+    withdraw_limits = cl5.build_broker_withdraw_limits_cash_proof(
+        cl5.WithdrawLimitsTransportObservation(
+            raw_request_account_id=RAW_ACCOUNT,
+            service="SandboxService",
+            method="GetSandboxWithdrawLimits",
+            response={
             "blocked": [{"currency": "RUB", "nano": 0, "units": "20"}],
-            "futures": [],
-            "limitsLoadingInProgress": False,
+            "blockedGuarantee": [],
             "money": [{"currency": "RUB", "nano": 0, "units": "130"}],
-            "options": [],
-            "securities": [],
-        },
+            },
+        ),
         account_scope_sha256=ACCOUNT_SCOPE,
         environment=ENV,
         as_of=END,
@@ -290,12 +291,12 @@ def _cash_inputs(
     availability = cl5.build_cash_availability(
         exported,
         reconciliation,
-        positions,
+        withdraw_limits,
         reservations,
         evaluated_at=END,
         identity_key=KEY,
     )
-    return reconciliation, positions, reservations, availability
+    return reconciliation, withdraw_limits, reservations, availability
 
 
 def _context(
@@ -1057,13 +1058,13 @@ def test_v310_cl6_25_contract_owned_evidence_kats_are_executed(
         status=cl6.RiskCashContextStatus.READY_FOR_LOCKED_REVALIDATION,
         reason=cl6.RiskCashContextReason.READY,
         availability_sha256=(
-            "cd375c47f6dc528ae8e64a13dfb7de9145f5964988893c7ef20561050411e238"
+            "2adb09081ff97c8441f3a5444b11b2dd2afbeeacfbbed1cdabf467e85d540190"
         ),
         availability_status="READY",
         availability_reason="READY",
         availability_evaluated_at=kat_at,
         broker_cash_as_of=kat_at,
-        broker_positions_as_of=kat_at,
+        broker_withdraw_limits_as_of=kat_at,
         free_investable_cash=_money(50),
         ledger_export_sha256="3" * 64,
         ledger_revision=5,
@@ -1103,8 +1104,12 @@ def test_v310_cl6_25_contract_owned_evidence_kats_are_executed(
         == expected["risk_guard_evidence_identity_sha256"]
     )
     assert guard.sha256 == expected["risk_guard_evidence_sha256"]
-    assert context.context_identity_sha256 == expected["context_identity_sha256"]
-    assert context.sha256 == expected["context_sha256"]
+    assert context.context_identity_sha256 == (
+        "ec8f14012697de68cde5f483c8f2d99a4e0117fab2d3bbe0485ea42ab72b4a6d"
+    )
+    assert context.sha256 == (
+        "a50bfe0ead7fd4a6ee7b4798f89e4a1ebe3ea23b9abe89c2727db1f9610178b1"
+    )
 
 
 def test_v310_cl6_26_risk_semantic_ranges_precede_hash_dispatch(
@@ -1358,7 +1363,7 @@ def test_v310_cl6_33_every_context_identity_field_is_hmac_bound(
         "availability_reason": "TEST",
         "availability_evaluated_at": END_PLUS_10,
         "broker_cash_as_of": END_PLUS_10,
-        "broker_positions_as_of": END_PLUS_10,
+        "broker_withdraw_limits_as_of": END_PLUS_10,
         "free_investable_cash": _money(131),
         "ledger_export_sha256": "f" * 64,
         "ledger_revision": context.ledger_revision + 1,
@@ -1378,7 +1383,7 @@ def test_v310_cl6_33_every_context_identity_field_is_hmac_bound(
         "risk_policy_hash": "f" * 64,
         "risk_state_guard_hash": "f" * 64,
         "identity_key_id": "CL6_MUTATION_KEY_V1",
-        "version": 2,
+        "version": 1,
     }
     identity_fields = {
         field.name

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import ctypes
+import inspect
 import json
 import subprocess
 import threading
@@ -765,8 +766,10 @@ def test_secure_connection_save_is_rejected_while_runtime_is_active(monkeypatch)
     assert errors == [
         (
             "Sandbox активен",
-            "Сначала остановите account-level Sandbox runtime, затем сохраните "
-            "подключение и перезапустите приложение.",
+            (
+                "Сначала остановите account-level Sandbox runtime, затем сохраните "
+                "подключение и перезапустите приложение."
+            ),
         )
     ]
 
@@ -1848,100 +1851,55 @@ def test_broker_view_observability_is_atomic_and_privacy_safe_at_cli_boundary():
         assert private_value not in serialized
 
 
-def test_broker_view_observability_uses_exact_runtime_operands_without_effects(
+def test_withdraw_limits_runtime_rebuild_has_no_positions_ready_oracle():
+    source = inspect.getsource(cl7.RuntimeCashAuthorityManager.build_runtime_context)
+    assert "build_broker_withdraw_limits_cash_proof" in source
+    assert "build_broker_positions_cash_proof" not in source
+    assert "positions_money_rub" not in source
+    assert "BROKER_VIEW_MISMATCH" not in source
+
+
+def test_final_locked_revalidation_reads_withdraw_limits_exactly_once():
+    from trading_robot.sandbox_execution_adapter import SandboxExecutionAdapter
+
+    initial = inspect.getsource(
+        cl7.RuntimeCashAuthorityManager._sync_and_rebuild_locked
+    )
+    final = inspect.getsource(SandboxExecutionAdapter._dispatch_exact)
+    for source in (initial, final):
+        assert source.count(".get_withdraw_limits(") == 1
+        assert ".get_positions(" not in source
+    assert final.count(".post_order_once(") == 1
+
+
+def test_tbank_withdraw_limits_observation_binds_request_in_same_call_frame(
     monkeypatch,
 ):
-    broker_total = Money(currency="RUB", minor_units=100_000_000_000)
-    positions_money = Money(currency="RUB", minor_units=60_000_000_000)
-    blocked = Money(currency="RUB", minor_units=30_000_000_000)
-    positions = SimpleNamespace(
-        positions_money_rub=positions_money,
-        blocked_rub=blocked,
-    )
-    reconciliation = SimpleNamespace(broker_cash=broker_total)
-    availability = SimpleNamespace(
-        status=cl5.AvailabilityStatus.BLOCKED,
-        availability_reason=cl5.AvailabilityReason.BROKER_VIEW_MISMATCH,
-    )
-    context = SimpleNamespace(
-        status=SimpleNamespace(value="BLOCKED"),
-        reason=RiskCashContextReason.CASH_AVAILABILITY_NOT_READY,
-        availability_status=cl5.AvailabilityStatus.BLOCKED.value,
-        availability_reason=cl5.AvailabilityReason.BROKER_VIEW_MISMATCH.value,
-    )
-    provider_effects = []
-    values = {
-        (cl4, "build_broker_cash_proof"): SimpleNamespace(),
-        (cl5, "build_broker_positions_cash_proof"): positions,
-        (cl4, "reconcile_shadow_cash"): reconciliation,
-        (cl5, "project_central_reservations"): SimpleNamespace(),
-        (cl5, "build_cash_availability"): availability,
+    client = TBankSandboxClient("dummy-token", max_retries=0)
+    response = {
+        "money": [{"currency": "RUB", "units": "80", "nano": 0}],
+        "blocked": [{"currency": "RUB", "units": "20", "nano": 0}],
+        "blockedGuarantee": [],
     }
-    for (module, name), result in values.items():
-        monkeypatch.setattr(
-            module, name, lambda *_args, _result=result, **_kwargs: _result
-        )
-    import trading_robot.reporting_risk_cash_context as cl6_module
+    calls = []
 
-    monkeypatch.setattr(
-        cl6_module,
-        "build_portfolio_identity_evidence",
-        lambda *_args, **_kwargs: SimpleNamespace(),
-    )
-    monkeypatch.setattr(
-        cl6_module,
-        "build_risk_guard_evidence",
-        lambda *_args, **_kwargs: SimpleNamespace(),
-    )
-    monkeypatch.setattr(
-        cl6_module,
-        "build_portfolio_risk_cash_context",
-        lambda *_args, **_kwargs: context,
-    )
-    manager = SimpleNamespace(_account=lambda *_args, **_kwargs: None)
-    ledger = SimpleNamespace(export_bytes=lambda: b"synthetic-ledger-export")
-    original_bytes = tuple(
-        value.canonical_bytes for value in (broker_total, positions_money, blocked)
-    )
+    def post(_self, service, method, payload, **_kwargs):
+        calls.append((service, method, dict(payload)))
+        return response
 
-    with pytest.raises(CL7RuntimeError) as caught:
-        cl7.RuntimeCashAuthorityManager.build_runtime_context(
-            manager,
-            current=SimpleNamespace(account_scope_sha256="1" * 64),
-            ledger_store=ledger,
-            portfolio_response={"provider": "response"},
-            positions_response={"provider": "positions"},
-            broker_cash_as_of="2026-09-16T00:00:00.000000000Z",
-            broker_positions_as_of="2026-09-16T00:00:00.000000000Z",
-            central_state=SimpleNamespace(),
-            portfolio_lease=SimpleNamespace(),
-            risk_policy=SimpleNamespace(),
-            risk_state=SimpleNamespace(),
-            raw_account_id="SYNTHETIC_ACCOUNT",
-            identity_key=b"k" * 32,
-            identity_key_id="Q7_BROKER_VIEW_TEST",
-            evaluated_at="2026-09-16T00:00:00.000000000Z",
-        )
-
-    assert caught.value.reason is CL7RuntimeReason.CONTEXT_BLOCKED
-    assert caught.value.stage == "CL6_CONTEXT"
-    assert (
-        caught.value.dependency_reason
-        == RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value
-    )
-    assert caught.value.broker_view_observability == _broker_view_observability(
-        broker_total.minor_units,
-        positions_money.minor_units,
-        blocked.minor_units,
-    )
-    assert (
-        tuple(
-            value.canonical_bytes for value in (broker_total, positions_money, blocked)
-        )
-        == original_bytes
-    )
-    assert provider_effects == []
-
+    monkeypatch.setattr(TBankSandboxClient, "_post", post)
+    observation = client.get_withdraw_limits("synthetic-account")
+    assert type(observation) is cl5.WithdrawLimitsTransportObservation
+    assert observation.raw_request_account_id == "synthetic-account"
+    assert observation.service == "SandboxService"
+    assert observation.method == "GetSandboxWithdrawLimits"
+    assert calls == [(
+        "SandboxService", "GetSandboxWithdrawLimits",
+        {"accountId": "synthetic-account"},
+    )]
+    response["money"].clear()
+    assert observation.response["money"] != []
+    client.close()
 
 def test_broker_view_observability_rejects_non_atomic_and_adversarial_values():
     class DictSubclass(dict):
@@ -2873,9 +2831,14 @@ def test_cl4_money_normalizing_provider_delegates_all_other_calls():
             self.calls.append(("get_portfolio", account_id))
             return self.response
 
-        def get_positions(self, account_id):
-            self.calls.append(("get_positions", account_id))
-            return {"money": []}
+        def get_withdraw_limits(self, account_id):
+            self.calls.append(("get_withdraw_limits", account_id))
+            return cl5.WithdrawLimitsTransportObservation(
+                account_id,
+                "SandboxService",
+                "GetSandboxWithdrawLimits",
+                {"money": [], "blocked": [], "blockedGuarantee": []},
+            )
 
     delegate = Delegate()
     provider = CL4MoneyNormalizingTransport(delegate)
@@ -2884,12 +2847,14 @@ def test_cl4_money_normalizing_provider_delegates_all_other_calls():
         provider.get_portfolio("synthetic-account")["totalAmountCurrencies"]["currency"]
         == "RUB"
     )
-    assert provider.get_positions("synthetic-account") == {"money": []}
+    observation = provider.get_withdraw_limits("synthetic-account")
+    assert type(observation) is cl5.WithdrawLimitsTransportObservation
+    assert observation.raw_request_account_id == "synthetic-account"
     assert provider.last_response_meta == {"method": "GetSandboxPortfolio"}
     assert delegate.response["totalAmountCurrencies"]["currency"] == "rub"
     assert delegate.calls == [
         ("get_portfolio", "synthetic-account"),
-        ("get_positions", "synthetic-account"),
+        ("get_withdraw_limits", "synthetic-account"),
     ]
 
 

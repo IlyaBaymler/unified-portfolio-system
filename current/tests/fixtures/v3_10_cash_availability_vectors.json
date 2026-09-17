@@ -1,54 +1,24 @@
 {
   "account_scope": {
-    "preimage_ascii": "{\"account_id\":\"sandbox-account-0001\",\"domain\":\"v3.10-cl3-account-scope\",\"environment\":\"SANDBOX\",\"identity_key_id\":\"CL5_TEST_KEY_V1\",\"provider\":\"TBANK\",\"version\":1}",
     "sha256": "15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3"
   },
   "as_of": "2026-09-11T10:00:00.000000000Z",
   "evaluated_at": "2026-09-11T10:00:00.000000000Z",
-  "fixture_id": "CL5-KAT-01",
-  "foreign_cash_mutation": {
-    "foreign_cash_present_false_hmac_preimage_ascii": "{\"account_scope_sha256\":\"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3\",\"as_of\":\"2026-09-11T10:00:00.000000000Z\",\"blocked_rub\":{\"amount\":\"20.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"20000000000\",\"scale\":9,\"version\":1},\"domain\":\"v3.10-cl5-broker-positions-cash-proof-identity\",\"environment\":\"SANDBOX\",\"foreign_cash_present\":false,\"identity_key_id\":\"CL5_TEST_KEY_V1\",\"positions_money_rub\":{\"amount\":\"80.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"80000000000\",\"scale\":9,\"version\":1},\"provider\":\"TBANK\",\"response_canonical_sha256\":\"71aac2f99b4a686f355768683a847d0840eeb7f952ef0415bd3ea9bc75d09c7c\",\"response_complete\":true,\"rpc\":\"tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxPositions\",\"version\":1}",
-    "foreign_cash_present_true_hmac": "8d6583962f244691dd2aed4f2bb618430279878ebe4113cc0742f98a92f92bd4",
-    "foreign_cash_present_true_hmac_preimage_ascii": "{\"account_scope_sha256\":\"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3\",\"as_of\":\"2026-09-11T10:00:00.000000000Z\",\"blocked_rub\":{\"amount\":\"20.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"20000000000\",\"scale\":9,\"version\":1},\"domain\":\"v3.10-cl5-broker-positions-cash-proof-identity\",\"environment\":\"SANDBOX\",\"foreign_cash_present\":true,\"identity_key_id\":\"CL5_TEST_KEY_V1\",\"positions_money_rub\":{\"amount\":\"80.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"80000000000\",\"scale\":9,\"version\":1},\"provider\":\"TBANK\",\"response_canonical_sha256\":\"71aac2f99b4a686f355768683a847d0840eeb7f952ef0415bd3ea9bc75d09c7c\",\"response_complete\":true,\"rpc\":\"tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxPositions\",\"version\":1}",
-    "response": {
-      "accountId": "sandbox-account-0001",
-      "blocked": [
-        {
-          "currency": "RUB",
-          "nano": 0,
-          "units": "20"
-        }
-      ],
-      "futures": [],
-      "limitsLoadingInProgress": false,
-      "money": [
-        {
-          "currency": "RUB",
-          "nano": 0,
-          "units": "80"
-        },
-        {
-          "currency": "USD",
-          "nano": 0,
-          "units": "1"
-        }
-      ],
-      "options": [],
-      "securities": []
-    },
-    "response_canonical_ascii": "{\"accountId\":\"sandbox-account-0001\",\"blocked\":[{\"currency\":\"RUB\",\"nano\":0,\"units\":\"20\"}],\"futures\":[],\"limitsLoadingInProgress\":false,\"money\":[{\"currency\":\"RUB\",\"nano\":0,\"units\":\"80\"},{\"currency\":\"USD\",\"nano\":0,\"units\":\"1\"}],\"options\":[],\"securities\":[]}",
-    "response_canonical_sha256": "71aac2f99b4a686f355768683a847d0840eeb7f952ef0415bd3ea9bc75d09c7c",
-    "same_preimage_with_foreign_cash_present_false_hmac": "8316790a43bcfa0dbd6abb9d7990df84d653bb9ba5c35f9ae41b36b0ff1ec230"
-  },
+  "fixture_id": "CL8-Q7-BVM-KAT-01",
   "identity_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
   "identity_key_id": "CL5_TEST_KEY_V1",
-  "positions": {
-    "proof_canonical_ascii": "{\"account_scope_sha256\":\"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3\",\"as_of\":\"2026-09-11T10:00:00.000000000Z\",\"blocked_rub\":{\"amount\":\"20.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"20000000000\",\"scale\":9,\"version\":1},\"domain\":\"v3.10-cl5-broker-positions-cash-proof\",\"environment\":\"SANDBOX\",\"foreign_cash_present\":false,\"identity_key_id\":\"CL5_TEST_KEY_V1\",\"positions_money_rub\":{\"amount\":\"80.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"80000000000\",\"scale\":9,\"version\":1},\"proof_identity_sha256\":\"66893e4b8a21a7dabaebbf1c59058a741e48b52382c62ceea79ca59d965e900b\",\"provider\":\"TBANK\",\"response_canonical_sha256\":\"8536a2edc952eb45dbab5238f2e5ebf476746eba14806f835e6aad02d9457949\",\"response_complete\":true,\"rpc\":\"tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxPositions\",\"version\":1}",
-    "proof_hmac_preimage_ascii": "{\"account_scope_sha256\":\"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3\",\"as_of\":\"2026-09-11T10:00:00.000000000Z\",\"blocked_rub\":{\"amount\":\"20.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"20000000000\",\"scale\":9,\"version\":1},\"domain\":\"v3.10-cl5-broker-positions-cash-proof-identity\",\"environment\":\"SANDBOX\",\"foreign_cash_present\":false,\"identity_key_id\":\"CL5_TEST_KEY_V1\",\"positions_money_rub\":{\"amount\":\"80.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"80000000000\",\"scale\":9,\"version\":1},\"provider\":\"TBANK\",\"response_canonical_sha256\":\"8536a2edc952eb45dbab5238f2e5ebf476746eba14806f835e6aad02d9457949\",\"response_complete\":true,\"rpc\":\"tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxPositions\",\"version\":1}",
-    "proof_identity_sha256": "66893e4b8a21a7dabaebbf1c59058a741e48b52382c62ceea79ca59d965e900b",
-    "proof_sha256": "96a9c34f60c7317ac44e0facab9f853805a26d4565ef33f28468d251454be22d",
+  "raw_account_id": "sandbox-account-0001",
+  "snapshot_v2": {
+    "canonical_ascii": "{\"account_scope_sha256\":\"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3\",\"availability_reason\":\"READY\",\"broker_cash_as_of\":\"2026-09-11T10:00:00.000000000Z\",\"broker_total_cash\":{\"amount\":\"100.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"100000000000\",\"scale\":9,\"version\":1},\"broker_withdraw_blocked_cash\":{\"amount\":\"20.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"20000000000\",\"scale\":9,\"version\":1},\"broker_withdraw_blocked_guarantee_cash\":{\"amount\":\"0.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"0\",\"scale\":9,\"version\":1},\"broker_withdraw_limits_as_of\":\"2026-09-11T10:00:00.000000000Z\",\"broker_withdraw_limits_cash_proof_sha256\":\"f5e03b70096a4e0f9756098d7a1a4e7550f6976aa5017d92aa25ec0f8f812f5b\",\"broker_withdrawable_cash_lower_bound\":{\"amount\":\"80.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"80000000000\",\"scale\":9,\"version\":1},\"central_ambiguous_reserved_cash\":{\"amount\":\"0.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"0\",\"scale\":9,\"version\":1},\"central_order_revision\":\"7\",\"central_projection_evaluated_at\":\"2026-09-11T10:00:00.000000000Z\",\"central_queued_reserved_cash\":{\"amount\":\"30.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"30000000000\",\"scale\":9,\"version\":1},\"central_reservation_projection_hash\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"central_reservation_projection_sha256\":\"24505cbf486c30f5c85a2bb456db3587dc3d97f8ce9f5afc96f9b1405f511048\",\"central_total_reserved_cash\":{\"amount\":\"30.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"30000000000\",\"scale\":9,\"version\":1},\"cl4_adoption_candidate_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"cl4_reconciliation_evaluated_at\":\"2026-09-11T10:00:00.000000000Z\",\"currency\":\"RUB\",\"domain\":\"v3.10-cl5-cash-availability\",\"environment\":\"SANDBOX\",\"evaluated_at\":\"2026-09-11T10:00:00.000000000Z\",\"free_investable_cash\":{\"amount\":\"50.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"50000000000\",\"scale\":9,\"version\":1},\"ledger_export_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"ledger_head_sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"ledger_revision\":\"5\",\"overlap_disposition\":\"QUEUED_DISJOINT\",\"reconciliation_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"status\":\"READY\",\"version\":2}",
+    "sha256": "2adb09081ff97c8441f3a5444b11b2dd2afbeeacfbbed1cdabf467e85d540190"
+  },
+  "version": 2,
+  "withdraw_limits": {
+    "observation_identity_sha256": "b21b64af91a4976216d45978a73cbbafb2033c782e601e191905d1cd0db1f24c",
+    "proof_canonical_ascii": "{\"account_scope_sha256\":\"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3\",\"as_of\":\"2026-09-11T10:00:00.000000000Z\",\"available_rub\":{\"amount\":\"80.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"80000000000\",\"scale\":9,\"version\":1},\"available_rub_present\":true,\"blocked_guarantee_rub\":{\"amount\":\"0.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"0\",\"scale\":9,\"version\":1},\"blocked_guarantee_rub_present\":false,\"blocked_rub\":{\"amount\":\"20.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"20000000000\",\"scale\":9,\"version\":1},\"blocked_rub_present\":true,\"domain\":\"v3.10-cl5-broker-withdraw-limits-cash-proof\",\"environment\":\"SANDBOX\",\"foreign_cash_present\":false,\"identity_key_id\":\"CL5_TEST_KEY_V1\",\"observation_identity_sha256\":\"b21b64af91a4976216d45978a73cbbafb2033c782e601e191905d1cd0db1f24c\",\"proof_identity_sha256\":\"de2b207c43a7dfea9acb9f7a792a24e8375ab8072cfad4fa8f04e63f536d40e5\",\"provider\":\"TBANK\",\"response_canonical_sha256\":\"2e36fc5bc9beaa9fc3eeac990897f6ab894801c09b0a14b65ad1c9d39d919319\",\"response_complete\":true,\"rpc\":\"tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxWithdrawLimits\",\"version\":1}",
+    "proof_identity_sha256": "de2b207c43a7dfea9acb9f7a792a24e8375ab8072cfad4fa8f04e63f536d40e5",
+    "proof_sha256": "f5e03b70096a4e0f9756098d7a1a4e7550f6976aa5017d92aa25ec0f8f812f5b",
     "response": {
-      "accountId": "sandbox-account-0001",
       "blocked": [
         {
           "currency": "RUB",
@@ -56,33 +26,16 @@
           "units": "20"
         }
       ],
-      "futures": [],
-      "limitsLoadingInProgress": false,
+      "blockedGuarantee": [],
       "money": [
         {
           "currency": "RUB",
           "nano": 0,
           "units": "80"
         }
-      ],
-      "options": [],
-      "securities": []
+      ]
     },
-    "response_canonical_ascii": "{\"accountId\":\"sandbox-account-0001\",\"blocked\":[{\"currency\":\"RUB\",\"nano\":0,\"units\":\"20\"}],\"futures\":[],\"limitsLoadingInProgress\":false,\"money\":[{\"currency\":\"RUB\",\"nano\":0,\"units\":\"80\"}],\"options\":[],\"securities\":[]}",
-    "response_canonical_sha256": "8536a2edc952eb45dbab5238f2e5ebf476746eba14806f835e6aad02d9457949"
-  },
-  "projection": {
-    "canonical_ascii": "{\"account_scope_sha256\":\"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3\",\"ambiguous_count\":0,\"ambiguous_reserved_cash\":{\"amount\":\"0.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"0\",\"scale\":9,\"version\":1},\"central_order_revision\":\"7\",\"central_reservation_projection_hash\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"domain\":\"v3.10-cl5-central-reservation-projection\",\"environment\":\"SANDBOX\",\"evaluated_at\":\"2026-09-11T10:00:00.000000000Z\",\"identity_key_id\":\"CL5_TEST_KEY_V1\",\"projection_identity_sha256\":\"bdd984ef909c6217711e94f01c55031d0f93c5bc4e52a8c8b10401b98a9dcfe5\",\"queued_count\":1,\"queued_reserved_cash\":{\"amount\":\"30.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"30000000000\",\"scale\":9,\"version\":1},\"total_reserved_cash\":{\"amount\":\"30.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"30000000000\",\"scale\":9,\"version\":1},\"version\":1}",
-    "central_order_revision": 7,
-    "central_reservation_projection_hash": "5555555555555555555555555555555555555555555555555555555555555555",
-    "hmac_preimage_ascii": "{\"account_scope_sha256\":\"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3\",\"ambiguous_count\":0,\"ambiguous_reserved_cash\":{\"amount\":\"0.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"0\",\"scale\":9,\"version\":1},\"central_order_revision\":\"7\",\"central_reservation_projection_hash\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"domain\":\"v3.10-cl5-central-reservation-projection-identity\",\"environment\":\"SANDBOX\",\"evaluated_at\":\"2026-09-11T10:00:00.000000000Z\",\"identity_key_id\":\"CL5_TEST_KEY_V1\",\"queued_count\":1,\"queued_reserved_cash\":{\"amount\":\"30.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"30000000000\",\"scale\":9,\"version\":1},\"total_reserved_cash\":{\"amount\":\"30.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"30000000000\",\"scale\":9,\"version\":1},\"version\":1}",
-    "identity_sha256": "bdd984ef909c6217711e94f01c55031d0f93c5bc4e52a8c8b10401b98a9dcfe5",
-    "sha256": "24505cbf486c30f5c85a2bb456db3587dc3d97f8ce9f5afc96f9b1405f511048"
-  },
-  "raw_account_id": "sandbox-account-0001",
-  "snapshot": {
-    "canonical_ascii": "{\"account_scope_sha256\":\"15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3\",\"availability_reason\":\"READY\",\"broker_blocked_cash\":{\"amount\":\"20.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"20000000000\",\"scale\":9,\"version\":1},\"broker_cash_as_of\":\"2026-09-11T10:00:00.000000000Z\",\"broker_positions_as_of\":\"2026-09-11T10:00:00.000000000Z\",\"broker_positions_cash_proof_sha256\":\"96a9c34f60c7317ac44e0facab9f853805a26d4565ef33f28468d251454be22d\",\"broker_total_cash\":{\"amount\":\"100.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"100000000000\",\"scale\":9,\"version\":1},\"broker_unblocked_cash\":{\"amount\":\"80.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"80000000000\",\"scale\":9,\"version\":1},\"central_ambiguous_reserved_cash\":{\"amount\":\"0.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"0\",\"scale\":9,\"version\":1},\"central_order_revision\":\"7\",\"central_projection_evaluated_at\":\"2026-09-11T10:00:00.000000000Z\",\"central_queued_reserved_cash\":{\"amount\":\"30.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"30000000000\",\"scale\":9,\"version\":1},\"central_reservation_projection_hash\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"central_reservation_projection_sha256\":\"24505cbf486c30f5c85a2bb456db3587dc3d97f8ce9f5afc96f9b1405f511048\",\"central_total_reserved_cash\":{\"amount\":\"30.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"30000000000\",\"scale\":9,\"version\":1},\"cl4_adoption_candidate_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"cl4_reconciliation_evaluated_at\":\"2026-09-11T10:00:00.000000000Z\",\"currency\":\"RUB\",\"domain\":\"v3.10-cl5-cash-availability\",\"environment\":\"SANDBOX\",\"evaluated_at\":\"2026-09-11T10:00:00.000000000Z\",\"free_investable_cash\":{\"amount\":\"50.000000000\",\"currency\":\"RUB\",\"domain\":\"v3.10-money\",\"minor_units\":\"50000000000\",\"scale\":9,\"version\":1},\"ledger_export_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"ledger_head_sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"ledger_revision\":\"5\",\"overlap_disposition\":\"QUEUED_DISJOINT\",\"reconciliation_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"status\":\"READY\",\"version\":1}",
-    "sha256": "cd375c47f6dc528ae8e64a13dfb7de9145f5964988893c7ef20561050411e238"
-  },
-  "version": 1
+    "response_canonical_ascii": "{\"blocked\":[{\"currency\":\"RUB\",\"nano\":0,\"units\":\"20\"}],\"blockedGuarantee\":[],\"money\":[{\"currency\":\"RUB\",\"nano\":0,\"units\":\"80\"}]}",
+    "response_canonical_sha256": "2e36fc5bc9beaa9fc3eeac990897f6ab894801c09b0a14b65ad1c9d39d919319"
+  }
 }

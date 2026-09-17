@@ -707,6 +707,25 @@ class TBankSandboxClient:
             {"accountId": account_id},
         )
 
+    def get_withdraw_limits(self, account_id: str) -> Any:
+        """Bind the exact request account to one detached withdraw-limits response."""
+
+        if type(account_id) is not str or not account_id:
+            raise TypeError("account_id")
+        response = self._post(
+            "SandboxService",
+            "GetSandboxWithdrawLimits",
+            {"accountId": account_id},
+        )
+        from .cash_availability import WithdrawLimitsTransportObservation
+
+        return WithdrawLimitsTransportObservation(
+            raw_request_account_id=account_id,
+            service="SandboxService",
+            method="GetSandboxWithdrawLimits",
+            response=response,
+        )
+
     def get_orders(self, account_id: str) -> list[dict[str, Any]]:
         response = self._post(
             "SandboxService",

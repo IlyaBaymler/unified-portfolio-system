@@ -297,6 +297,7 @@ def _blocked_payload(
                 AvailabilityReason.MIXED_EVIDENCE_SNAPSHOT.value,
                 AvailabilityReason.BROKER_VIEW_MISMATCH.value,
                 AvailabilityReason.FOREIGN_CASH_PRESENT.value,
+                AvailabilityReason.WITHDRAW_LIMITS_FOREIGN_CASH_PRESENT.value,
                 AvailabilityReason.INSUFFICIENT_AFTER_RESERVATIONS.value,
             }
             allowed_pairs = {

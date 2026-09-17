@@ -44,7 +44,7 @@ from trading_robot import risk_runtime as _risk_runtime
 if _TYPE_CHECKING:
     from trading_robot.broker_read_adapters import BrokerEnvironment
     from trading_robot.cash_availability import (
-        BrokerPositionsCashProof,
+        BrokerWithdrawLimitsCashProof,
         CashAvailabilitySnapshot,
         CentralReservationProjection,
     )
@@ -88,7 +88,7 @@ XIRR_RESULT_VERSION = 1
 PERFORMANCE_REPORT_VERSION = 1
 PORTFOLIO_IDENTITY_EVIDENCE_VERSION = 1
 RISK_GUARD_EVIDENCE_VERSION = 1
-PORTFOLIO_RISK_CASH_CONTEXT_VERSION = 1
+PORTFOLIO_RISK_CASH_CONTEXT_VERSION = 2
 CL6_CROSS_LANGUAGE_FIXTURE_VERSION = 1
 
 MAX_LEDGER_EXPORT_BYTES = 16_777_216
@@ -1902,7 +1902,7 @@ class PortfolioRiskCashContext:
     availability_reason: str
     availability_evaluated_at: str
     broker_cash_as_of: str
-    broker_positions_as_of: str
+    broker_withdraw_limits_as_of: str
     free_investable_cash: Money | None
     ledger_export_sha256: str
     ledger_revision: int
@@ -1937,7 +1937,7 @@ class PortfolioRiskCashContext:
             self.evaluated_at,
             self.availability_evaluated_at,
             self.broker_cash_as_of,
-            self.broker_positions_as_of,
+            self.broker_withdraw_limits_as_of,
             self.central_projection_evaluated_at,
             self.portfolio_snapshot_at,
             self.portfolio_captured_at,
@@ -1995,7 +1995,7 @@ class PortfolioRiskCashContext:
             "availability_sha256": self.availability_sha256,
             "availability_status": self.availability_status,
             "broker_cash_as_of": self.broker_cash_as_of,
-            "broker_positions_as_of": self.broker_positions_as_of,
+            "broker_withdraw_limits_as_of": self.broker_withdraw_limits_as_of,
             "central_order_revision": str(self.central_order_revision),
             "central_projection_evaluated_at": self.central_projection_evaluated_at,
             "domain": "v3.10-cl6-portfolio-risk-cash-context-identity",
@@ -2782,7 +2782,7 @@ def _validated_risk_evidence(
 def _rebuild_availability(
     ledger_export_bytes: bytes,
     reconciliation: _cl4.CashReconciliation,
-    positions: _cl5.BrokerPositionsCashProof,
+    withdraw_limits: _cl5.BrokerWithdrawLimitsCashProof,
     reservations: _cl5.CentralReservationProjection,
     availability: _cl5.CashAvailabilitySnapshot,
     identity_key: bytes,
@@ -2791,7 +2791,7 @@ def _rebuild_availability(
         rebuilt = _cl5.build_cash_availability(
             ledger_export_bytes,
             reconciliation,
-            positions,
+            withdraw_limits,
             reservations,
             evaluated_at=availability.evaluated_at,
             identity_key=identity_key,
@@ -2828,7 +2828,7 @@ def _context_identity(
 def build_portfolio_risk_cash_context(
     ledger_export_bytes: bytes,
     reconciliation: CashReconciliation,
-    positions: BrokerPositionsCashProof,
+    withdraw_limits: BrokerWithdrawLimitsCashProof,
     reservations: CentralReservationProjection,
     availability: CashAvailabilitySnapshot,
     portfolio: PortfolioIdentityEvidence,
@@ -2841,7 +2841,7 @@ def build_portfolio_risk_cash_context(
     if (
         type(ledger_export_bytes) is not bytes
         or type(reconciliation) is not _cl4.CashReconciliation
-        or type(positions) is not _cl5.BrokerPositionsCashProof
+        or type(withdraw_limits) is not _cl5.BrokerWithdrawLimitsCashProof
         or type(reservations) is not _cl5.CentralReservationProjection
         or type(availability) is not _cl5.CashAvailabilitySnapshot
         or type(portfolio) is not PortfolioIdentityEvidence
@@ -2859,7 +2859,7 @@ def build_portfolio_risk_cash_context(
     rebuilt = _rebuild_availability(
         ledger_export_bytes,
         reconciliation,
-        positions,
+        withdraw_limits,
         reservations,
         availability,
         key,
@@ -2872,7 +2872,7 @@ def build_portfolio_risk_cash_context(
         rebuilt.currency != "RUB"
         or checked_portfolio.account_scope_sha256 != account
         or checked_risk.account_scope_sha256 != account
-        or positions.account_scope_sha256 != account
+        or withdraw_limits.account_scope_sha256 != account
         or reservations.account_scope_sha256 != account
         or reconciliation.proof.account_scope_sha256 != account
     ):
@@ -2881,10 +2881,10 @@ def build_portfolio_risk_cash_context(
         environment is not _broker.BrokerEnvironment.SANDBOX
         or checked_portfolio.environment is not environment
         or checked_risk.environment is not environment
-        or positions.environment is not environment
+        or withdraw_limits.environment is not environment
         or reservations.environment is not environment
         or reconciliation.proof.environment is not environment
-        or positions.identity_key_id != key_id
+        or withdraw_limits.identity_key_id != key_id
         or reservations.identity_key_id != key_id
         or reconciliation.proof.identity_key_id != key_id
         or checked_portfolio.identity_key_id != key_id
@@ -2904,7 +2904,7 @@ def build_portfolio_risk_cash_context(
     timestamps = (
         rebuilt.evaluated_at,
         rebuilt.broker_cash_as_of,
-        rebuilt.broker_positions_as_of,
+        rebuilt.broker_withdraw_limits_as_of,
         rebuilt.central_projection_evaluated_at,
         checked_portfolio.portfolio_snapshot_at,
         checked_portfolio.captured_at,
@@ -2967,7 +2967,7 @@ def build_portfolio_risk_cash_context(
         availability_reason=rebuilt.availability_reason.value,
         availability_evaluated_at=rebuilt.evaluated_at,
         broker_cash_as_of=rebuilt.broker_cash_as_of,
-        broker_positions_as_of=rebuilt.broker_positions_as_of,
+        broker_withdraw_limits_as_of=rebuilt.broker_withdraw_limits_as_of,
         free_investable_cash=free,
         ledger_export_sha256=rebuilt.ledger_export_sha256,
         ledger_revision=rebuilt.ledger_revision,

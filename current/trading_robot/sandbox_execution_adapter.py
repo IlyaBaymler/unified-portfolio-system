@@ -84,7 +84,7 @@ class SandboxExecutionTransport(Protocol):
 
     def get_portfolio(self, account_id: str) -> dict[str, Any]: ...
 
-    def get_positions(self, account_id: str) -> dict[str, Any]: ...
+    def get_withdraw_limits(self, account_id: str) -> Any: ...
 
 
 class SandboxRiskAuthorizationGate(Protocol):
@@ -376,14 +376,14 @@ class SandboxExecutionAdapter:
                     portfolio_response = self.transport.get_portfolio(
                         self.policy.account_id
                     )
-                    positions_response = self.transport.get_positions(
+                    withdraw_limits_observation = self.transport.get_withdraw_limits(
                         self.policy.account_id
                     )
                     provider_as_of = self.cl7_clock()
                 except Exception:  # noqa: BLE001 - provider trust boundary
                     raise CL7RuntimeError(
                         CL7RuntimeReason.BROKER_READ_FAILED,
-                        stage="CURRENT_CASH_POSITIONS",
+                        stage="CURRENT_CASH_WITHDRAW_LIMITS",
                         retryable=True,
                     ) from None
                 with portfolio_repository.locked_snapshot(
@@ -432,9 +432,11 @@ class SandboxExecutionAdapter:
                                     current=authority,
                                     ledger_store=self.cl7_ledger_store,
                                     portfolio_response=portfolio_response,
-                                    positions_response=positions_response,
+                                    withdraw_limits_observation=(
+                                        withdraw_limits_observation
+                                    ),
                                     broker_cash_as_of=provider_as_of,
-                                    broker_positions_as_of=provider_as_of,
+                                    broker_withdraw_limits_as_of=provider_as_of,
                                     central_state=central,
                                     portfolio_lease=portfolio_lease,
                                     risk_policy=risk_policy,
