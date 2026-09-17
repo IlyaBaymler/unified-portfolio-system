@@ -70,6 +70,24 @@ COMMANDS = (
     "dispatch",
 )
 
+_BROKER_VIEW_HASH_FIELDS = (
+    "broker_total_cash_hmac_sha256",
+    "positions_money_rub_hmac_sha256",
+    "blocked_rub_hmac_sha256",
+    "positions_plus_blocked_rub_hmac_sha256",
+)
+_BROKER_VIEW_BOOL_FIELDS = (
+    "broker_total_eq_positions_money",
+    "broker_total_eq_blocked",
+    "positions_money_eq_blocked",
+    "broker_total_eq_positions_plus_blocked",
+    "broker_total_is_zero",
+    "positions_money_is_zero",
+    "blocked_is_zero",
+)
+_BROKER_VIEW_FIELDS = frozenset(_BROKER_VIEW_HASH_FIELDS + _BROKER_VIEW_BOOL_FIELDS)
+_LOWER_SHA256_RE = re.compile(r"[0-9a-f]{64}", re.ASCII)
+
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "000Z"
@@ -208,6 +226,27 @@ def _safe_cl3_provider_observability(value: object) -> dict[str, object]:
     return result
 
 
+def _safe_broker_view_observability(value: object) -> dict[str, object] | None:
+    if (
+        type(value) is not dict
+        or any(type(field) is not str for field in value)
+        or frozenset(value) != _BROKER_VIEW_FIELDS
+    ):
+        return None
+    if any(
+        type(value[field]) is not str
+        or _LOWER_SHA256_RE.fullmatch(value[field]) is None
+        for field in _BROKER_VIEW_HASH_FIELDS
+    ):
+        return None
+    if any(type(value[field]) is not bool for field in _BROKER_VIEW_BOOL_FIELDS):
+        return None
+    return {
+        field: value[field]
+        for field in _BROKER_VIEW_HASH_FIELDS + _BROKER_VIEW_BOOL_FIELDS
+    }
+
+
 def _blocked_payload(
     exc: CL7RuntimeError,
     *,
@@ -236,7 +275,9 @@ def _blocked_payload(
             payload["provider_observability"] = observability
     if (
         exc.reason is CL7RuntimeReason.CONTEXT_BLOCKED
+        and type(exc.stage) is str
         and exc.stage == "CL6_CONTEXT"
+        and type(exc.dependency_reason) is str
         and exc.dependency_reason
         in {
             reason.value
@@ -271,6 +312,15 @@ def _blocked_payload(
             if type(pair[0]) is str and type(pair[1]) is str and pair in allowed_pairs:
                 payload["availability_status"] = pair[0]
                 payload["availability_reason"] = pair[1]
+                if pair == (
+                    AvailabilityStatus.BLOCKED.value,
+                    AvailabilityReason.BROKER_VIEW_MISMATCH.value,
+                ):
+                    observability = _safe_broker_view_observability(
+                        getattr(exc, "broker_view_observability", None)
+                    )
+                    if observability is not None:
+                        payload["broker_view_observability"] = observability
     return payload
 
 

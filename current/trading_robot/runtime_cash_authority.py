@@ -30,6 +30,25 @@ _DOMAIN = "v3.10-cl7-runtime-cash-authority"
 _PROOF_DOMAIN = "v3.10-cl7-locked-dispatch-proof"
 _PROOF_IDENTITY_DOMAIN = "v3.10-cl7-locked-dispatch-proof-identity"
 _INTENT_SCOPE_DOMAIN = "v3.10-cl7-intent-scope"
+_BROKER_VIEW_MISMATCH_OPERAND_DOMAIN = "v3.10-cl8-q7-broker-view-mismatch-operand-v1"
+_BROKER_VIEW_MISMATCH_HASH_FIELDS = (
+    "broker_total_cash_hmac_sha256",
+    "positions_money_rub_hmac_sha256",
+    "blocked_rub_hmac_sha256",
+    "positions_plus_blocked_rub_hmac_sha256",
+)
+_BROKER_VIEW_MISMATCH_BOOL_FIELDS = (
+    "broker_total_eq_positions_money",
+    "broker_total_eq_blocked",
+    "positions_money_eq_blocked",
+    "broker_total_eq_positions_plus_blocked",
+    "broker_total_is_zero",
+    "positions_money_is_zero",
+    "blocked_is_zero",
+)
+_BROKER_VIEW_MISMATCH_FIELDS = frozenset(
+    _BROKER_VIEW_MISMATCH_HASH_FIELDS + _BROKER_VIEW_MISMATCH_BOOL_FIELDS
+)
 _INT64_MAX = 9_223_372_036_854_775_807
 _MAX_RECORD_BYTES = 64 * 1024
 _HASH_RE = re.compile(r"[0-9a-f]{64}")
@@ -109,6 +128,7 @@ class CL7RuntimeError(RuntimeError):
         retryable: bool = False,
         availability_status: str | None = None,
         availability_reason: str | None = None,
+        broker_view_observability: object = None,
     ) -> None:
         if type(reason) is not CL7RuntimeReason:
             raise TypeError("reason must be CL7RuntimeReason")
@@ -118,6 +138,9 @@ class CL7RuntimeError(RuntimeError):
         self.retryable = bool(retryable)
         self.availability_status = _safe_exact_token(availability_status)
         self.availability_reason = _safe_exact_token(availability_reason)
+        self.broker_view_observability = _safe_broker_view_observability(
+            broker_view_observability
+        )
         super().__init__(reason.value)
 
     def __str__(self) -> str:
@@ -137,6 +160,7 @@ def _fail(
     retryable: bool = False,
     availability_status: str | None = None,
     availability_reason: str | None = None,
+    broker_view_observability: object = None,
 ) -> None:
     raise CL7RuntimeError(
         reason,
@@ -145,6 +169,7 @@ def _fail(
         retryable=retryable,
         availability_status=availability_status,
         availability_reason=availability_reason,
+        broker_view_observability=broker_view_observability,
     ) from None
 
 
@@ -161,13 +186,41 @@ def _safe_exact_token(value: object) -> str | None:
     return value if re.fullmatch(r"[A-Z0-9_]{1,96}", value) else None
 
 
-def _fail_context_not_ready(context: object) -> None:
+def _safe_broker_view_observability(value: object) -> dict[str, object] | None:
+    if (
+        type(value) is not dict
+        or any(type(field) is not str for field in value)
+        or frozenset(value) != _BROKER_VIEW_MISMATCH_FIELDS
+    ):
+        return None
+    if any(
+        type(value[field]) is not str or _HASH_RE.fullmatch(value[field]) is None
+        for field in _BROKER_VIEW_MISMATCH_HASH_FIELDS
+    ):
+        return None
+    if any(
+        type(value[field]) is not bool for field in _BROKER_VIEW_MISMATCH_BOOL_FIELDS
+    ):
+        return None
+    return {
+        field: value[field]
+        for field in _BROKER_VIEW_MISMATCH_HASH_FIELDS
+        + _BROKER_VIEW_MISMATCH_BOOL_FIELDS
+    }
+
+
+def _fail_context_not_ready(
+    context: object,
+    *,
+    broker_view_observability: object = None,
+) -> None:
     _fail(
         CL7RuntimeReason.CONTEXT_BLOCKED,
         getattr(getattr(context, "reason", None), "value", None),
         stage="CL6_CONTEXT",
         availability_status=getattr(context, "availability_status", None),
         availability_reason=getattr(context, "availability_reason", None),
+        broker_view_observability=broker_view_observability,
     )
 
 
@@ -267,6 +320,115 @@ def _sha256(value: bytes) -> str:
 
 def _hmac_sha256(key: bytes, value: object) -> str:
     return hmac.new(key, _canonical_bytes(value), hashlib.sha256).hexdigest()
+
+
+def _broker_view_operand_hmac(
+    identity_key: bytes,
+    *,
+    role: str,
+    money: Money,
+) -> str:
+    if type(identity_key) is not bytes or not 32 <= len(identity_key) <= 64:
+        _fail(CL7RuntimeReason.IDENTITY_KEY_INVALID)
+    if type(role) is not str or role not in {
+        "BROKER_TOTAL_CASH",
+        "POSITIONS_MONEY_RUB",
+        "BLOCKED_RUB",
+        "POSITIONS_PLUS_BLOCKED_RUB",
+    }:
+        _fail(CL7RuntimeReason.TYPE_INVALID)
+    if not _is_exact_broker_view_money(money):
+        _fail(CL7RuntimeReason.TYPE_INVALID)
+    return _hmac_sha256(
+        identity_key,
+        {
+            "domain": _BROKER_VIEW_MISMATCH_OPERAND_DOMAIN,
+            "money": money.to_canonical_dict(),
+            "role": role,
+            "version": 1,
+        },
+    )
+
+
+def _is_exact_broker_view_money(value: object) -> bool:
+    if (
+        type(value) is not Money
+        or type(value.currency) is not str
+        or value.currency != "RUB"
+        or type(value.minor_units) is not int
+        or type(value.scale) is not int
+        or value.scale != 9
+    ):
+        return False
+    try:
+        rebuilt = Money(
+            currency=value.currency,
+            minor_units=value.minor_units,
+            scale=value.scale,
+        )
+    except Exception:
+        return False
+    return hmac.compare_digest(value.canonical_bytes, rebuilt.canonical_bytes)
+
+
+def _build_broker_view_observability(
+    *,
+    broker_total_cash: Money,
+    positions_money_rub: Money,
+    blocked_rub: Money,
+    identity_key: bytes,
+) -> dict[str, object]:
+    if any(
+        not _is_exact_broker_view_money(value)
+        for value in (broker_total_cash, positions_money_rub, blocked_rub)
+    ):
+        _fail(CL7RuntimeReason.TYPE_INVALID)
+    positions_plus_blocked = positions_money_rub + blocked_rub
+    zero = Money(currency="RUB", minor_units=0)
+    broker_bytes = broker_total_cash.canonical_bytes
+    positions_bytes = positions_money_rub.canonical_bytes
+    blocked_bytes = blocked_rub.canonical_bytes
+    combined_bytes = positions_plus_blocked.canonical_bytes
+    zero_bytes = zero.canonical_bytes
+    value: dict[str, object] = {
+        "broker_total_cash_hmac_sha256": _broker_view_operand_hmac(
+            identity_key,
+            role="BROKER_TOTAL_CASH",
+            money=broker_total_cash,
+        ),
+        "positions_money_rub_hmac_sha256": _broker_view_operand_hmac(
+            identity_key,
+            role="POSITIONS_MONEY_RUB",
+            money=positions_money_rub,
+        ),
+        "blocked_rub_hmac_sha256": _broker_view_operand_hmac(
+            identity_key,
+            role="BLOCKED_RUB",
+            money=blocked_rub,
+        ),
+        "positions_plus_blocked_rub_hmac_sha256": _broker_view_operand_hmac(
+            identity_key,
+            role="POSITIONS_PLUS_BLOCKED_RUB",
+            money=positions_plus_blocked,
+        ),
+        "broker_total_eq_positions_money": hmac.compare_digest(
+            broker_bytes, positions_bytes
+        ),
+        "broker_total_eq_blocked": hmac.compare_digest(broker_bytes, blocked_bytes),
+        "positions_money_eq_blocked": hmac.compare_digest(
+            positions_bytes, blocked_bytes
+        ),
+        "broker_total_eq_positions_plus_blocked": hmac.compare_digest(
+            broker_bytes, combined_bytes
+        ),
+        "broker_total_is_zero": hmac.compare_digest(broker_bytes, zero_bytes),
+        "positions_money_is_zero": hmac.compare_digest(positions_bytes, zero_bytes),
+        "blocked_is_zero": hmac.compare_digest(blocked_bytes, zero_bytes),
+    }
+    checked = _safe_broker_view_observability(value)
+    if checked is None:
+        _fail(CL7RuntimeReason.INTERNAL_BOUNDARY_FAILED)
+    return checked
 
 
 def derive_account_scope(
@@ -1473,7 +1635,27 @@ class RuntimeCashAuthorityManager:
             and getattr(getattr(context, "status", None), "value", None)
             != "READY_FOR_LOCKED_REVALIDATION"
         ):
-            _fail_context_not_ready(context)
+            broker_view_observability = None
+            if (
+                getattr(context, "reason", None)
+                is cl6.RiskCashContextReason.CASH_AVAILABILITY_NOT_READY
+                and availability.status is cl5.AvailabilityStatus.BLOCKED
+                and availability.availability_reason
+                is cl5.AvailabilityReason.BROKER_VIEW_MISMATCH
+            ):
+                try:
+                    broker_view_observability = _build_broker_view_observability(
+                        broker_total_cash=reconciliation.broker_cash,
+                        positions_money_rub=positions.positions_money_rub,
+                        blocked_rub=positions.blocked_rub,
+                        identity_key=identity_key,
+                    )
+                except Exception:
+                    broker_view_observability = None
+            _fail_context_not_ready(
+                context,
+                broker_view_observability=broker_view_observability,
+            )
         snapshot = ledger_store.snapshot()
         if (
             context.ledger_revision != snapshot.ledger_revision

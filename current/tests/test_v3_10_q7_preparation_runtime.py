@@ -22,6 +22,7 @@ from trading_robot import runtime_cash_authority as cl7
 from trading_robot import secret_provider as secret_provider_module
 from trading_robot.bot import BotConfig
 from trading_robot.broker_read_adapters import BrokerReadReason
+from trading_robot.cash_ledger_domain import Money
 from trading_robot.config_persistence import bot_config_to_profile
 from trading_robot.gui_runtime_controller import (
     CL4MoneyNormalizingTransport,
@@ -1656,6 +1657,498 @@ def test_cl7_not_ready_context_preserves_cl5_observability_at_error_boundary():
         caught.value.availability_reason
         == cl5.AvailabilityReason.INSUFFICIENT_AFTER_RESERVATIONS.value
     )
+
+
+def _broker_view_observability(
+    broker_total: int,
+    positions_money: int,
+    blocked: int,
+    *,
+    key: bytes = b"k" * 32,
+):
+    return cl7._build_broker_view_observability(
+        broker_total_cash=Money(currency="RUB", minor_units=broker_total),
+        positions_money_rub=Money(currency="RUB", minor_units=positions_money),
+        blocked_rub=Money(currency="RUB", minor_units=blocked),
+        identity_key=key,
+    )
+
+
+def test_broker_view_observability_has_frozen_domain_separated_hmac_vector():
+    observed = _broker_view_observability(
+        100_000_000_000,
+        70_000_000_000,
+        30_000_000_000,
+    )
+
+    assert observed == {
+        "broker_total_cash_hmac_sha256": (
+            "f00df5bae4caca988cad8b57ccc03005e5d2c6d282a8e7db42d1964ffe3b1d89"
+        ),
+        "positions_money_rub_hmac_sha256": (
+            "be010e1869c9e84304d229c6e2318f67de2d968c99ef510df53ff41f8ee792a6"
+        ),
+        "blocked_rub_hmac_sha256": (
+            "62fc4fc9c1efdefc3de63736ac02683e6e694addb6415d8e666f5c82dd823a2e"
+        ),
+        "positions_plus_blocked_rub_hmac_sha256": (
+            "73fb7debd0f6e7551f7ae38b8ffd6eed37d48a391bb53d813e12965369268410"
+        ),
+        "broker_total_eq_positions_money": False,
+        "broker_total_eq_blocked": False,
+        "positions_money_eq_blocked": False,
+        "broker_total_eq_positions_plus_blocked": True,
+        "broker_total_is_zero": False,
+        "positions_money_is_zero": False,
+        "blocked_is_zero": False,
+    }
+    assert observed == _broker_view_observability(
+        100_000_000_000,
+        70_000_000_000,
+        30_000_000_000,
+    )
+
+
+@pytest.mark.parametrize(
+    "broker_total,positions_money,blocked,expected",
+    [
+        (
+            0,
+            0,
+            0,
+            (True, True, True, True, True, True, True),
+        ),
+        (
+            100_000_000_000,
+            100_000_000_000,
+            0,
+            (True, False, False, True, False, False, True),
+        ),
+        (
+            100_000_000_000,
+            0,
+            100_000_000_000,
+            (False, True, False, True, False, True, False),
+        ),
+        (
+            100_000_000_000,
+            60_000_000_000,
+            30_000_000_000,
+            (False, False, False, False, False, False, False),
+        ),
+    ],
+)
+def test_broker_view_observability_exact_canonical_equality_truth_table(
+    broker_total,
+    positions_money,
+    blocked,
+    expected,
+):
+    value = _broker_view_observability(broker_total, positions_money, blocked)
+    actual = (
+        value["broker_total_eq_positions_money"],
+        value["broker_total_eq_blocked"],
+        value["positions_money_eq_blocked"],
+        value["broker_total_eq_positions_plus_blocked"],
+        value["broker_total_is_zero"],
+        value["positions_money_is_zero"],
+        value["blocked_is_zero"],
+    )
+    assert actual == expected
+    if broker_total == positions_money == blocked == 0:
+        hashes = {
+            value["broker_total_cash_hmac_sha256"],
+            value["positions_money_rub_hmac_sha256"],
+            value["blocked_rub_hmac_sha256"],
+            value["positions_plus_blocked_rub_hmac_sha256"],
+        }
+        assert len(hashes) == 4
+
+
+def test_broker_view_observability_detects_one_kopeck_operand_mutations():
+    baseline = _broker_view_observability(
+        100_000_000_000,
+        70_000_000_000,
+        30_000_000_000,
+    )
+    one_kopeck = 10_000_000
+    broker_changed = _broker_view_observability(
+        100_000_000_000 + one_kopeck,
+        70_000_000_000,
+        30_000_000_000,
+    )
+    positions_changed = _broker_view_observability(
+        100_000_000_000,
+        70_000_000_000 + one_kopeck,
+        30_000_000_000,
+    )
+    blocked_changed = _broker_view_observability(
+        100_000_000_000,
+        70_000_000_000,
+        30_000_000_000 + one_kopeck,
+    )
+
+    assert (
+        broker_changed["broker_total_cash_hmac_sha256"]
+        != baseline["broker_total_cash_hmac_sha256"]
+    )
+    assert (
+        positions_changed["positions_money_rub_hmac_sha256"]
+        != baseline["positions_money_rub_hmac_sha256"]
+    )
+    assert (
+        blocked_changed["blocked_rub_hmac_sha256"]
+        != baseline["blocked_rub_hmac_sha256"]
+    )
+    assert (
+        positions_changed["positions_plus_blocked_rub_hmac_sha256"]
+        != baseline["positions_plus_blocked_rub_hmac_sha256"]
+    )
+    assert (
+        blocked_changed["positions_plus_blocked_rub_hmac_sha256"]
+        != baseline["positions_plus_blocked_rub_hmac_sha256"]
+    )
+
+
+def test_broker_view_observability_is_atomic_and_privacy_safe_at_cli_boundary():
+    observability = _broker_view_observability(
+        100_123_456_789,
+        70_111_111_111,
+        30_022_345_678,
+        key=b"PRIVATE_IDENTITY_KEY_CANARY_123456",
+    )
+    context = SimpleNamespace(
+        reason=RiskCashContextReason.CASH_AVAILABILITY_NOT_READY,
+        availability_status=cl5.AvailabilityStatus.BLOCKED.value,
+        availability_reason=cl5.AvailabilityReason.BROKER_VIEW_MISMATCH.value,
+    )
+    with pytest.raises(CL7RuntimeError) as caught:
+        cl7._fail_context_not_ready(
+            context,
+            broker_view_observability=observability,
+        )
+
+    payload = cutover._blocked_payload(caught.value)
+    assert payload["reason"] == "CONTEXT_BLOCKED"
+    assert payload["dependency_reason"] == "CASH_AVAILABILITY_NOT_READY"
+    assert payload["availability_status"] == "BLOCKED"
+    assert payload["availability_reason"] == "BROKER_VIEW_MISMATCH"
+    assert payload["stage"] == "CL6_CONTEXT"
+    assert payload["retryable"] is False
+    assert payload["broker_view_observability"] == observability
+    serialized = json.dumps(payload, sort_keys=True)
+    for private_value in (
+        "100123456789",
+        "70111111111",
+        "30022345678",
+        "PRIVATE_IDENTITY_KEY_CANARY_123456",
+        "PRIVATE_ACCOUNT_CANARY",
+        "Authorization",
+    ):
+        assert private_value not in serialized
+
+
+def test_broker_view_observability_uses_exact_runtime_operands_without_effects(
+    monkeypatch,
+):
+    broker_total = Money(currency="RUB", minor_units=100_000_000_000)
+    positions_money = Money(currency="RUB", minor_units=60_000_000_000)
+    blocked = Money(currency="RUB", minor_units=30_000_000_000)
+    positions = SimpleNamespace(
+        positions_money_rub=positions_money,
+        blocked_rub=blocked,
+    )
+    reconciliation = SimpleNamespace(broker_cash=broker_total)
+    availability = SimpleNamespace(
+        status=cl5.AvailabilityStatus.BLOCKED,
+        availability_reason=cl5.AvailabilityReason.BROKER_VIEW_MISMATCH,
+    )
+    context = SimpleNamespace(
+        status=SimpleNamespace(value="BLOCKED"),
+        reason=RiskCashContextReason.CASH_AVAILABILITY_NOT_READY,
+        availability_status=cl5.AvailabilityStatus.BLOCKED.value,
+        availability_reason=cl5.AvailabilityReason.BROKER_VIEW_MISMATCH.value,
+    )
+    provider_effects = []
+    values = {
+        (cl4, "build_broker_cash_proof"): SimpleNamespace(),
+        (cl5, "build_broker_positions_cash_proof"): positions,
+        (cl4, "reconcile_shadow_cash"): reconciliation,
+        (cl5, "project_central_reservations"): SimpleNamespace(),
+        (cl5, "build_cash_availability"): availability,
+    }
+    for (module, name), result in values.items():
+        monkeypatch.setattr(
+            module, name, lambda *_args, _result=result, **_kwargs: _result
+        )
+    import trading_robot.reporting_risk_cash_context as cl6_module
+
+    monkeypatch.setattr(
+        cl6_module,
+        "build_portfolio_identity_evidence",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        cl6_module,
+        "build_risk_guard_evidence",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        cl6_module,
+        "build_portfolio_risk_cash_context",
+        lambda *_args, **_kwargs: context,
+    )
+    manager = SimpleNamespace(_account=lambda *_args, **_kwargs: None)
+    ledger = SimpleNamespace(export_bytes=lambda: b"synthetic-ledger-export")
+    original_bytes = tuple(
+        value.canonical_bytes for value in (broker_total, positions_money, blocked)
+    )
+
+    with pytest.raises(CL7RuntimeError) as caught:
+        cl7.RuntimeCashAuthorityManager.build_runtime_context(
+            manager,
+            current=SimpleNamespace(account_scope_sha256="1" * 64),
+            ledger_store=ledger,
+            portfolio_response={"provider": "response"},
+            positions_response={"provider": "positions"},
+            broker_cash_as_of="2026-09-16T00:00:00.000000000Z",
+            broker_positions_as_of="2026-09-16T00:00:00.000000000Z",
+            central_state=SimpleNamespace(),
+            portfolio_lease=SimpleNamespace(),
+            risk_policy=SimpleNamespace(),
+            risk_state=SimpleNamespace(),
+            raw_account_id="SYNTHETIC_ACCOUNT",
+            identity_key=b"k" * 32,
+            identity_key_id="Q7_BROKER_VIEW_TEST",
+            evaluated_at="2026-09-16T00:00:00.000000000Z",
+        )
+
+    assert caught.value.reason is CL7RuntimeReason.CONTEXT_BLOCKED
+    assert caught.value.stage == "CL6_CONTEXT"
+    assert (
+        caught.value.dependency_reason
+        == RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value
+    )
+    assert caught.value.broker_view_observability == _broker_view_observability(
+        broker_total.minor_units,
+        positions_money.minor_units,
+        blocked.minor_units,
+    )
+    assert (
+        tuple(
+            value.canonical_bytes for value in (broker_total, positions_money, blocked)
+        )
+        == original_bytes
+    )
+    assert provider_effects == []
+
+
+def test_broker_view_observability_rejects_non_atomic_and_adversarial_values():
+    class DictSubclass(dict):
+        pass
+
+    class StringSubclass(str):
+        pass
+
+    class EqualitySpoof:
+        def __eq__(self, other):
+            return other in (True, "0" * 64)
+
+    class KeyEqualitySpoof:
+        def __hash__(self):
+            return hash("blocked_is_zero")
+
+        def __eq__(self, other):
+            return other == "blocked_is_zero"
+
+    valid = _broker_view_observability(
+        100_000_000_000,
+        70_000_000_000,
+        30_000_000_000,
+    )
+    invalid = []
+    missing = dict(valid)
+    missing.pop("blocked_is_zero")
+    invalid.append(missing)
+    invalid.append({**valid, "extra": False})
+    invalid.append(DictSubclass(valid))
+    invalid.append({**valid, "broker_total_cash_hmac_sha256": "A" * 64})
+    invalid.append(
+        {
+            **valid,
+            "broker_total_cash_hmac_sha256": StringSubclass("0" * 64),
+        }
+    )
+    invalid.append({**valid, "broker_total_is_zero": 0})
+    invalid.append({**valid, "broker_total_is_zero": EqualitySpoof()})
+    subclass_key = dict(valid)
+    subclass_key[StringSubclass("blocked_is_zero")] = subclass_key.pop(
+        "blocked_is_zero"
+    )
+    invalid.append(subclass_key)
+    equality_key = dict(valid)
+    equality_key[KeyEqualitySpoof()] = equality_key.pop("blocked_is_zero")
+    invalid.append(equality_key)
+
+    for adversarial in invalid:
+        error = CL7RuntimeError(
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            stage="CL6_CONTEXT",
+            availability_status=cl5.AvailabilityStatus.BLOCKED.value,
+            availability_reason=cl5.AvailabilityReason.BROKER_VIEW_MISMATCH.value,
+            broker_view_observability=valid,
+        )
+        error.broker_view_observability = adversarial
+        payload = cutover._blocked_payload(error)
+        assert "broker_view_observability" not in payload
+
+
+def test_broker_view_observability_rejects_operand_and_key_substitution():
+    class StringSubclass(str):
+        pass
+
+    class BytesSubclass(bytes):
+        pass
+
+    class EqualitySpoof:
+        def __eq__(self, other):
+            return other == "RUB"
+
+    poisoned_currency = Money(
+        currency=StringSubclass("RUB"),
+        minor_units=100_000_000_000,
+    )
+    equality_currency = Money(currency="RUB", minor_units=100_000_000_000)
+    object.__setattr__(equality_currency, "currency", EqualitySpoof())
+    valid_positions = Money(currency="RUB", minor_units=70_000_000_000)
+    valid_blocked = Money(currency="RUB", minor_units=30_000_000_000)
+
+    for broker_total, key in (
+        (poisoned_currency, b"k" * 32),
+        (equality_currency, b"k" * 32),
+        (
+            Money(currency="RUB", minor_units=100_000_000_000),
+            BytesSubclass(b"k" * 32),
+        ),
+    ):
+        with pytest.raises(CL7RuntimeError) as caught:
+            cl7._build_broker_view_observability(
+                broker_total_cash=broker_total,
+                positions_money_rub=valid_positions,
+                blocked_rub=valid_blocked,
+                identity_key=key,
+            )
+        assert caught.value.reason in {
+            CL7RuntimeReason.TYPE_INVALID,
+            CL7RuntimeReason.IDENTITY_KEY_INVALID,
+        }
+
+
+@pytest.mark.parametrize(
+    "outer_reason,dependency_reason,stage,status,reason",
+    [
+        (
+            CL7RuntimeReason.INTERNAL_BOUNDARY_FAILED,
+            RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            "CL6_CONTEXT",
+            cl5.AvailabilityStatus.BLOCKED.value,
+            cl5.AvailabilityReason.BROKER_VIEW_MISMATCH.value,
+        ),
+        (
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.PORTFOLIO_NOT_READY.value,
+            "CL6_CONTEXT",
+            cl5.AvailabilityStatus.BLOCKED.value,
+            cl5.AvailabilityReason.BROKER_VIEW_MISMATCH.value,
+        ),
+        (
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            "CL5_AVAILABILITY",
+            cl5.AvailabilityStatus.BLOCKED.value,
+            cl5.AvailabilityReason.BROKER_VIEW_MISMATCH.value,
+        ),
+        (
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            "CL6_CONTEXT",
+            cl5.AvailabilityStatus.MANUAL_REVIEW_REQUIRED.value,
+            cl5.AvailabilityReason.CENTRAL_PROVIDER_OVERLAP_UNKNOWN.value,
+        ),
+        (
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            "CL6_CONTEXT",
+            cl5.AvailabilityStatus.BLOCKED.value,
+            cl5.AvailabilityReason.CL4_NOT_READY.value,
+        ),
+    ],
+)
+def test_broker_view_observability_is_absent_outside_exact_gate(
+    outer_reason,
+    dependency_reason,
+    stage,
+    status,
+    reason,
+):
+    observability = _broker_view_observability(
+        100_000_000_000,
+        70_000_000_000,
+        30_000_000_000,
+    )
+    payload = cutover._blocked_payload(
+        CL7RuntimeError(
+            outer_reason,
+            dependency_reason,
+            stage=stage,
+            availability_status=status,
+            availability_reason=reason,
+            broker_view_observability=observability,
+        )
+    )
+    assert "broker_view_observability" not in payload
+
+
+def test_broker_view_observability_exact_gate_rejects_mutated_string_types():
+    class StringSubclass(str):
+        pass
+
+    class EqualitySpoof:
+        def __hash__(self):
+            return hash("CL6_CONTEXT")
+
+        def __eq__(self, other):
+            return other in (
+                "CL6_CONTEXT",
+                RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            )
+
+    observability = _broker_view_observability(
+        100_000_000_000,
+        70_000_000_000,
+        30_000_000_000,
+    )
+    for attribute, adversarial in (
+        ("stage", StringSubclass("CL6_CONTEXT")),
+        (
+            "dependency_reason",
+            StringSubclass(RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value),
+        ),
+        ("stage", EqualitySpoof()),
+        ("dependency_reason", EqualitySpoof()),
+    ):
+        error = CL7RuntimeError(
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value,
+            stage="CL6_CONTEXT",
+            availability_status=cl5.AvailabilityStatus.BLOCKED.value,
+            availability_reason=cl5.AvailabilityReason.BROKER_VIEW_MISMATCH.value,
+            broker_view_observability=observability,
+        )
+        setattr(error, attribute, adversarial)
+        payload = cutover._blocked_payload(error)
+        assert "broker_view_observability" not in payload
 
 
 def test_cl6_context_dependency_reason_is_wired_to_cli_evidence(
