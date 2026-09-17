@@ -1869,6 +1869,14 @@ def test_final_locked_revalidation_reads_withdraw_limits_exactly_once():
     for source in (initial, final):
         assert source.count(".get_withdraw_limits(") == 1
         assert ".get_positions(" not in source
+        assert "provider_as_of" not in source
+        assert source.index("get_portfolio(") < source.index("broker_cash_as_of")
+        assert source.index("broker_cash_as_of") < source.index(
+            "get_withdraw_limits("
+        )
+        assert source.index("get_withdraw_limits(") < source.index(
+            "broker_withdraw_limits_as_of"
+        )
     assert final.count(".post_order_once(") == 1
 
 

@@ -1360,6 +1360,75 @@ def test_full_prepare_confirm_activate_arm_uses_fresh_cl2_to_cl6_evidence(
         ledger.close()
 
 
+def test_initial_rebuild_timestamps_non_atomic_provider_reads_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = object.__new__(cl7.RuntimeCashAuthorityManager)
+    current = SimpleNamespace(operations_complete_through=T0)
+    batch = SimpleNamespace()
+    captured: dict[str, object] = {}
+    events: list[str] = []
+    clock_values = iter(
+        (
+            T1,
+            T1,
+            T2,
+            "2026-09-11T10:00:13.000000000Z",
+            "2026-09-11T10:00:13.000000000Z",
+        )
+    )
+
+    def synchronize(record: object, **_kwargs: object) -> tuple[object, object]:
+        return record, batch
+
+    def rebuild(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(manager, "synchronize_operations_locked", synchronize)
+    monkeypatch.setattr(manager, "rebuild_context_with_locks", rebuild)
+
+    class Provider:
+        @staticmethod
+        def get_operations_by_cursor_once(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("synthetic sync must be intercepted")
+
+        @staticmethod
+        def get_portfolio(_account: str) -> dict[str, object]:
+            events.append("portfolio")
+            return {"synthetic": "portfolio"}
+
+        @staticmethod
+        def get_withdraw_limits(_account: str) -> object:
+            events.append("withdraw_limits")
+            return SimpleNamespace()
+
+    manager._sync_and_rebuild_locked(
+        current,
+        ledger_store=SimpleNamespace(),
+        portfolio_repository=SimpleNamespace(),
+        risk_profile_store=SimpleNamespace(),
+        risk_state_store=SimpleNamespace(),
+        central_manager=SimpleNamespace(),
+        provider=Provider(),
+        raw_account_id=RAW_ACCOUNT,
+        identity_key=KEY,
+        identity_key_id=KEY_ID,
+        clock=lambda: next(clock_values),
+        monotonic_ns=lambda: 0,
+        wait_ns=lambda _delay: None,
+        commit_sync=False,
+        require_ready=True,
+    )
+
+    assert events == ["portfolio", "withdraw_limits"]
+    assert captured["broker_cash_as_of"] == T2
+    assert captured["broker_withdraw_limits_as_of"] == (
+        "2026-09-11T10:00:13.000000000Z"
+    )
+    assert captured["evaluated_at"] == "2026-09-11T10:00:13.000000000Z"
+
+
 class _ExactRiskGate:
     account_id = RAW_ACCOUNT
     mode = "SANDBOX_EXECUTION"
@@ -1553,6 +1622,91 @@ def test_exact_dispatch_marker_precedes_single_post_and_classifies_outcome(
         assert persisted.outcome == "SUBMISSION_REJECTED"
     else:
         assert authority_manager.status().post_attempt_count == 1
+
+
+def test_final_dispatch_timestamps_non_atomic_provider_reads_independently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority_manager, _authority = _chain(tmp_path)
+    repository, central, intent = _central_runtime(tmp_path)
+    now = {"value": T1}
+
+    class TimedTransport(_ExactTransport):
+        def get_portfolio(self, _account_id: str) -> dict[str, object]:
+            now["value"] = T2
+            return {"synthetic": "portfolio"}
+
+        def get_withdraw_limits(self, _account_id: str) -> object:
+            now["value"] = "2026-09-11T10:00:13.000000000Z"
+            return cl5.WithdrawLimitsTransportObservation(
+                RAW_ACCOUNT,
+                "SandboxService",
+                "GetSandboxWithdrawLimits",
+                {"money": [], "blocked": [], "blockedGuarantee": []},
+            )
+
+    transport = TimedTransport(authority_manager, outcome="accepted")
+    ledger_root = tmp_path / "ledger"
+    ledger_root.mkdir()
+    sqlite3.connect(ledger_root / "store.sqlite3").close()
+    captured: dict[str, object] = {}
+
+    def no_op_sync(self: object, current: object, **_kwargs: object):
+        return current, SimpleNamespace()
+
+    def capture_context(*_args: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return SimpleNamespace(context=SimpleNamespace())
+
+    monkeypatch.setattr(
+        cl7.RuntimeCashAuthorityManager,
+        "synchronize_operations_locked",
+        no_op_sync,
+    )
+    monkeypatch.setattr(
+        cl7.RuntimeCashAuthorityManager,
+        "build_runtime_context",
+        capture_context,
+    )
+
+    def proof_builder(current: object, state: object, queued: object):
+        return _proof(
+            raw_intent_id=queued.intent_id,
+            authority_record_revision=current.record_revision,
+            authority_record_sha256=current.sha256,
+            central_order_revision=state.revision,
+            central_reservation_projection_hash=central_reservation_projection_hash(
+                state
+            ),
+        )
+
+    adapter = SandboxExecutionAdapter(
+        transport,
+        central,
+        SandboxExecutionPolicy(account_id=RAW_ACCOUNT),
+        risk_runtime=_ExactRiskGate(),
+        cash_authority_manager=authority_manager,
+        cl7_identity_key=KEY,
+        cl7_identity_key_id=KEY_ID,
+        cl7_ledger_store=SimpleNamespace(root=ledger_root),
+        cl7_proof_builder=proof_builder,
+        cl7_clock=lambda: now["value"],
+        cl7_monotonic_ns=lambda: 1,
+        cl7_wait_ns=lambda _duration: None,
+    )
+    result = adapter.dispatch_next(
+        repository,
+        expected_intent_id=intent.intent_id,
+    )
+
+    assert result.status == "SUBMITTED"
+    assert transport.post_calls == 1
+    assert captured["broker_cash_as_of"] == T2
+    assert captured["broker_withdraw_limits_as_of"] == (
+        "2026-09-11T10:00:13.000000000Z"
+    )
+    assert captured["evaluated_at"] == "2026-09-11T10:00:13.000000000Z"
 
 
 def test_process_boundary_recovery_requires_exact_central_resolution(

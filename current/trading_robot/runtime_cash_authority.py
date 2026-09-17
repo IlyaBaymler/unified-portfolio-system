@@ -1842,10 +1842,11 @@ class RuntimeCashAuthorityManager:
         )
         try:
             portfolio_response = provider.get_portfolio(raw_account_id)
+            broker_cash_as_of = _timestamp(clock())
             withdraw_limits_observation = provider.get_withdraw_limits(
                 raw_account_id
             )
-            provider_as_of = _timestamp(clock())
+            broker_withdraw_limits_as_of = _timestamp(clock())
         except Exception:
             _fail(
                 CL7RuntimeReason.BROKER_READ_FAILED,
@@ -1870,8 +1871,8 @@ class RuntimeCashAuthorityManager:
             central_manager=central_manager,
             portfolio_response=portfolio_response,
             withdraw_limits_observation=withdraw_limits_observation,
-            broker_cash_as_of=provider_as_of,
-            broker_withdraw_limits_as_of=provider_as_of,
+            broker_cash_as_of=broker_cash_as_of,
+            broker_withdraw_limits_as_of=broker_withdraw_limits_as_of,
             raw_account_id=raw_account_id,
             identity_key=identity_key,
             identity_key_id=identity_key_id,
