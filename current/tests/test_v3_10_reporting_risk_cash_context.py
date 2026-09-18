@@ -18,6 +18,7 @@ from trading_robot import cash_ledger_opening_reconciliation as cl4
 from trading_robot import central_order_manager as central
 from trading_robot import portfolio_model, portfolio_preflight, risk
 from trading_robot import reporting_risk_cash_context as cl6
+from trading_robot import tbank_sandbox
 
 ROOT = Path(__file__).resolve().parents[2]
 CURRENT = ROOT / "current"
@@ -43,6 +44,28 @@ START = "2026-01-01T00:00:00.000000000Z"
 FLOW = "2026-07-02T00:00:00.000000000Z"
 END = "2027-01-01T00:00:00.000000000Z"
 END_ISO = "2027-01-01T00:00:00+00:00"
+
+
+def _withdraw_limits_transport_observation(
+    response: dict[str, object],
+    *,
+    account_id: str = RAW_ACCOUNT,
+) -> cl5.WithdrawLimitsTransportObservation:
+    class StaticTransport:
+        @staticmethod
+        def _post(
+            service: str,
+            method: str,
+            payload: dict[str, object],
+        ) -> dict[str, object]:
+            assert service == "SandboxService"
+            assert method == "GetSandboxWithdrawLimits"
+            assert payload == {"accountId": account_id}
+            return response
+
+    return tbank_sandbox.TBankSandboxClient.get_withdraw_limits(
+        StaticTransport(), account_id
+    )
 END_PLUS_10 = "2027-01-01T00:00:10.000000000Z"
 END_PLUS_121 = "2027-01-01T00:02:01.000000000Z"
 ENV = broker.BrokerEnvironment.SANDBOX
@@ -254,14 +277,11 @@ def _cash_inputs(
         identity_key=KEY,
     )
     withdraw_limits = cl5.build_broker_withdraw_limits_cash_proof(
-        cl5.WithdrawLimitsTransportObservation(
-            raw_request_account_id=RAW_ACCOUNT,
-            service="SandboxService",
-            method="GetSandboxWithdrawLimits",
-            response={
-            "blocked": [{"currency": "RUB", "nano": 0, "units": "20"}],
-            "blockedGuarantee": [],
-            "money": [{"currency": "RUB", "nano": 0, "units": "130"}],
+        _withdraw_limits_transport_observation(
+            {
+                "blocked": [{"currency": "RUB", "nano": 0, "units": "20"}],
+                "blockedGuarantee": [],
+                "money": [{"currency": "RUB", "nano": 0, "units": "130"}],
             },
         ),
         account_scope_sha256=ACCOUNT_SCOPE,

@@ -445,6 +445,9 @@ class BrokerPositionsCashProof:
         return _sha256(self.canonical_bytes)
 
 
+_WITHDRAW_LIMITS_TRANSPORT_SEAL = object()
+
+
 class WithdrawLimitsTransportObservation:
     """Local-only request/response binding created at the transport boundary."""
 
@@ -454,6 +457,7 @@ class WithdrawLimitsTransportObservation:
         "_response_canonical_bytes",
         "_sealed",
         "_service",
+        "_transport_seal",
     )
 
     def __init__(
@@ -462,9 +466,12 @@ class WithdrawLimitsTransportObservation:
         service: str,
         method: str,
         response: dict[str, object],
+        *,
+        _transport_seal: object | None = None,
     ) -> None:
         if (
-            type(raw_request_account_id) is not str
+            _transport_seal is not _WITHDRAW_LIMITS_TRANSPORT_SEAL
+            or type(raw_request_account_id) is not str
             or not raw_request_account_id
             or type(service) is not str
             or type(method) is not str
@@ -479,6 +486,7 @@ class WithdrawLimitsTransportObservation:
         object.__setattr__(self, "_service", service)
         object.__setattr__(self, "_method", method)
         object.__setattr__(self, "_response_canonical_bytes", canonical)
+        object.__setattr__(self, "_transport_seal", _transport_seal)
         object.__setattr__(self, "_sealed", True)
 
     def __setattr__(self, _name: str, _value: object) -> None:
@@ -513,8 +521,29 @@ class WithdrawLimitsTransportObservation:
 
     __str__ = __repr__
 
+    def _has_transport_provenance(self) -> bool:
+        return self._transport_seal is _WITHDRAW_LIMITS_TRANSPORT_SEAL
+
     def __reduce_ex__(self, _protocol: int) -> object:
         raise TypeError("local-only observation is not serializable")
+
+
+def _issue_withdraw_limits_transport_observation(
+    *,
+    raw_request_account_id: str,
+    service: str,
+    method: str,
+    response: dict[str, object],
+) -> WithdrawLimitsTransportObservation:
+    """Issue a sealed observation for the transport adapter call frame."""
+
+    return WithdrawLimitsTransportObservation(
+        raw_request_account_id=raw_request_account_id,
+        service=service,
+        method=method,
+        response=response,
+        _transport_seal=_WITHDRAW_LIMITS_TRANSPORT_SEAL,
+    )
 
 
 def _withdraw_limits_observation_identity(
@@ -1338,7 +1367,8 @@ def build_broker_withdraw_limits_cash_proof(
     ):
         _fail(CL5Reason.WITHDRAW_LIMITS_OBSERVATION_INVALID)
     if (
-        type(observation.raw_request_account_id) is not str
+        not observation._has_transport_provenance()
+        or type(observation.raw_request_account_id) is not str
         or not observation.raw_request_account_id
         or type(observation.service) is not str
         or observation.service != "SandboxService"

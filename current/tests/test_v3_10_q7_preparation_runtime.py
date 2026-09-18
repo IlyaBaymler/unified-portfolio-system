@@ -62,6 +62,26 @@ COMMIT = VECTORS["candidate"]["commit"]
 TREE = VECTORS["candidate"]["tree"]
 
 
+def _withdraw_limits_transport_observation(
+    response: dict[str, object],
+    *,
+    account_id: str,
+) -> cl5.WithdrawLimitsTransportObservation:
+    class StaticTransport:
+        @staticmethod
+        def _post(
+            service: str,
+            method: str,
+            payload: dict[str, object],
+        ) -> dict[str, object]:
+            assert service == "SandboxService"
+            assert method == "GetSandboxWithdrawLimits"
+            assert payload == {"accountId": account_id}
+            return response
+
+    return TBankSandboxClient.get_withdraw_limits(StaticTransport(), account_id)
+
+
 def _synthetic_source_verifier(commit: str, tree: str) -> None:
     assert commit == COMMIT
     assert tree == TREE
@@ -2841,11 +2861,9 @@ def test_cl4_money_normalizing_provider_delegates_all_other_calls():
 
         def get_withdraw_limits(self, account_id):
             self.calls.append(("get_withdraw_limits", account_id))
-            return cl5.WithdrawLimitsTransportObservation(
-                account_id,
-                "SandboxService",
-                "GetSandboxWithdrawLimits",
+            return _withdraw_limits_transport_observation(
                 {"money": [], "blocked": [], "blockedGuarantee": []},
+                account_id=account_id,
             )
 
     delegate = Delegate()

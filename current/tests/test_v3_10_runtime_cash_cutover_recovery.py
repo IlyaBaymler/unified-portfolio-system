@@ -20,6 +20,7 @@ from trading_robot import cash_availability as cl5
 from trading_robot import cash_ledger_opening_reconciliation as cl4
 from trading_robot import cash_ledger_persistence as persistence
 from trading_robot import runtime_cash_authority as cl7
+from trading_robot import tbank_sandbox
 from trading_robot.cash_ledger_domain import Money
 from trading_robot.central_order_manager import (
     CentralOrderCandidate,
@@ -66,6 +67,29 @@ T4 = "2026-09-11T10:00:04.000000000Z"
 T5 = "2026-09-11T10:00:05.000000000Z"
 T6 = "2026-09-11T10:00:06.000000000Z"
 T65 = "2026-09-11T10:00:06.500000000Z"
+
+
+def _withdraw_limits_transport_observation(
+    response: dict[str, object],
+    *,
+    account_id: str = RAW_ACCOUNT,
+) -> cl5.WithdrawLimitsTransportObservation:
+    class StaticTransport:
+        @staticmethod
+        def _post(
+            service: str,
+            method: str,
+            payload: dict[str, object],
+        ) -> dict[str, object]:
+            assert service == "SandboxService"
+            assert method == "GetSandboxWithdrawLimits"
+            assert payload == {"accountId": account_id}
+            return response
+
+    return tbank_sandbox.TBankSandboxClient.get_withdraw_limits(
+        StaticTransport(), account_id
+    )
+
 
 IMPLEMENTATION_PATHS = {
     "current/trading_robot/runtime_cash_authority.py",
@@ -1287,14 +1311,11 @@ def test_full_prepare_confirm_activate_arm_uses_fresh_cl2_to_cl6_evidence(
 
         @staticmethod
         def get_withdraw_limits(_account: str):
-            return cl5.WithdrawLimitsTransportObservation(
-                raw_request_account_id=RAW_ACCOUNT,
-                service="SandboxService",
-                method="GetSandboxWithdrawLimits",
-                response={
-                "blocked": [],
-                "blockedGuarantee": [],
-                "money": [{"currency": "RUB", "nano": 0, "units": "150"}],
+            return _withdraw_limits_transport_observation(
+                {
+                    "blocked": [],
+                    "blockedGuarantee": [],
+                    "money": [{"currency": "RUB", "nano": 0, "units": "150"}],
                 },
             )
 
@@ -1483,10 +1504,7 @@ class _ExactTransport:
 
     @staticmethod
     def get_withdraw_limits(_account_id: str):
-        return cl5.WithdrawLimitsTransportObservation(
-            RAW_ACCOUNT,
-            "SandboxService",
-            "GetSandboxWithdrawLimits",
+        return _withdraw_limits_transport_observation(
             {"money": [], "blocked": [], "blockedGuarantee": []},
         )
 
@@ -1639,10 +1657,7 @@ def test_final_dispatch_timestamps_non_atomic_provider_reads_independently(
 
         def get_withdraw_limits(self, _account_id: str) -> object:
             now["value"] = "2026-09-11T10:00:13.000000000Z"
-            return cl5.WithdrawLimitsTransportObservation(
-                RAW_ACCOUNT,
-                "SandboxService",
-                "GetSandboxWithdrawLimits",
+            return _withdraw_limits_transport_observation(
                 {"money": [], "blocked": [], "blockedGuarantee": []},
             )
 

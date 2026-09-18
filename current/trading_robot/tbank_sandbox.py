@@ -717,9 +717,9 @@ class TBankSandboxClient:
             "GetSandboxWithdrawLimits",
             {"accountId": account_id},
         )
-        from .cash_availability import WithdrawLimitsTransportObservation
+        from .cash_availability import _issue_withdraw_limits_transport_observation
 
-        return WithdrawLimitsTransportObservation(
+        return _issue_withdraw_limits_transport_observation(
             raw_request_account_id=account_id,
             service="SandboxService",
             method="GetSandboxWithdrawLimits",

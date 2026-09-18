@@ -18,6 +18,7 @@ from trading_robot import cash_ledger_opening_reconciliation as cl4
 from trading_robot import cash_ledger_persistence as persistence
 from trading_robot import central_order_manager as central
 from trading_robot import sandbox_execution_adapter
+from trading_robot import tbank_sandbox
 
 ROOT = Path(__file__).resolve().parents[2]
 CURRENT = ROOT / "current"
@@ -123,11 +124,8 @@ def _withdraw(
     account_scope: str = ACCOUNT_SCOPE,
     complete: bool = True,
 ) -> cl5.BrokerWithdrawLimitsCashProof:
-    observation = cl5.WithdrawLimitsTransportObservation(
-        raw_request_account_id=RAW_ACCOUNT,
-        service="SandboxService",
-        method="GetSandboxWithdrawLimits",
-        response=_withdraw_response() if response is None else response,
+    observation = _transport_observation(
+        _withdraw_response() if response is None else response
     )
     return cl5.build_broker_withdraw_limits_cash_proof(
         observation,
@@ -138,6 +136,28 @@ def _withdraw(
         response_complete=complete,
         identity_key=KEY,
         identity_key_id=KEY_ID,
+    )
+
+
+def _transport_observation(
+    response: object,
+    *,
+    account_id: str = RAW_ACCOUNT,
+) -> cl5.WithdrawLimitsTransportObservation:
+    class StaticTransport:
+        def _post(
+            self,
+            service: str,
+            method: str,
+            payload: dict[str, object],
+        ) -> object:
+            assert service == "SandboxService"
+            assert method == "GetSandboxWithdrawLimits"
+            assert payload == {"accountId": account_id}
+            return response
+
+    return tbank_sandbox.TBankSandboxClient.get_withdraw_limits(
+        StaticTransport(), account_id
     )
 
 
@@ -608,9 +628,8 @@ def test_q7_bvm_12_exact_container_scalar_and_equality_types_reject() -> None:
 
 
 def test_q7_bvm_13_21_22_request_provenance_and_observation_gate() -> None:
-    mismatch = cl5.WithdrawLimitsTransportObservation(
-        "different-account", "SandboxService", "GetSandboxWithdrawLimits",
-        _withdraw_response(),
+    mismatch = _transport_observation(
+        _withdraw_response(), account_id="different-account"
     )
     kwargs = {
         "account_scope_sha256": ACCOUNT_SCOPE,
@@ -631,16 +650,26 @@ def test_q7_bvm_13_21_22_request_provenance_and_observation_gate() -> None:
         cl5.CL5Reason.WITHDRAW_LIMITS_REQUEST_SCOPE_MISMATCH,
         cl5.build_broker_withdraw_limits_cash_proof, mismatch, **kwargs,
     )
+    with pytest.raises(cl5.CL5Error) as same_account_forgery:
+        cl5.WithdrawLimitsTransportObservation(
+            RAW_ACCOUNT,
+            "SandboxService",
+            "GetSandboxWithdrawLimits",
+            _withdraw_response(),
+        )
+    assert same_account_forgery.value.reason is (
+        cl5.CL5Reason.WITHDRAW_LIMITS_OBSERVATION_INVALID
+    )
     for service, method in (
         ("OperationsService", "GetSandboxWithdrawLimits"),
         ("SandboxService", "GetSandboxPositions"),
     ):
-        observation = cl5.WithdrawLimitsTransportObservation(
-            RAW_ACCOUNT, service, method, _withdraw_response()
-        )
-        _reason(
-            cl5.CL5Reason.WITHDRAW_LIMITS_OBSERVATION_INVALID,
-            cl5.build_broker_withdraw_limits_cash_proof, observation, **kwargs,
+        with pytest.raises(cl5.CL5Error) as invalid_observation:
+            cl5.WithdrawLimitsTransportObservation(
+                RAW_ACCOUNT, service, method, _withdraw_response()
+            )
+        assert invalid_observation.value.reason is (
+            cl5.CL5Reason.WITHDRAW_LIMITS_OBSERVATION_INVALID
         )
 
 
