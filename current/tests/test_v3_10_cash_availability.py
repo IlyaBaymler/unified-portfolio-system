@@ -675,7 +675,12 @@ def test_withdraw_limits_rub_alias_changes_wire_identity_not_money_projection() 
 @pytest.mark.parametrize("field", ["money", "blocked", "blockedGuarantee"])
 @pytest.mark.parametrize(
     "currencies",
-    [("RUB", "RUB"), ("rub", "rub"), ("RUB", "rub")],
+    [
+        ("RUB", "RUB"),
+        ("rub", "rub"),
+        ("RUB", "rub"),
+        ("rub", "RUB"),
+    ],
 )
 def test_q7_bvm_10_semantic_duplicate_rub_aliases_reject(
     field: str,
@@ -697,22 +702,34 @@ def test_q7_bvm_10_semantic_duplicate_rub_aliases_reject(
     )
 
 
+@pytest.mark.parametrize("field", ["money", "blocked", "blockedGuarantee"])
 @pytest.mark.parametrize(
     "currency",
     ["Rub", "rUb", " rub", "rub ", "ＲＵＢ", "РУБ"],
 )
 def test_withdraw_limits_non_alias_currency_tokens_remain_foreign(
     opened_ledger: bytes,
+    field: str,
     currency: str,
 ) -> None:
-    response = {
+    response: dict[str, object] = {
         "blocked": [],
         "blockedGuarantee": [],
-        "money": [_money_value("1", currency=currency)],
+        "money": [],
     }
+    response[field] = [_money_value("1", currency=currency)]
     proof = _withdraw(response=response)
-    assert proof.available_rub.minor_units == 0
-    assert proof.available_rub_present is False
+    projections = {
+        "money": (proof.available_rub, proof.available_rub_present),
+        "blocked": (proof.blocked_rub, proof.blocked_rub_present),
+        "blockedGuarantee": (
+            proof.blocked_guarantee_rub,
+            proof.blocked_guarantee_rub_present,
+        ),
+    }
+    projected, present = projections[field]
+    assert projected.minor_units == 0
+    assert present is False
     assert proof.foreign_cash_present is True
     snapshot = _snapshot(opened_ledger, withdraw_limits=proof)
     assert snapshot.status is cl5.AvailabilityStatus.BLOCKED
@@ -721,38 +738,120 @@ def test_withdraw_limits_non_alias_currency_tokens_remain_foreign(
     )
 
 
+@pytest.mark.parametrize("field", ["money", "blocked", "blockedGuarantee"])
 def test_q7_bvm_11_foreign_nonzero_blocks_but_zero_does_not(
     opened_ledger: bytes,
+    field: str,
 ) -> None:
-    foreign = _snapshot(opened_ledger, withdraw_limits=_withdraw(
-        response=_withdraw_response(foreign=True)
-    ))
+    nonzero_response = _withdraw_response()
+    nonzero_response[field].append(_money_value("1", currency="USD"))
+    nonzero_proof = _withdraw(response=nonzero_response)
+    assert nonzero_proof.foreign_cash_present is True
+    foreign = _snapshot(opened_ledger, withdraw_limits=nonzero_proof)
     assert foreign.status is cl5.AvailabilityStatus.BLOCKED
-    assert foreign.availability_reason is cl5.AvailabilityReason.WITHDRAW_LIMITS_FOREIGN_CASH_PRESENT
-    response = _withdraw_response()
-    response["money"].append(_money_value("0", currency="USD"))
-    zero_foreign = _snapshot(opened_ledger, withdraw_limits=_withdraw(response=response))
+    assert foreign.availability_reason is (
+        cl5.AvailabilityReason.WITHDRAW_LIMITS_FOREIGN_CASH_PRESENT
+    )
+
+    zero_response = _withdraw_response()
+    zero_response[field].append(_money_value("0", currency="USD"))
+    zero_proof = _withdraw(response=zero_response)
+    assert zero_proof.foreign_cash_present is False
+    zero_foreign = _snapshot(opened_ledger, withdraw_limits=zero_proof)
     assert zero_foreign.status is cl5.AvailabilityStatus.READY
 
 
-def test_q7_bvm_12_exact_container_scalar_and_equality_types_reject() -> None:
+@pytest.mark.parametrize("field", ["money", "blocked", "blockedGuarantee"])
+def test_q7_bvm_12_exact_container_scalar_and_malformed_items_reject(
+    field: str,
+) -> None:
     class StringSubclass(str):
         pass
+
     class DictSubclass(dict):
         pass
+
     class CustomEquality:
         def __eq__(self, _other):
             return True
-    responses = (
-        {"money": (), "blocked": [], "blockedGuarantee": []},
-        {"money": [], "blocked": [], "blockedGuarantee": False},
-        {"money": [{"currency": "RUB", "units": "1", "nano": True}], "blocked": [], "blockedGuarantee": []},
-        {"money": [{"currency": StringSubclass("RUB"), "units": "1", "nano": 0}], "blocked": [], "blockedGuarantee": []},
-        {"money": [{"currency": CustomEquality(), "units": "1", "nano": 0}], "blocked": [], "blockedGuarantee": []},
-    )
-    for response in responses:
-        with pytest.raises(cl5.CL5Error):
+
+    def assert_rejects(
+        response: dict[str, object],
+        reason: cl5.CL5Reason,
+    ) -> None:
+        with pytest.raises(cl5.CL5Error) as captured:
             _withdraw(response=response)
+        assert captured.value.reason is reason
+        assert str(captured.value) == reason.value
+        assert captured.value.__cause__ is None
+
+    invalid_items: tuple[tuple[object, cl5.CL5Reason], ...] = (
+        (
+            {"currency": "RUB", "units": "1", "nano": True},
+            cl5.CL5Reason.WITHDRAW_LIMITS_RESPONSE_INVALID,
+        ),
+        (
+            {
+                "currency": StringSubclass("RUB"),
+                "units": "1",
+                "nano": 0,
+            },
+            cl5.CL5Reason.WITHDRAW_LIMITS_OBSERVATION_INVALID,
+        ),
+        (
+            {"currency": CustomEquality(), "units": "1", "nano": 0},
+            cl5.CL5Reason.WITHDRAW_LIMITS_OBSERVATION_INVALID,
+        ),
+        (
+            {
+                "currency": "RUB",
+                "units": StringSubclass("1"),
+                "nano": 0,
+            },
+            cl5.CL5Reason.WITHDRAW_LIMITS_OBSERVATION_INVALID,
+        ),
+        (
+            DictSubclass(currency="RUB", units="1", nano=0),
+            cl5.CL5Reason.WITHDRAW_LIMITS_OBSERVATION_INVALID,
+        ),
+        (
+            {"currency": "RUB", "units": "01", "nano": 0},
+            cl5.CL5Reason.WITHDRAW_LIMITS_RESPONSE_INVALID,
+        ),
+        (
+            {"currency": "RUB", "units": "1", "nano": 1_000_000_000},
+            cl5.CL5Reason.WITHDRAW_LIMITS_RESPONSE_INVALID,
+        ),
+        (
+            {"currency": "RUB", "units": "1", "nano": 0, "unknown": 0},
+            cl5.CL5Reason.WITHDRAW_LIMITS_RESPONSE_INVALID,
+        ),
+        (
+            {"currency": "RUB", "units": str(2**63), "nano": 0},
+            cl5.CL5Reason.WITHDRAW_LIMITS_MONEY_INVALID,
+        ),
+    )
+
+    invalid_container: dict[str, object] = {
+        "blocked": [],
+        "blockedGuarantee": [],
+        "money": [],
+    }
+    invalid_container[field] = ()
+    assert_rejects(
+        invalid_container,
+        cl5.CL5Reason.WITHDRAW_LIMITS_OBSERVATION_INVALID,
+    )
+
+    for item, reason in invalid_items:
+        response: dict[str, object] = {
+            "blocked": [],
+            "blockedGuarantee": [],
+            "money": [],
+        }
+        response[field] = [item]
+        assert_rejects(response, reason)
+
     with pytest.raises(cl5.CL5Error):
         cl5.WithdrawLimitsTransportObservation(
             RAW_ACCOUNT, "SandboxService", "GetSandboxWithdrawLimits", DictSubclass()
