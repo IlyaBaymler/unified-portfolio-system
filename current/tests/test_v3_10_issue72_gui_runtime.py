@@ -124,6 +124,43 @@ CL8_CLEAN_ACCOUNT_HOTFIX_CUMULATIVE_PATHS = {
     *CL8_CLEAN_ACCOUNT_HOTFIX_PATHS,
     "current/tests/test_v3_10_q7_preparation_runtime.py",
 }
+CL8_Q7_BVM_IMPLEMENTATION_BRANCH = (
+    "agent/v3-10-clean-cl8-q7-broker-cash-view-rescope-implementation"
+)
+CL8_Q7_BVM_CONTRACT_BRANCH = (
+    "agent/v3-10-clean-cl8-q7-broker-cash-view-rescope-contract-freeze"
+)
+CL8_Q7_BVM_ACCEPTED_CONTRACT = "acd7a49a830ebfcfe7545869d471c599dfa8d2bb"
+CL8_Q7_BVM_ACCEPTED_CONTRACT_TREE = "b71f7d483cf6632e8e181f3aebba33ac7a0921d7"
+CL8_Q7_BVM_INTEGRATION_BRANCH = "program/v3-10-v4-stable-line"
+CL8_Q7_BVM_INTEGRATION_BASE = "52815e48a22d517d18bf05e9cf928764cbeaf91a"
+CL8_Q7_BVM_INTEGRATION_BASE_TREE = "e86a904e1aa22c2ce9a517afecd52677254cd104"
+CL8_Q7_BVM_RESCOPE_PARENT = "27629cc0f51afac0688ae85bf37dc5f787e9ba2a"
+CL8_Q7_BVM_RESCOPE_PARENT_TREE = "37c9dc495b4a9ec1702ef876e7a16331d441a199"
+CL8_Q7_BVM_IMPLEMENTATION_PATHS = {
+    "current/trading_robot/tbank_sandbox.py",
+    "current/trading_robot/cash_availability.py",
+    "current/trading_robot/runtime_cash_authority.py",
+    "current/trading_robot/reporting_risk_cash_context.py",
+    "current/trading_robot/sandbox_execution_adapter.py",
+    "current/tools/v3_10_runtime_cash_cutover.py",
+    "current/tests/test_v3_10_cash_availability.py",
+    "current/tests/test_v3_10_q7_preparation_runtime.py",
+    "current/tests/test_v3_10_reporting_risk_cash_context.py",
+    "current/tests/test_v3_10_runtime_cash_cutover_recovery.py",
+    "current/tests/fixtures/v3_10_cash_availability_vectors.json",
+    "current/tests/test_v3_10_issue72_gui_runtime.py",
+    "current/tests/test_v3_10_stable_qualification.py",
+}
+CL8_Q7_BVM_STABLE_PATHS = {
+    *CL8_Q7_BVM_IMPLEMENTATION_PATHS,
+    "current/tests/test_tbank_sandbox.py",
+    "current/tests/test_v3_10_broker_read_adapters.py",
+    "current/trading_robot/broker_read_adapters.py",
+    "current/trading_robot/gui_runtime_controller.py",
+    "docs/project/V3_10_CL8_Q7_BFE_OPENING_DIAGNOSTIC_RESCOPE_RU.md",
+    "docs/project/V3_10_CL8_Q7_BROKER_CASH_VIEW_RESCOPE_CONTRACT_RU.md",
+}
 IMPLEMENTATION_PATHS = {
     "ROADMAP.md",
     "current/README.md",
@@ -187,6 +224,7 @@ def test_exact_contract_branch_and_fourteen_path_custody():
     assert _git("rev-parse", f"{ACCEPTED_CONTRACT}^{{tree}}") == ACCEPTED_CONTRACT_TREE
     assert _git("merge-base", ACCEPTED_CONTRACT, head) == ACCEPTED_CONTRACT
     branch = _git("branch", "--show-current")
+    bvm_pr = None
     q7r_pr = None
     hotfix_pr = None
     if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
@@ -195,7 +233,31 @@ def test_exact_contract_branch_and_fourteen_path_custody():
         pull_request = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))[
             "pull_request"
         ]
-        if pull_request["head"]["ref"] == CL8_Q7R_IMPLEMENTATION_BRANCH:
+        if pull_request["head"]["ref"] == CL8_Q7_BVM_IMPLEMENTATION_BRANCH:
+            bvm_pr = pull_request
+            base = (pull_request["base"]["ref"], pull_request["base"]["sha"])
+            expected = {
+                (CL8_Q7_BVM_CONTRACT_BRANCH, CL8_Q7_BVM_ACCEPTED_CONTRACT): (5, 13),
+                (CL8_Q7_BVM_INTEGRATION_BRANCH, CL8_Q7_BVM_INTEGRATION_BASE): (
+                    20,
+                    19,
+                ),
+            }.get(base)
+            assert expected is not None
+            assert (pull_request["commits"], pull_request["changed_files"]) == expected
+            assert pull_request["head"]["repo"]["full_name"] == (
+                "baimleriv/unified-portfolio-system"
+            )
+            assert pull_request["base"]["repo"]["full_name"] == (
+                "baimleriv/unified-portfolio-system"
+            )
+            head = pull_request["head"]["sha"]
+            parents = _git("show", "-s", "--format=%P", checked_out_head).split()
+            assert parents == [base[1], head]
+            assert _git("rev-parse", f"{checked_out_head}^{{tree}}") == _git(
+                "rev-parse", f"{head}^{{tree}}"
+            )
+        elif pull_request["head"]["ref"] == CL8_Q7R_IMPLEMENTATION_BRANCH:
             q7r_pr = pull_request
             base = (
                 pull_request["base"]["ref"],
@@ -230,6 +292,51 @@ def test_exact_contract_branch_and_fourteen_path_custody():
             assert _git("rev-parse", f"{checked_out_head}^{{tree}}") == _git(
                 "rev-parse", f"{head}^{{tree}}"
             )
+    if branch == CL8_Q7_BVM_IMPLEMENTATION_BRANCH or bvm_pr is not None:
+        assert (
+            _git("rev-parse", f"{CL8_Q7_BVM_ACCEPTED_CONTRACT}^{{tree}}")
+            == CL8_Q7_BVM_ACCEPTED_CONTRACT_TREE
+        )
+        assert _git("merge-base", CL8_Q7_BVM_ACCEPTED_CONTRACT, head) == (
+            CL8_Q7_BVM_ACCEPTED_CONTRACT
+        )
+        if head != CL8_Q7_BVM_ACCEPTED_CONTRACT:
+            assert head == CL8_Q7_BVM_RESCOPE_PARENT or _git(
+                "rev-parse", f"{head}^"
+            ) == CL8_Q7_BVM_RESCOPE_PARENT
+            assert (
+                _git("rev-parse", f"{CL8_Q7_BVM_RESCOPE_PARENT}^{{tree}}")
+                == CL8_Q7_BVM_RESCOPE_PARENT_TREE
+            )
+        changed = set(
+            _git(
+                "diff", "--name-only", f"{CL8_Q7_BVM_ACCEPTED_CONTRACT}..{head}"
+            ).splitlines()
+        )
+        if bvm_pr is None:
+            changed.update(_git("diff", "--name-only").splitlines())
+            changed.update(
+                _git("ls-files", "--others", "--exclude-standard").splitlines()
+            )
+        assert changed == CL8_Q7_BVM_IMPLEMENTATION_PATHS
+        if bvm_pr is not None and bvm_pr["base"]["sha"] == (
+            CL8_Q7_BVM_INTEGRATION_BASE
+        ):
+            assert (
+                _git("rev-parse", f"{CL8_Q7_BVM_INTEGRATION_BASE}^{{tree}}")
+                == CL8_Q7_BVM_INTEGRATION_BASE_TREE
+            )
+            assert _git("merge-base", CL8_Q7_BVM_INTEGRATION_BASE, head) == (
+                CL8_Q7_BVM_INTEGRATION_BASE
+            )
+            assert set(
+                _git(
+                    "diff",
+                    "--name-only",
+                    f"{CL8_Q7_BVM_INTEGRATION_BASE}..{head}",
+                ).splitlines()
+            ) == CL8_Q7_BVM_STABLE_PATHS
+        return
     if branch == CL8_Q7R_IMPLEMENTATION_BRANCH or q7r_pr is not None:
         assert (
             _git("rev-parse", f"{CL8_Q7R_ACCEPTED_CONTRACT}^{{tree}}")
