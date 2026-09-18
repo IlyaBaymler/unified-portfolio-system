@@ -92,12 +92,8 @@ def _withdraw_response(
     foreign: bool = False,
 ) -> dict[str, object]:
     money = [_money_value(money_units, money_nano)] if include_money else []
-    blocked = (
-        [_money_value(blocked_units, blocked_nano)] if include_blocked else []
-    )
-    guarantee = (
-        [] if guarantee_units is None else [_money_value(guarantee_units)]
-    )
+    blocked = [_money_value(blocked_units, blocked_nano)] if include_blocked else []
+    guarantee = [] if guarantee_units is None else [_money_value(guarantee_units)]
     if foreign:
         money.append(_money_value("1", currency="USD"))
     return {
@@ -449,23 +445,40 @@ def _reason(
 
 def test_v2_public_surface_and_signatures_are_exact() -> None:
     assert set(cl5.__all__) == {
-        "AvailabilityStatus", "AvailabilityReason", "OverlapDisposition",
-        "CL5Reason", "CL5Error", "BrokerPositionsCashProof",
-        "BrokerWithdrawLimitsCashProof", "WithdrawLimitsTransportObservation",
-        "CentralReservationProjection", "CashAvailabilitySnapshot",
+        "AvailabilityStatus",
+        "AvailabilityReason",
+        "OverlapDisposition",
+        "CL5Reason",
+        "CL5Error",
+        "BrokerPositionsCashProof",
+        "BrokerWithdrawLimitsCashProof",
+        "WithdrawLimitsTransportObservation",
+        "CentralReservationProjection",
+        "CashAvailabilitySnapshot",
         "build_broker_positions_cash_proof",
         "build_broker_withdraw_limits_cash_proof",
-        "project_central_reservations", "build_cash_availability",
+        "project_central_reservations",
+        "build_cash_availability",
     }
-    assert list(inspect.signature(
-        cl5.build_broker_withdraw_limits_cash_proof
-    ).parameters) == [
-        "observation", "account_scope_sha256", "environment", "as_of",
-        "evaluated_at", "response_complete", "identity_key", "identity_key_id",
+    assert list(
+        inspect.signature(cl5.build_broker_withdraw_limits_cash_proof).parameters
+    ) == [
+        "observation",
+        "account_scope_sha256",
+        "environment",
+        "as_of",
+        "evaluated_at",
+        "response_complete",
+        "identity_key",
+        "identity_key_id",
     ]
     assert list(inspect.signature(cl5.build_cash_availability).parameters) == [
-        "ledger_export_bytes", "reconciliation", "withdraw_limits",
-        "reservations", "evaluated_at", "identity_key",
+        "ledger_export_bytes",
+        "reconciliation",
+        "withdraw_limits",
+        "reservations",
+        "evaluated_at",
+        "identity_key",
     ]
 
 
@@ -486,9 +499,10 @@ def test_contract_owned_withdraw_limits_identity_kat(
     assert proof.sha256 == (
         "f5e03b70096a4e0f9756098d7a1a4e7550f6976aa5017d92aa25ec0f8f812f5b"
     )
-    assert proof.canonical_bytes.decode("ascii") == vectors["withdraw_limits"][
-        "proof_canonical_ascii"
-    ]
+    assert (
+        proof.canonical_bytes.decode("ascii")
+        == vectors["withdraw_limits"]["proof_canonical_ascii"]
+    )
 
 
 def test_contract_owned_ready_snapshot_v2_kat(vectors: dict[str, object]) -> None:
@@ -498,19 +512,26 @@ def test_contract_owned_ready_snapshot_v2_kat(vectors: dict[str, object]) -> Non
     snapshot = cl5.CashAvailabilitySnapshot(
         account_scope_sha256=ACCOUNT_SCOPE,
         environment=broker.BrokerEnvironment.SANDBOX,
-        currency="RUB", evaluated_at=TS,
-        cl4_reconciliation_evaluated_at=TS, broker_cash_as_of=TS,
+        currency="RUB",
+        evaluated_at=TS,
+        cl4_reconciliation_evaluated_at=TS,
+        broker_cash_as_of=TS,
         broker_withdraw_limits_as_of=TS,
         central_projection_evaluated_at=TS,
         reconciliation_sha256="11" * 32,
         cl4_adoption_candidate_sha256="22" * 32,
-        ledger_export_sha256="33" * 32, ledger_revision=5,
+        ledger_export_sha256="33" * 32,
+        ledger_revision=5,
         ledger_head_sha256="44" * 32,
         broker_withdraw_limits_cash_proof_sha256=proof.sha256,
         broker_total_cash=ledger.Money(currency="RUB", minor_units=100_000_000_000),
-        broker_withdraw_blocked_cash=ledger.Money(currency="RUB", minor_units=20_000_000_000),
+        broker_withdraw_blocked_cash=ledger.Money(
+            currency="RUB", minor_units=20_000_000_000
+        ),
         broker_withdraw_blocked_guarantee_cash=zero,
-        broker_withdrawable_cash_lower_bound=ledger.Money(currency="RUB", minor_units=80_000_000_000),
+        broker_withdrawable_cash_lower_bound=ledger.Money(
+            currency="RUB", minor_units=80_000_000_000
+        ),
         central_reservation_projection_sha256="24505cbf486c30f5c85a2bb456db3587dc3d97f8ce9f5afc96f9b1405f511048",
         central_order_revision=7,
         central_reservation_projection_hash="55" * 32,
@@ -523,8 +544,14 @@ def test_contract_owned_ready_snapshot_v2_kat(vectors: dict[str, object]) -> Non
         free_investable_cash=ledger.Money(currency="RUB", minor_units=50_000_000_000),
     )
     assert snapshot.version == 2
-    assert snapshot.canonical_bytes.decode("ascii") == vectors["snapshot_v2"]["canonical_ascii"]
-    assert snapshot.sha256 == "2adb09081ff97c8441f3a5444b11b2dd2afbeeacfbbed1cdabf467e85d540190"
+    assert (
+        snapshot.canonical_bytes.decode("ascii")
+        == vectors["snapshot_v2"]["canonical_ascii"]
+    )
+    assert (
+        snapshot.sha256
+        == "2adb09081ff97c8441f3a5444b11b2dd2afbeeacfbbed1cdabf467e85d540190"
+    )
 
 
 @pytest.mark.parametrize(
@@ -537,27 +564,40 @@ def test_contract_owned_ready_snapshot_v2_kat(vectors: dict[str, object]) -> Non
     ],
 )
 def test_q7_bvm_01_to_05_conservative_vectors(
-    opened_ledger: bytes, total: str, available: str, blocked: str,
-    guarantee: str | None, queued: int, expected: int,
+    opened_ledger: bytes,
+    total: str,
+    available: str,
+    blocked: str,
+    guarantee: str | None,
+    queued: int,
+    expected: int,
 ) -> None:
     snapshot = _snapshot(
         opened_ledger,
         reconciliation=_reconciliation(opened_ledger, total_units=total),
-        withdraw_limits=_withdraw(response=_withdraw_response(
-            money_units=available, blocked_units=blocked,
-            guarantee_units=guarantee,
-        )),
+        withdraw_limits=_withdraw(
+            response=_withdraw_response(
+                money_units=available,
+                blocked_units=blocked,
+                guarantee_units=guarantee,
+            )
+        ),
         reservations=(
-            _reservations() if queued == 0
+            _reservations()
+            if queued == 0
             else _reservations("QUEUED", reserved_kopecks=queued)
         ),
     )
     assert snapshot.status is cl5.AvailabilityStatus.READY
     assert snapshot.free_investable_cash.minor_units == expected
-    assert snapshot.broker_withdrawable_cash_lower_bound.minor_units == min(
-        int(total), int(available)
-    ) * 1_000_000_000
-    assert snapshot.broker_withdraw_blocked_cash.minor_units == int(blocked) * 1_000_000_000
+    assert (
+        snapshot.broker_withdrawable_cash_lower_bound.minor_units
+        == min(int(total), int(available)) * 1_000_000_000
+    )
+    assert (
+        snapshot.broker_withdraw_blocked_cash.minor_units
+        == int(blocked) * 1_000_000_000
+    )
     assert snapshot.broker_withdraw_blocked_guarantee_cash.minor_units == (
         0 if guarantee is None else int(guarantee) * 1_000_000_000
     )
@@ -566,16 +606,24 @@ def test_q7_bvm_01_to_05_conservative_vectors(
 def test_q7_bvm_06_to_09_presence_flags_bind_absent_and_zero(
     opened_ledger: bytes,
 ) -> None:
-    absent = _withdraw(response=_withdraw_response(
-        include_money=False, include_blocked=False
-    ))
-    explicit = _withdraw(response=_withdraw_response(
-        money_units="0", blocked_units="0", guarantee_units="0"
-    ))
-    assert (absent.available_rub_present, absent.blocked_rub_present,
-            absent.blocked_guarantee_rub_present) == (False, False, False)
-    assert (explicit.available_rub_present, explicit.blocked_rub_present,
-            explicit.blocked_guarantee_rub_present) == (True, True, True)
+    absent = _withdraw(
+        response=_withdraw_response(include_money=False, include_blocked=False)
+    )
+    explicit = _withdraw(
+        response=_withdraw_response(
+            money_units="0", blocked_units="0", guarantee_units="0"
+        )
+    )
+    assert (
+        absent.available_rub_present,
+        absent.blocked_rub_present,
+        absent.blocked_guarantee_rub_present,
+    ) == (False, False, False)
+    assert (
+        explicit.available_rub_present,
+        explicit.blocked_rub_present,
+        explicit.blocked_guarantee_rub_present,
+    ) == (True, True, True)
     assert absent.proof_identity_sha256 != explicit.proof_identity_sha256
     snapshot = _snapshot(opened_ledger, withdraw_limits=absent)
     assert snapshot.status is cl5.AvailabilityStatus.READY
@@ -630,9 +678,10 @@ def test_withdraw_limits_exact_rub_wire_aliases_preserve_raw_evidence(
     ]
     assert response == original
     assert observation.response == original
-    assert proof.response_canonical_sha256 == hashlib.sha256(
-        _canonical(original)
-    ).hexdigest()
+    assert (
+        proof.response_canonical_sha256
+        == hashlib.sha256(_canonical(original)).hexdigest()
+    )
     projections = {
         "money": (proof.available_rub, proof.available_rub_present),
         "blocked": (proof.blocked_rub, proof.blocked_rub_present),
@@ -879,7 +928,9 @@ def test_q7_bvm_13_21_22_request_provenance_and_observation_gate() -> None:
         mismatch.service = "OperationsService"
     _reason(
         cl5.CL5Reason.WITHDRAW_LIMITS_REQUEST_SCOPE_MISMATCH,
-        cl5.build_broker_withdraw_limits_cash_proof, mismatch, **kwargs,
+        cl5.build_broker_withdraw_limits_cash_proof,
+        mismatch,
+        **kwargs,
     )
     with pytest.raises(cl5.CL5Error) as same_account_forgery:
         cl5.WithdrawLimitsTransportObservation(
@@ -907,8 +958,12 @@ def test_q7_bvm_13_21_22_request_provenance_and_observation_gate() -> None:
 def test_q7_bvm_14_proof_tamper_rejects(opened_ledger: bytes) -> None:
     proof = _withdraw()
     object.__setattr__(proof, "available_rub_present", False)
-    _reason(cl5.CL5Reason.PROOF_IDENTITY_INVALID, _snapshot, opened_ledger,
-            withdraw_limits=proof)
+    _reason(
+        cl5.CL5Reason.PROOF_IDENTITY_INVALID,
+        _snapshot,
+        opened_ledger,
+        withdraw_limits=proof,
+    )
 
 
 def test_q7_bvm_15_16_stale_and_cross_proof_skew_block(
@@ -926,11 +981,15 @@ def test_q7_bvm_15_16_stale_and_cross_proof_skew_block(
 
 @pytest.mark.parametrize("status", ["IN_FLIGHT", "SUBMITTED", "UNCERTAIN"])
 def test_q7_bvm_17_ambiguous_reservations_remain_manual_review(
-    opened_ledger: bytes, status: str,
+    opened_ledger: bytes,
+    status: str,
 ) -> None:
     snapshot = _snapshot(opened_ledger, reservations=_reservations(status))
     assert snapshot.status is cl5.AvailabilityStatus.MANUAL_REVIEW_REQUIRED
-    assert snapshot.availability_reason is cl5.AvailabilityReason.CENTRAL_PROVIDER_OVERLAP_UNKNOWN
+    assert (
+        snapshot.availability_reason
+        is cl5.AvailabilityReason.CENTRAL_PROVIDER_OVERLAP_UNKNOWN
+    )
     assert snapshot.free_investable_cash is None
     assert snapshot.broker_withdrawable_cash_lower_bound.minor_units == 80_000_000_000
 
@@ -944,12 +1003,15 @@ def test_q7_bvm_18_queued_reservation_subtracts_exactly_once(
 
 
 def test_q7_bvm_19_builder_is_pure_and_cannot_reach_provider_post(
-    opened_ledger: bytes, monkeypatch: pytest.MonkeyPatch,
+    opened_ledger: bytes,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
+
     def forbidden(*_args, **_kwargs):
         calls.append("mutation")
         raise AssertionError("mutation")
+
     for owner, names in (
         (central.CentralOrderManager, ("enqueue", "prepare_next", "mark_submitted")),
         (persistence.CashLedgerStore, ("append_transaction", "append_observation")),
@@ -964,7 +1026,8 @@ def test_q7_bvm_19_builder_is_pure_and_cannot_reach_provider_post(
 def test_q7_bvm_20_errors_are_privacy_safe() -> None:
     error = _reason(
         cl5.CL5Reason.WITHDRAW_LIMITS_REQUEST_SCOPE_MISMATCH,
-        _withdraw, account_scope="f" * 64,
+        _withdraw,
+        account_scope="f" * 64,
     )
     rendered = f"{error!s} {error!r} {dict(error.evidence)!r}"
     assert RAW_ACCOUNT not in rendered
@@ -973,22 +1036,38 @@ def test_q7_bvm_20_errors_are_privacy_safe() -> None:
 
 def test_q7_bvm_23_version_one_aliases_reject(opened_ledger: bytes) -> None:
     legacy = cl5.build_broker_positions_cash_proof(
-        {"accountId": RAW_ACCOUNT, "blocked": [_money_value("20")],
-         "limitsLoadingInProgress": False, "money": [_money_value("80")]},
+        {
+            "accountId": RAW_ACCOUNT,
+            "blocked": [_money_value("20")],
+            "limitsLoadingInProgress": False,
+            "money": [_money_value("80")],
+        },
         account_scope_sha256=ACCOUNT_SCOPE,
         environment=broker.BrokerEnvironment.SANDBOX,
-        as_of=TS, evaluated_at=TS, response_complete=True,
-        identity_key=KEY, identity_key_id=KEY_ID,
+        as_of=TS,
+        evaluated_at=TS,
+        response_complete=True,
+        identity_key=KEY,
+        identity_key_id=KEY_ID,
     )
     _reason(
-        cl5.CL5Reason.TYPE_INVALID, cl5.build_cash_availability,
-        opened_ledger, _reconciliation(opened_ledger), legacy, _reservations(),
-        evaluated_at=TS, identity_key=KEY,
+        cl5.CL5Reason.TYPE_INVALID,
+        cl5.build_cash_availability,
+        opened_ledger,
+        _reconciliation(opened_ledger),
+        legacy,
+        _reservations(),
+        evaluated_at=TS,
+        identity_key=KEY,
     )
     proof = _withdraw()
     object.__setattr__(proof, "version", 2)
-    _reason(cl5.CL5Reason.VERSION_UNSUPPORTED, _snapshot, opened_ledger,
-            withdraw_limits=proof)
+    _reason(
+        cl5.CL5Reason.VERSION_UNSUPPORTED,
+        _snapshot,
+        opened_ledger,
+        withdraw_limits=proof,
+    )
 
 
 def test_response_schema_incomplete_money_and_bounds_fail_closed() -> None:
@@ -996,12 +1075,21 @@ def test_response_schema_incomplete_money_and_bounds_fail_closed() -> None:
     responses = (
         {"money": [], "blocked": []},
         {"money": [], "blocked": [], "blockedGuarantee": [], "unknown": []},
-        {"money": [{"currency": "RUB", "units": "01", "nano": 0}], "blocked": [], "blockedGuarantee": []},
-        {"money": [{"currency": "RUB", "units": "1", "nano": 1_000_000_000}], "blocked": [], "blockedGuarantee": []},
+        {
+            "money": [{"currency": "RUB", "units": "01", "nano": 0}],
+            "blocked": [],
+            "blockedGuarantee": [],
+        },
+        {
+            "money": [{"currency": "RUB", "units": "1", "nano": 1_000_000_000}],
+            "blocked": [],
+            "blockedGuarantee": [],
+        },
     )
     for response in responses:
-        _reason(cl5.CL5Reason.WITHDRAW_LIMITS_RESPONSE_INVALID,
-                _withdraw, response=response)
+        _reason(
+            cl5.CL5Reason.WITHDRAW_LIMITS_RESPONSE_INVALID, _withdraw, response=response
+        )
 
 
 def test_immutable_deterministic_snapshot_v2(opened_ledger: bytes) -> None:

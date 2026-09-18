@@ -52,7 +52,9 @@ from trading_robot.tbank_sandbox import TBankAPIError, TBankSandboxClient
 ROOT = Path(__file__).resolve().parents[2]
 CURRENT = ROOT / "current"
 FIXTURE = CURRENT / "tests" / "fixtures" / "v3_10_runtime_cash_cutover_vectors.json"
-CONTRACT = ROOT / "docs" / "project" / "V3_10_CL7_RUNTIME_CUTOVER_RECOVERY_CONTRACT_RU.md"
+CONTRACT = (
+    ROOT / "docs" / "project" / "V3_10_CL7_RUNTIME_CUTOVER_RECOVERY_CONTRACT_RU.md"
+)
 ACCEPTED_CONTRACT_HEAD = "2eaba15d1260ab84a0ebc1b3bc8f950e497931ca"
 STABLE_PREDECESSOR = "2667dbea770a1a5df25bbba67f0e7e8b5f27dc63"
 KEY = bytes(range(32))
@@ -236,7 +238,9 @@ def _commit_test_transition(
         )
 
 
-def _chain(root: Path) -> tuple[cl7.RuntimeCashAuthorityManager, cl7.RuntimeCashAuthorityRecord]:
+def _chain(
+    root: Path,
+) -> tuple[cl7.RuntimeCashAuthorityManager, cl7.RuntimeCashAuthorityRecord]:
     store = cl7.RuntimeCashAuthorityStore(root)
     manager = cl7.RuntimeCashAuthorityManager(store)
     current = store.bootstrap(transition_at=T0)
@@ -398,7 +402,10 @@ def test_contract_and_fixture_custody(vectors: dict[str, object]) -> None:
         revision = ACCEPTED_CONTRACT_HEAD
     blob = subprocess.run(
         ["git", "rev-parse", f"{revision}:docs/project/{CONTRACT.name}"],
-        cwd=ROOT, capture_output=True, text=True, check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
     assert blob == "b57cdbcfeba65901c015a554ccc7521daf946faf"
     assert vectors["stable_line_predecessor"] == STABLE_PREDECESSOR
@@ -406,16 +413,24 @@ def test_contract_and_fixture_custody(vectors: dict[str, object]) -> None:
 
 def test_public_surface_is_exact() -> None:
     assert cl7.__all__ == (
-        "RuntimeCashAuthorityState", "RuntimeCashAuthorityOwner",
-        "CL7RuntimeReason", "CL7RuntimeError", "RuntimeCashAuthorityRecord",
-        "LockedDispatchProof", "RuntimeCashAuthorityStore",
-        "RuntimeCashAuthorityManager", "legacy_execution_guard",
+        "RuntimeCashAuthorityState",
+        "RuntimeCashAuthorityOwner",
+        "CL7RuntimeReason",
+        "CL7RuntimeError",
+        "RuntimeCashAuthorityRecord",
+        "LockedDispatchProof",
+        "RuntimeCashAuthorityStore",
+        "RuntimeCashAuthorityManager",
+        "legacy_execution_guard",
     )
 
 
 def test_legacy_record_kat(vectors: dict[str, object]) -> None:
     record = cl7.RuntimeCashAuthorityRecord.bootstrap(T0)
-    assert record.canonical_bytes.decode("ascii") == vectors["legacy_record"]["canonical_json_ascii"]
+    assert (
+        record.canonical_bytes.decode("ascii")
+        == vectors["legacy_record"]["canonical_json_ascii"]
+    )
     assert record.sha256 == vectors["legacy_record"]["sha256"]
     assert record.owner is cl7.RuntimeCashAuthorityOwner.LEGACY_CASH_AUTHORITY
 
@@ -437,12 +452,16 @@ def test_locked_proof_kat(vectors: dict[str, object]) -> None:
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("direction", "SELL"), ("current_lots", 1), ("target_lots", 2),
+        ("direction", "SELL"),
+        ("current_lots", 1),
+        ("target_lots", 2),
         ("reserved_cash", Money("RUB", 10_000_000_001)),
         ("free_investable_cash", Money("RUB", 50_000_000_001)),
-        ("portfolio_revision", 10), ("central_order_revision", 8),
+        ("portfolio_revision", 10),
+        ("central_order_revision", 8),
         ("evaluated_at", "2026-09-11T10:00:06.000000001Z"),
-        ("risk_policy_hash", "c" * 64), ("ledger_head_sha256", "3" * 64),
+        ("risk_policy_hash", "c" * 64),
+        ("ledger_head_sha256", "3" * 64),
     ],
 )
 def test_proof_mutations_change_identity(field: str, value: object) -> None:
@@ -463,9 +482,7 @@ def test_every_serialized_proof_field_mutation_invalidates_identity() -> None:
     for field, original in canonical.items():
         mutated = copy.deepcopy(canonical)
         if isinstance(original, dict):
-            mutated[field]["minor_units"] = str(
-                int(mutated[field]["minor_units"]) + 1
-            )
+            mutated[field]["minor_units"] = str(int(mutated[field]["minor_units"]) + 1)
         elif field == "direction":
             mutated[field] = "SELL"
         elif field == "domain":
@@ -490,9 +507,10 @@ def test_every_serialized_proof_field_mutation_invalidates_identity() -> None:
 
 
 def test_account_scope_is_exact_cl3_hmac(vectors: dict[str, object]) -> None:
-    assert cl7.derive_account_scope(
-        RAW_ACCOUNT, identity_key=KEY, identity_key_id=KEY_ID
-    ) == vectors["account_scope_sha256"]
+    assert (
+        cl7.derive_account_scope(RAW_ACCOUNT, identity_key=KEY, identity_key_id=KEY_ID)
+        == vectors["account_scope_sha256"]
+    )
 
 
 def test_missing_compatibility_requires_all_custody_absent(tmp_path: Path) -> None:
@@ -754,7 +772,9 @@ def test_disarm_cancel_and_rollback_rules(tmp_path: Path) -> None:
     assert rolled.ever_exact_activated is True
 
 
-def test_pending_attempt_kat_and_no_rollback(tmp_path: Path, vectors: dict[str, object]) -> None:
+def test_pending_attempt_kat_and_no_rollback(
+    tmp_path: Path, vectors: dict[str, object]
+) -> None:
     armed = _armed_record(vectors)
     proof = _proof()
     pending = dataclasses.replace(
@@ -918,9 +938,13 @@ def _enter_guard(store: cl7.RuntimeCashAuthorityStore) -> None:
 def test_exact_provider_rejection_finite_predicate(status: int) -> None:
     assert _exact_provider_rejection(
         TBankAPIError(
-            "redacted", status_code=status, transient=False,
-            service="SandboxService", method="PostSandboxOrder",
-            direct_response=True, redirect_followed=False,
+            "redacted",
+            status_code=status,
+            transient=False,
+            service="SandboxService",
+            method="PostSandboxOrder",
+            direct_response=True,
+            redirect_followed=False,
         )
     )
 
@@ -929,9 +953,13 @@ def test_exact_provider_rejection_finite_predicate(status: int) -> None:
 def test_ambiguous_provider_outcomes_never_clear(status: int | None) -> None:
     assert not _exact_provider_rejection(
         TBankAPIError(
-            "redacted", status_code=status, transient=status is None,
-            service="SandboxService", method="PostSandboxOrder",
-            direct_response=status is not None, redirect_followed=False,
+            "redacted",
+            status_code=status,
+            transient=status is None,
+            service="SandboxService",
+            method="PostSandboxOrder",
+            direct_response=status is not None,
+            redirect_followed=False,
         )
     )
 
@@ -939,15 +967,21 @@ def test_ambiguous_provider_outcomes_never_clear(status: int | None) -> None:
 def test_redirect_and_synthetic_error_are_not_explicit_rejection() -> None:
     assert not _exact_provider_rejection(
         TBankAPIError(
-            "redacted", status_code=400, service="SandboxService",
-            method="PostSandboxOrder", direct_response=True,
+            "redacted",
+            status_code=400,
+            service="SandboxService",
+            method="PostSandboxOrder",
+            direct_response=True,
             redirect_followed=True,
         )
     )
     assert not _exact_provider_rejection(
         TBankAPIError(
-            "redacted", status_code=400, service="SandboxService",
-            method="PostSandboxOrder", direct_response=False,
+            "redacted",
+            status_code=400,
+            service="SandboxService",
+            method="PostSandboxOrder",
+            direct_response=False,
         )
     )
 
@@ -957,12 +991,14 @@ def test_freshness_exact_edge_future_and_stale() -> None:
     _reason(
         cl7.CL7RuntimeReason.CONTEXT_STALE,
         _require_cl7_proof_fresh,
-        _proof(), "2026-09-11T10:00:16.000000001Z",
+        _proof(),
+        "2026-09-11T10:00:16.000000001Z",
     )
     _reason(
         cl7.CL7RuntimeReason.CONTEXT_STALE,
         _require_cl7_proof_fresh,
-        _proof(), "2026-09-11T10:00:05.999999999Z",
+        _proof(),
+        "2026-09-11T10:00:05.999999999Z",
     )
 
 
@@ -986,9 +1022,7 @@ def test_cursor_read_and_order_post_are_one_attempt_no_redirect(monkeypatch) -> 
 
     monkeypatch.setattr(client._session, "post", fake_post)
     client.get_operations_by_cursor_once({"accountId": "private"}, 1_000_000_000)
-    client.post_order_once(
-        "private", "instrument", 1, "BUY", order_id="intent-001"
-    )
+    client.post_order_once("private", "instrument", 1, "BUY", order_id="intent-001")
     assert len(calls) == 2
     assert all(call["allow_redirects"] is False for call in calls)
 
@@ -1004,9 +1038,7 @@ def test_post_once_timeout_never_retries(monkeypatch) -> None:
 
     monkeypatch.setattr(client._session, "post", fail)
     with pytest.raises(TBankAPIError):
-        client.post_order_once(
-            "private", "instrument", 1, "BUY", order_id="intent-001"
-        )
+        client.post_order_once("private", "instrument", 1, "BUY", order_id="intent-001")
     assert calls == 1
 
 
@@ -1164,10 +1196,7 @@ def test_cl3_to_cl2_sync_mapping_and_watermark_commit(
 ) -> None:
     source_vectors = json.loads(
         (
-            CURRENT
-            / "tests"
-            / "fixtures"
-            / "v3_10_broker_read_adapters_vectors.json"
+            CURRENT / "tests" / "fixtures" / "v3_10_broker_read_adapters_vectors.json"
         ).read_text(encoding="ascii")
     )["known_answer"]
     request = source_vectors["request"]
@@ -1660,7 +1689,10 @@ def test_exact_dispatch_marker_precedes_single_post_and_classifies_outcome(
     )
     assert result.status == result_status
     assert transport.post_calls == 1
-    assert transport.state_at_post is cl7.RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+    assert (
+        transport.state_at_post
+        is cl7.RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+    )
     assert authority_manager.status().state is authority_state
     persisted = central.state().intents[0]
     assert persisted.status == central_status
@@ -1873,8 +1905,12 @@ def test_production_order_post_owner_converges_to_adapter() -> None:
     assert ("sandbox_execution_adapter.py", "post_order_once") in direct
     # Legacy owners remain physically present for compatibility but both are
     # guarded by RuntimeCashAuthority before intent persistence and POST.
-    assert "legacy_execution_guard" in (CURRENT / "trading_robot" / "bot.py").read_text(encoding="utf-8")
-    assert "legacy_execution_guard" in (CURRENT / "trading_robot" / "diagnostics.py").read_text(encoding="utf-8")
+    assert "legacy_execution_guard" in (CURRENT / "trading_robot" / "bot.py").read_text(
+        encoding="utf-8"
+    )
+    assert "legacy_execution_guard" in (
+        CURRENT / "trading_robot" / "diagnostics.py"
+    ).read_text(encoding="utf-8")
     assert "legacy_execution_guard" in (
         CURRENT / "trading_robot" / "sandbox_execution_adapter.py"
     ).read_text(encoding="utf-8")
@@ -1882,9 +1918,7 @@ def test_production_order_post_owner_converges_to_adapter() -> None:
 
 def test_every_legacy_post_is_lexically_inside_the_authority_guard() -> None:
     for name in ("bot.py", "diagnostics.py"):
-        tree = ast.parse(
-            (CURRENT / "trading_robot" / name).read_text(encoding="utf-8")
-        )
+        tree = ast.parse((CURRENT / "trading_robot" / name).read_text(encoding="utf-8"))
         guarded_ranges = []
         for node in ast.walk(tree):
             if not isinstance(node, ast.With):
@@ -1938,14 +1972,24 @@ def test_exact_implementation_allowlist() -> None:
     if base_object.returncode != 0:
         _assert_shallow_pull_request_custody()
         return
-    changed = set(subprocess.run(
-        ["git", "diff", "--name-only", ACCEPTED_CONTRACT_HEAD],
-        cwd=ROOT, capture_output=True, text=True, check=True,
-    ).stdout.splitlines())
-    changed.update(subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard"],
-        cwd=ROOT, capture_output=True, text=True, check=True,
-    ).stdout.splitlines())
+    changed = set(
+        subprocess.run(
+            ["git", "diff", "--name-only", ACCEPTED_CONTRACT_HEAD],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+    )
+    changed.update(
+        subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+    )
     assert changed == IMPLEMENTATION_PATHS
     assert CONTRACT.relative_to(ROOT).as_posix() not in changed
 
@@ -1953,9 +1997,12 @@ def test_exact_implementation_allowlist() -> None:
 def test_fixture_is_ascii_and_self_consistent(vectors: dict[str, object]) -> None:
     raw = FIXTURE.read_bytes()
     assert raw.decode("ascii")
-    assert hashlib.sha256(
-        vectors["legacy_record"]["canonical_json_ascii"].encode("ascii")
-    ).hexdigest() == vectors["legacy_record"]["sha256"]
+    assert (
+        hashlib.sha256(
+            vectors["legacy_record"]["canonical_json_ascii"].encode("ascii")
+        ).hexdigest()
+        == vectors["legacy_record"]["sha256"]
+    )
 
 
 def test_no_authenticated_provider_access_in_suite() -> None:

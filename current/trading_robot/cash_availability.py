@@ -72,8 +72,7 @@ _POSITIONS_RPC = (
     "tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxPositions"
 )
 _WITHDRAW_LIMITS_RPC = (
-    "tinkoff.public.invest.api.contract.v1."
-    "SandboxService/GetSandboxWithdrawLimits"
+    "tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxWithdrawLimits"
 )
 _HASH_RE = _re.compile(r"[0-9a-f]{64}", _re.ASCII)
 _TOKEN_RE = _re.compile(r"[A-Z][A-Z0-9_]{0,63}", _re.ASCII)
@@ -87,9 +86,7 @@ _REQUIRED_RESPONSE_KEYS = frozenset(
 )
 _IGNORED_RESPONSE_KEYS = frozenset({"securities", "futures", "options"})
 _MONEY_VALUE_KEYS = frozenset({"currency", "nano", "units"})
-_WITHDRAW_LIMITS_RESPONSE_KEYS = frozenset(
-    {"money", "blocked", "blockedGuarantee"}
-)
+_WITHDRAW_LIMITS_RESPONSE_KEYS = frozenset({"money", "blocked", "blockedGuarantee"})
 _WITHDRAW_RUB_WIRE_ALIASES = frozenset({"RUB", "rub"})
 _DECIMAL_RE = _re.compile(r"0|-?[1-9][0-9]*", _re.ASCII)
 _NONE_TYPE = type(None)
@@ -145,9 +142,7 @@ class CL5Reason(_StrEnum):
     CANONICAL_FORMAT_INVALID = "CANONICAL_FORMAT_INVALID"
     INTERNAL_BOUNDARY_FAILED = "INTERNAL_BOUNDARY_FAILED"
     WITHDRAW_LIMITS_OBSERVATION_INVALID = "WITHDRAW_LIMITS_OBSERVATION_INVALID"
-    WITHDRAW_LIMITS_REQUEST_SCOPE_MISMATCH = (
-        "WITHDRAW_LIMITS_REQUEST_SCOPE_MISMATCH"
-    )
+    WITHDRAW_LIMITS_REQUEST_SCOPE_MISMATCH = "WITHDRAW_LIMITS_REQUEST_SCOPE_MISMATCH"
     WITHDRAW_LIMITS_RESPONSE_INVALID = "WITHDRAW_LIMITS_RESPONSE_INVALID"
     WITHDRAW_LIMITS_INCOMPLETE = "WITHDRAW_LIMITS_INCOMPLETE"
     WITHDRAW_LIMITS_MONEY_INVALID = "WITHDRAW_LIMITS_MONEY_INVALID"
@@ -645,9 +640,7 @@ class BrokerWithdrawLimitsCashProof:
         _require_hash(self.account_scope_sha256, CL5Reason.ACCOUNT_SCOPE_INVALID)
         _require_environment(self.environment)
         _timestamp_ns(self.as_of)
-        _require_hash(
-            self.response_canonical_sha256, CL5Reason.PROOF_IDENTITY_INVALID
-        )
+        _require_hash(self.response_canonical_sha256, CL5Reason.PROOF_IDENTITY_INVALID)
         _require_hash(
             self.observation_identity_sha256, CL5Reason.PROOF_IDENTITY_INVALID
         )
@@ -656,11 +649,14 @@ class BrokerWithdrawLimitsCashProof:
         available = _checked_money(self.available_rub)
         blocked = _checked_money(self.blocked_rub)
         guarantee = _checked_money(self.blocked_guarantee_rub)
-        if min(
-            available.minor_units,
-            blocked.minor_units,
-            guarantee.minor_units,
-        ) < 0:
+        if (
+            min(
+                available.minor_units,
+                blocked.minor_units,
+                guarantee.minor_units,
+            )
+            < 0
+        ):
             _fail(CL5Reason.WITHDRAW_LIMITS_MONEY_INVALID)
         for value in (
             self.available_rub_present,
@@ -892,9 +888,7 @@ class CashAvailabilitySnapshot:
                 _fail(CL5Reason.CANONICAL_FORMAT_INVALID)
         broker_total = _checked_money(self.broker_total_cash)
         broker_blocked = _checked_money(self.broker_withdraw_blocked_cash)
-        broker_guarantee = _checked_money(
-            self.broker_withdraw_blocked_guarantee_cash
-        )
+        broker_guarantee = _checked_money(self.broker_withdraw_blocked_guarantee_cash)
         lower_bound = _checked_money(self.broker_withdrawable_cash_lower_bound)
         queued = _checked_money(self.central_queued_reserved_cash)
         ambiguous = _checked_money(self.central_ambiguous_reserved_cash)
@@ -981,9 +975,7 @@ class CashAvailabilitySnapshot:
         object.__setattr__(
             self, "broker_withdraw_blocked_guarantee_cash", broker_guarantee
         )
-        object.__setattr__(
-            self, "broker_withdrawable_cash_lower_bound", lower_bound
-        )
+        object.__setattr__(self, "broker_withdrawable_cash_lower_bound", lower_bound)
         object.__setattr__(self, "central_queued_reserved_cash", queued)
         object.__setattr__(self, "central_ambiguous_reserved_cash", ambiguous)
         object.__setattr__(self, "central_total_reserved_cash", total)
@@ -1332,11 +1324,7 @@ def _withdraw_limits_money(
     )
     if not rub:
         return _ledger.Money(currency="RUB", minor_units=0), False, foreign_nonzero
-    projected = (
-        rub[0]
-        if rub[0]["currency"] == "RUB"
-        else {**rub[0], "currency": "RUB"}
-    )
+    projected = rub[0] if rub[0]["currency"] == "RUB" else {**rub[0], "currency": "RUB"}
     try:
         money = _broker.money_value_to_money(projected)
     except _broker.BrokerReadError as error:
@@ -1401,8 +1389,8 @@ def build_broker_withdraw_limits_cash_proof(
         _fail(CL5Reason.WITHDRAW_LIMITS_REQUEST_SCOPE_MISMATCH)
     try:
         detached, response_bytes = _bounded_response(observation.response)
-        money_items, blocked_items, guarantee_items = (
-            _withdraw_limits_response_schema(detached)
+        money_items, blocked_items, guarantee_items = _withdraw_limits_response_schema(
+            detached
         )
     except CL5Error as error:
         if error.reason in {
@@ -1824,9 +1812,7 @@ def _validated_withdraw_limits_proof(
             blocked_guarantee_rub=checked.blocked_guarantee_rub,
             available_rub_present=checked.available_rub_present,
             blocked_rub_present=checked.blocked_rub_present,
-            blocked_guarantee_rub_present=(
-                checked.blocked_guarantee_rub_present
-            ),
+            blocked_guarantee_rub_present=(checked.blocked_guarantee_rub_present),
             foreign_cash_present=checked.foreign_cash_present,
             response_complete=checked.response_complete,
             identity_key=identity_key,
@@ -1836,9 +1822,7 @@ def _validated_withdraw_limits_proof(
             or not _hmac.compare_digest(
                 expected_observation, checked.observation_identity_sha256
             )
-            or not _hmac.compare_digest(
-                expected_proof, checked.proof_identity_sha256
-            )
+            or not _hmac.compare_digest(expected_proof, checked.proof_identity_sha256)
         ):
             _fail(CL5Reason.PROOF_IDENTITY_INVALID)
         return checked
@@ -1927,9 +1911,7 @@ def _snapshot(
         broker_withdraw_limits_cash_proof_sha256=withdraw_limits.sha256,
         broker_total_cash=reconciliation.broker_cash,
         broker_withdraw_blocked_cash=withdraw_limits.blocked_rub,
-        broker_withdraw_blocked_guarantee_cash=(
-            withdraw_limits.blocked_guarantee_rub
-        ),
+        broker_withdraw_blocked_guarantee_cash=(withdraw_limits.blocked_guarantee_rub),
         broker_withdrawable_cash_lower_bound=lower_bound,
         central_reservation_projection_sha256=reservations.sha256,
         central_order_revision=reservations.central_order_revision,
@@ -2043,9 +2025,7 @@ def build_cash_availability(
     else:
         overlap = OverlapDisposition.QUEUED_DISJOINT
     candidate_free = None
-    if (
-        checked_reservations.ambiguous_reserved_cash.minor_units == 0
-    ):
+    if checked_reservations.ambiguous_reserved_cash.minor_units == 0:
         candidate_free = _money_from_minor_units(
             lower_bound.minor_units
             - checked_reservations.queued_reserved_cash.minor_units
