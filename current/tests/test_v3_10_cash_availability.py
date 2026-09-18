@@ -5,7 +5,9 @@ import hashlib
 import hmac
 import inspect
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -980,3 +982,133 @@ def test_central_sell_never_contributes_reserved_cash() -> None:
         identity_key=KEY,
         identity_key_id=KEY_ID,
     )
+
+
+def test_exact_successor_custody_and_three_path_delta() -> None:
+    if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+        event_path = os.environ.get("GITHUB_EVENT_PATH")
+        assert event_path is not None
+        pull_request = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))[
+            "pull_request"
+        ]
+        expected = {
+            "agent/v3-10-clean-cl5-contract-freeze": (
+                ACCEPTED_CONTRACT_HEAD,
+                3,
+                3,
+            ),
+            "program/v3-10-v4-stable-line": (STABLE_PREDECESSOR, 5, 4),
+        }.get(pull_request["base"]["ref"])
+        assert expected is not None
+        expected_base, expected_commits, expected_files = expected
+        assert pull_request["base"]["sha"] == expected_base
+        assert pull_request["base"]["repo"]["full_name"] == (
+            "baimleriv/unified-portfolio-system"
+        )
+        assert pull_request["head"]["ref"] == ("agent/v3-10-clean-cl5-implementation")
+        assert pull_request["head"]["repo"]["full_name"] == (
+            "baimleriv/unified-portfolio-system"
+        )
+        assert pull_request["commits"] == expected_commits
+        assert pull_request["changed_files"] == expected_files
+        assert pull_request["head"]["sha"] != ACCEPTED_IMPLEMENTATION_HEAD
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.strip()
+        commit_text = subprocess.run(
+            ["git", "cat-file", "-p", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout
+        parents = [
+            line.removeprefix("parent ")
+            for line in commit_text.splitlines()
+            if line.startswith("parent ")
+        ]
+        assert head == os.environ.get("GITHUB_SHA")
+        assert parents == [expected_base, pull_request["head"]["sha"]]
+        return
+
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    merge_base = subprocess.run(
+        ["git", "merge-base", ACCEPTED_CONTRACT_HEAD, "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    assert merge_base == ACCEPTED_CONTRACT_HEAD
+    if head != ACCEPTED_IMPLEMENTATION_HEAD:
+        parent = subprocess.run(
+            ["git", "rev-parse", "HEAD^"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.strip()
+        assert parent == ACCEPTED_IMPLEMENTATION_HEAD
+        counts = subprocess.run(
+            [
+                "git",
+                "rev-list",
+                "--left-right",
+                "--count",
+                f"{ACCEPTED_CONTRACT_HEAD}...HEAD",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.split()
+        assert counts == ["0", "3"]
+        correction_paths = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD^..HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.splitlines()
+        assert correction_paths == ["current/tests/test_v3_10_cash_availability.py"]
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", ACCEPTED_CONTRACT_HEAD],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.splitlines()
+    assert set(changed) == IMPLEMENTATION_PATHS
+    contract = "docs/project/V3_10_CL5_CASH_AVAILABILITY_CONTRACT_RU.md"
+    immutable = subprocess.run(
+        ["git", "diff", "--quiet", ACCEPTED_CONTRACT_HEAD, "--", contract],
+        cwd=ROOT,
+        check=False,
+    )
+    assert immutable.returncode == 0
+    stable_merge_base = subprocess.run(
+        ["git", "merge-base", STABLE_PREDECESSOR, "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    assert stable_merge_base == STABLE_PREDECESSOR
+    cumulative = subprocess.run(
+        ["git", "diff", "--name-only", f"{STABLE_PREDECESSOR}..HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.splitlines()
+    assert set(cumulative) == IMPLEMENTATION_PATHS | {contract}
