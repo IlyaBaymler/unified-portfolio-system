@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 import hmac
 import inspect
 import json
 import os
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -17,8 +18,7 @@ from trading_robot import cash_ledger_domain as ledger
 from trading_robot import cash_ledger_opening_reconciliation as cl4
 from trading_robot import cash_ledger_persistence as persistence
 from trading_robot import central_order_manager as central
-from trading_robot import sandbox_execution_adapter
-from trading_robot import tbank_sandbox
+from trading_robot import sandbox_execution_adapter, tbank_sandbox
 
 ROOT = Path(__file__).resolve().parents[2]
 CURRENT = ROOT / "current"
@@ -583,10 +583,142 @@ def test_q7_bvm_06_to_09_presence_flags_bind_absent_and_zero(
     assert snapshot.free_investable_cash.minor_units == 0
 
 
-def test_q7_bvm_10_duplicate_currency_rejects() -> None:
-    response = _withdraw_response()
-    response["money"].append(_money_value("1"))
-    _reason(cl5.CL5Reason.WITHDRAW_LIMITS_RESPONSE_INVALID, _withdraw, response=response)
+@pytest.mark.parametrize("field", ["money", "blocked", "blockedGuarantee"])
+@pytest.mark.parametrize("currency", ["RUB", "rub"])
+@pytest.mark.parametrize(("units", "nano"), [("7", 500_000_000), ("0", 0)])
+def test_withdraw_limits_exact_rub_wire_aliases_preserve_raw_evidence(
+    field: str,
+    currency: str,
+    units: str,
+    nano: int,
+) -> None:
+    response: dict[str, object] = {
+        "blocked": [],
+        "blockedGuarantee": [],
+        "money": [],
+    }
+    response[field] = [_money_value(units, nano, currency=currency)]
+    original = copy.deepcopy(response)
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    class FakeHttpTransport:
+        @staticmethod
+        def _post(
+            service: str,
+            method: str,
+            payload: dict[str, object],
+        ) -> object:
+            calls.append((service, method, copy.deepcopy(payload)))
+            return response
+
+    observation = tbank_sandbox.TBankSandboxClient.get_withdraw_limits(
+        FakeHttpTransport(), RAW_ACCOUNT
+    )
+    proof = cl5.build_broker_withdraw_limits_cash_proof(
+        observation,
+        account_scope_sha256=ACCOUNT_SCOPE,
+        environment=broker.BrokerEnvironment.SANDBOX,
+        as_of=TS,
+        evaluated_at=TS,
+        response_complete=True,
+        identity_key=KEY,
+        identity_key_id=KEY_ID,
+    )
+
+    assert calls == [
+        ("SandboxService", "GetSandboxWithdrawLimits", {"accountId": RAW_ACCOUNT})
+    ]
+    assert response == original
+    assert observation.response == original
+    assert proof.response_canonical_sha256 == hashlib.sha256(
+        _canonical(original)
+    ).hexdigest()
+    projections = {
+        "money": (proof.available_rub, proof.available_rub_present),
+        "blocked": (proof.blocked_rub, proof.blocked_rub_present),
+        "blockedGuarantee": (
+            proof.blocked_guarantee_rub,
+            proof.blocked_guarantee_rub_present,
+        ),
+    }
+    projected, present = projections[field]
+    assert projected == ledger.Money.from_units_nano(
+        units=int(units), nano=nano, currency="RUB"
+    )
+    assert present is True
+    assert proof.foreign_cash_present is False
+
+
+def test_withdraw_limits_rub_alias_changes_wire_identity_not_money_projection() -> None:
+    upper = _withdraw(
+        response={
+            "blocked": [],
+            "blockedGuarantee": [],
+            "money": [_money_value("8", 25, currency="RUB")],
+        }
+    )
+    lower = _withdraw(
+        response={
+            "blocked": [],
+            "blockedGuarantee": [],
+            "money": [_money_value("8", 25, currency="rub")],
+        }
+    )
+    assert lower.available_rub == upper.available_rub
+    assert lower.available_rub_present is upper.available_rub_present is True
+    assert lower.foreign_cash_present is upper.foreign_cash_present is False
+    assert lower.response_canonical_sha256 != upper.response_canonical_sha256
+    assert lower.observation_identity_sha256 != upper.observation_identity_sha256
+    assert lower.proof_identity_sha256 != upper.proof_identity_sha256
+
+
+@pytest.mark.parametrize("field", ["money", "blocked", "blockedGuarantee"])
+@pytest.mark.parametrize(
+    "currencies",
+    [("RUB", "RUB"), ("rub", "rub"), ("RUB", "rub")],
+)
+def test_q7_bvm_10_semantic_duplicate_rub_aliases_reject(
+    field: str,
+    currencies: tuple[str, str],
+) -> None:
+    response: dict[str, object] = {
+        "blocked": [],
+        "blockedGuarantee": [],
+        "money": [],
+    }
+    response[field] = [
+        _money_value("1", currency=currencies[0]),
+        _money_value("1", currency=currencies[1]),
+    ]
+    _reason(
+        cl5.CL5Reason.WITHDRAW_LIMITS_RESPONSE_INVALID,
+        _withdraw,
+        response=response,
+    )
+
+
+@pytest.mark.parametrize(
+    "currency",
+    ["Rub", "rUb", " rub", "rub ", "ＲＵＢ", "РУБ"],
+)
+def test_withdraw_limits_non_alias_currency_tokens_remain_foreign(
+    opened_ledger: bytes,
+    currency: str,
+) -> None:
+    response = {
+        "blocked": [],
+        "blockedGuarantee": [],
+        "money": [_money_value("1", currency=currency)],
+    }
+    proof = _withdraw(response=response)
+    assert proof.available_rub.minor_units == 0
+    assert proof.available_rub_present is False
+    assert proof.foreign_cash_present is True
+    snapshot = _snapshot(opened_ledger, withdraw_limits=proof)
+    assert snapshot.status is cl5.AvailabilityStatus.BLOCKED
+    assert snapshot.availability_reason is (
+        cl5.AvailabilityReason.WITHDRAW_LIMITS_FOREIGN_CASH_PRESENT
+    )
 
 
 def test_q7_bvm_11_foreign_nonzero_blocks_but_zero_does_not(

@@ -90,6 +90,7 @@ _MONEY_VALUE_KEYS = frozenset({"currency", "nano", "units"})
 _WITHDRAW_LIMITS_RESPONSE_KEYS = frozenset(
     {"money", "blocked", "blockedGuarantee"}
 )
+_WITHDRAW_RUB_WIRE_ALIASES = frozenset({"RUB", "rub"})
 _DECIMAL_RE = _re.compile(r"0|-?[1-9][0-9]*", _re.ASCII)
 _NONE_TYPE = type(None)
 
@@ -1321,18 +1322,23 @@ def _withdraw_limits_response_schema(
 def _withdraw_limits_money(
     items: list[dict[str, object]],
 ) -> tuple[_ledger.Money, bool, bool]:
-    rub = [item for item in items if item["currency"] == "RUB"]
+    rub = [item for item in items if item["currency"] in _WITHDRAW_RUB_WIRE_ALIASES]
     if len(rub) > 1:
         _fail(CL5Reason.WITHDRAW_LIMITS_RESPONSE_INVALID)
     foreign_nonzero = any(
-        item["currency"] != "RUB"
+        item["currency"] not in _WITHDRAW_RUB_WIRE_ALIASES
         and (int(item["units"]) != 0 or item["nano"] != 0)
         for item in items
     )
     if not rub:
         return _ledger.Money(currency="RUB", minor_units=0), False, foreign_nonzero
+    projected = (
+        rub[0]
+        if rub[0]["currency"] == "RUB"
+        else {**rub[0], "currency": "RUB"}
+    )
     try:
-        money = _broker.money_value_to_money(rub[0])
+        money = _broker.money_value_to_money(projected)
     except _broker.BrokerReadError as error:
         failure = CL5Error(CL5Reason.WITHDRAW_LIMITS_MONEY_INVALID, error.reason)
     except Exception:  # noqa: BLE001 - accepted CL3 codec boundary

@@ -1248,8 +1248,10 @@ def test_cl3_to_cl2_sync_mapping_and_watermark_commit(
         ledger.close()
 
 
+@pytest.mark.parametrize("withdraw_currency", ["RUB", "rub"])
 def test_full_prepare_confirm_activate_arm_uses_fresh_cl2_to_cl6_evidence(
     tmp_path: Path,
+    withdraw_currency: str,
 ) -> None:
     now = "2027-01-01T00:00:00.000000000Z"
     now_iso = "2027-01-01T00:00:00+00:00"
@@ -1298,9 +1300,17 @@ def test_full_prepare_confirm_activate_arm_uses_fresh_cl2_to_cl6_evidence(
         account_id=RAW_ACCOUNT,
     )
 
+    calls = {
+        "operations": 0,
+        "portfolio": 0,
+        "withdraw_limits": 0,
+        "order_mutations": 0,
+    }
+
     class Provider:
         @staticmethod
         def get_portfolio(_account: str) -> dict[str, object]:
+            calls["portfolio"] += 1
             return {
                 "totalAmountCurrencies": {
                     "currency": "RUB",
@@ -1311,17 +1321,30 @@ def test_full_prepare_confirm_activate_arm_uses_fresh_cl2_to_cl6_evidence(
 
         @staticmethod
         def get_withdraw_limits(_account: str):
+            calls["withdraw_limits"] += 1
             return _withdraw_limits_transport_observation(
                 {
                     "blocked": [],
                     "blockedGuarantee": [],
-                    "money": [{"currency": "RUB", "nano": 0, "units": "150"}],
+                    "money": [
+                        {
+                            "currency": withdraw_currency,
+                            "nano": 0,
+                            "units": "150",
+                        }
+                    ],
                 },
             )
 
         @staticmethod
         def get_operations_by_cursor_once(_payload, _timeout):
+            calls["operations"] += 1
             return {"hasNext": False, "items": [], "nextCursor": ""}
+
+        @staticmethod
+        def post_order_once(*_args: object, **_kwargs: object) -> object:
+            calls["order_mutations"] += 1
+            raise AssertionError("order mutation is outside the synthetic lifecycle")
 
     inputs = {
         "ledger_store": ledger,
@@ -1377,6 +1400,12 @@ def test_full_prepare_confirm_activate_arm_uses_fresh_cl2_to_cl6_evidence(
         assert rolled_back.state is cl7.RuntimeCashAuthorityState.LEGACY_ACTIVE
         assert rolled_back.ever_exact_activated is True
         assert ledger.export_bytes() == ledger_before
+        assert calls == {
+            "operations": 4,
+            "portfolio": 5,
+            "withdraw_limits": 4,
+            "order_mutations": 0,
+        }
     finally:
         ledger.close()
 
