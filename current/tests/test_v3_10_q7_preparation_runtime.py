@@ -40,6 +40,7 @@ from trading_robot.multi_instrument_config import (
 )
 from trading_robot.portfolio_model import PortfolioState
 from trading_robot.reporting_risk_cash_context import RiskCashContextReason
+from trading_robot.risk import RiskState
 from trading_robot.runtime_cash_authority import (
     CL7RuntimeError,
     CL7RuntimeReason,
@@ -1316,6 +1317,9 @@ def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
             bindings=(object(), object()),
         ),
     )
+    risk_state = RiskState()
+    risk_guard_hash = q7.risk_state_guard_hash(risk_state)
+    assert not hasattr(risk_state, "revision")
     monkeypatch.setattr(
         q7,
         "_initialize_and_validate_local_owners",
@@ -1328,7 +1332,7 @@ def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
             ),
             SimpleNamespace(blocking_intent=None, revision=4),
             {"policy_hash": "4" * 64},
-            SimpleNamespace(revision=5),
+            risk_state,
         ),
     )
     ledger = SimpleNamespace(
@@ -1355,10 +1359,9 @@ def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
             central_order_revision=4,
             portfolio_revision=8,
             risk_policy_hash="4" * 64,
-            risk_state_guard_hash="c" * 64,
+            risk_state_guard_hash=risk_guard_hash,
         ),
     )
-    monkeypatch.setattr(q7, "risk_state_guard_hash", lambda _state: "c" * 64)
     monkeypatch.setattr(
         q7, "_fresh_runtime_context", lambda _root: (authority, fresh_evidence)
     )
@@ -1394,6 +1397,46 @@ def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
     assert record["reconciliation_status"] == "MATCHED"
     assert record["availability_status"] == "READY"
     assert record["cash_context_status"] == "READY_FOR_LOCKED_REVALIDATION"
+    assert record["risk_state_guard_hash"] == risk_guard_hash
+    assert "risk_state_revision" not in record
+
+    class EqualToAnything(str):
+        def __eq__(self, _other):
+            return True
+
+    for index, bad_hash in enumerate(
+        ("0" * 64, None, "G" * 64, EqualToAnything(risk_guard_hash))
+    ):
+        fresh_evidence.context.risk_state_guard_hash = bad_hash
+        blocked_b1 = tmp_path / f"b1-risk-hash-{index}.zip"
+        with pytest.raises(q7.Q7PreparationError, match="FRESH_OWNER_BINDING_MISMATCH"):
+            q7.finalize_preparation(
+                runtime_dir=runtime,
+                activation_record=activation,
+                output_record=tmp_path / f"final-risk-hash-{index}.json",
+                backup_output=blocked_b1,
+                candidate_commit=COMMIT,
+                candidate_tree=TREE,
+                q4_artifact_identity_sha256="8" * 64,
+                q5_privacy_summary_sha256="9" * 64,
+                provider=provider,
+            )
+        assert not blocked_b1.exists()
+    del fresh_evidence.context.risk_state_guard_hash
+    with pytest.raises(q7.Q7PreparationError, match="FRESH_OWNER_BINDING_MISMATCH"):
+        q7.finalize_preparation(
+            runtime_dir=runtime,
+            activation_record=activation,
+            output_record=tmp_path / "final-risk-hash-missing.json",
+            backup_output=tmp_path / "b1-risk-hash-missing.zip",
+            candidate_commit=COMMIT,
+            candidate_tree=TREE,
+            q4_artifact_identity_sha256="8" * 64,
+            q5_privacy_summary_sha256="9" * 64,
+            provider=provider,
+        )
+    assert not (tmp_path / "b1-risk-hash-missing.zip").exists()
+    fresh_evidence.context.risk_state_guard_hash = risk_guard_hash
 
     fresh_evidence.availability.status.value = "MANUAL_REVIEW_REQUIRED"
     with pytest.raises(q7.Q7PreparationError, match="FRESH_CASH_CONTEXT_NOT_READY"):

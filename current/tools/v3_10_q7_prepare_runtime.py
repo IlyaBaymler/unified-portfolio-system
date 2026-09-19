@@ -186,7 +186,7 @@ _RECORD_FIELDS = {
         "central_revision",
         "portfolio_revision",
         "risk_policy_hash",
-        "risk_state_revision",
+        "risk_state_guard_hash",
         "b1_backup_sha256",
         "b1_backup_size_bytes",
         "b1_manifest_sha256",
@@ -302,7 +302,6 @@ def _record_schema(value: Mapping[str, Any]) -> None:
         "ledger_revision",
         "central_revision",
         "portfolio_revision",
-        "risk_state_revision",
         "b0_backup_size_bytes",
         "b1_backup_size_bytes",
         "post_attempt_count",
@@ -1043,14 +1042,24 @@ def finalize_preparation(
         != ledger_snapshot.ledger_head_sha256
     ):
         raise Q7PreparationError("LEDGER_AUTHORITY_BINDING_MISMATCH")
+    risk_guard_hash = risk_state_guard_hash(risk_state)
+    context_risk_guard_hash = getattr(
+        fresh_evidence.context, "risk_state_guard_hash", None
+    )
+    if (
+        type(risk_guard_hash) is not str
+        or _HEX64.fullmatch(risk_guard_hash) is None
+        or type(context_risk_guard_hash) is not str
+        or _HEX64.fullmatch(context_risk_guard_hash) is None
+    ):
+        raise Q7PreparationError("FRESH_OWNER_BINDING_MISMATCH")
     if (
         fresh_evidence.context.account_scope_sha256 != account_scope
         or fresh_evidence.context.identity_key_id != secrets.identity_key_id
         or fresh_evidence.context.central_order_revision != central.revision
         or fresh_evidence.context.portfolio_revision != portfolio.revision
         or fresh_evidence.context.risk_policy_hash != str(risk_profile["policy_hash"])
-        or fresh_evidence.context.risk_state_guard_hash
-        != risk_state_guard_hash(risk_state)
+        or context_risk_guard_hash != risk_guard_hash
     ):
         raise Q7PreparationError("FRESH_OWNER_BINDING_MISMATCH")
     backup = _backup_binding(root, Path(backup_output))
@@ -1093,7 +1102,7 @@ def finalize_preparation(
         "central_revision": central.revision,
         "portfolio_revision": portfolio.revision,
         "risk_policy_hash": str(risk_profile["policy_hash"]),
-        "risk_state_revision": risk_state.revision,
+        "risk_state_guard_hash": risk_guard_hash,
         "b1_backup_sha256": backup["sha256"],
         "b1_backup_size_bytes": backup["size_bytes"],
         "b1_manifest_sha256": backup["manifest_sha256"],
