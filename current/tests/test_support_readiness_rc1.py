@@ -16,6 +16,7 @@ from trading_robot.portfolio_model import (
 from trading_robot.portfolio_repository import PortfolioRepository
 from trading_robot.readiness import ProductionReadinessEvaluator, ReadinessStatus
 from trading_robot.runtime_backup import RuntimeBackupManager
+from trading_robot.runtime_bootstrap import bootstrap_runtime
 from trading_robot.secret_provider import (
     EnvFileSecretProvider,
     preferred_secret_provider,
@@ -111,6 +112,39 @@ def test_offline_qualification_never_probes_windows_credential_manager(
 
     assert isinstance(provider, EnvFileSecretProvider)
     assert provider.path == tmp_path / ".env"
+
+
+def test_offline_bootstrap_never_probes_windows_credential_manager(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    class ForbiddenWindowsProvider:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("offline bootstrap probed Credential Manager")
+
+    monkeypatch.setenv("MOEX_ROBOT_OFFLINE_QUALIFICATION", "1")
+    monkeypatch.setattr(
+        "trading_robot.secret_provider.WindowsCredentialManagerProvider",
+        ForbiddenWindowsProvider,
+    )
+
+    report = bootstrap_runtime(tmp_path, write_report=False)
+
+    assert report.to_dict()["secret_provider"] == ".env fallback"
+    assert report.to_dict()["credential_status"] == "credential_absent"
+
+    class ExplicitProtectedProvider:
+        name = "Windows Credential Manager"
+        secure = True
+
+        def get(self, key: str) -> str | None:
+            raise AssertionError("offline bootstrap read explicit protected provider")
+
+    explicit_report = bootstrap_runtime(
+        tmp_path,
+        write_report=False,
+        secret_provider=ExplicitProtectedProvider(),
+    )
+    assert explicit_report.to_dict()["secret_provider"] == ".env fallback"
 
 
 def test_recursive_redaction_and_secret_scan():

@@ -362,10 +362,15 @@ def probe_secret_provider(
                 error=f"{type(exc).__name__}: {exc}",
             )
 
+    fallback = EnvFileSecretProvider(Path(app_dir) / ".env")
+    if os.getenv("MOEX_ROBOT_OFFLINE_QUALIFICATION", "").strip().upper() in {
+        "1", "YES", "TRUE", "ON",
+    }:
+        # An offline bootstrap must not inspect the operator's Credential
+        # Manager, including when a protected provider was supplied explicitly.
+        return _probe(fallback)
     if provider is not None:
         return _probe(provider)
-
-    fallback = EnvFileSecretProvider(Path(app_dir) / ".env")
     if os.name != "nt":
         return _probe(fallback)
 
