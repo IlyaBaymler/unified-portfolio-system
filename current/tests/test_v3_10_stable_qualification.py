@@ -1950,6 +1950,33 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
     branch = _git("branch", "--show-current", text=True).stdout.strip()
     checked_out_head = _git("rev-parse", "HEAD", text=True).stdout.strip()
     head = checked_out_head
+    if branch in {"agent/v3-10-clean-cl8-q7-portfolio-refresh-observability", ""}:
+        base = "f89aa5f79709a4a32f2ecbd2f934d3fc42485f20"
+        implementation = "67d58388c12632108d7711e91e8ee895eb38cd5b"
+
+        def exact(*args: str) -> str:
+            return _git(*args, text=True).stdout.strip()
+
+        if exact("rev-parse", f"{head}^") == implementation:
+            assert exact("rev-parse", f"{base}^{{tree}}") == (
+                "c77efc5d332d20077e3f088c5918d4a1a8e17973"
+            )
+            assert exact("rev-parse", f"{implementation}^{{tree}}") == (
+                "8739a9c059ac24818eb53345add1eef81793c070"
+            )
+            assert exact("rev-parse", f"{implementation}^") == base
+            assert exact("merge-base", base, head) == base
+            assert set(exact("diff", "--name-only", f"{base}..{implementation}").splitlines()) == {
+                "current/trading_robot/portfolio_manager.py",
+                "current/tools/v3_10_runtime_cash_cutover.py",
+                "current/tests/test_v3_10_q7_preparation_runtime.py",
+            }
+            assert set(exact("diff", "--name-only", f"{implementation}..{head}").splitlines()) == {
+                "current/tests/test_v3_10_issue72_gui_runtime.py",
+                "current/tests/test_v3_10_stable_qualification.py",
+            }
+            assert exact("status", "--porcelain=v1") == ""
+            return
     if branch == "agent/v3-10-clean-cl8-q7-burnin-quote-audit-correction":
         base = "b6e2e56360073dad803ffcca5235984d839f74e4"
         implementation = "30d9dc694ae174930a376bce0e90d039495e708c"
