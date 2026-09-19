@@ -1471,7 +1471,9 @@ def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
         q5_privacy_summary_sha256="9" * 64,
         provider=provider,
     )
-    synced_record = q7.verify_record_bytes((tmp_path / "final-synced.json").read_bytes())
+    synced_record = q7.verify_record_bytes(
+        (tmp_path / "final-synced.json").read_bytes()
+    )
     assert synced_record["authority_revision"] == 8
     assert synced_record["authority_record_sha256"] == synced.sha256
     assert synced_record["ledger_revision"] == 7
@@ -2038,9 +2040,7 @@ def test_final_locked_revalidation_reads_withdraw_limits_exactly_once():
         assert ".get_positions(" not in source
         assert "provider_as_of" not in source
         assert source.index("get_portfolio(") < source.index("broker_cash_as_of")
-        assert source.index("broker_cash_as_of") < source.index(
-            "get_withdraw_limits("
-        )
+        assert source.index("broker_cash_as_of") < source.index("get_withdraw_limits(")
         assert source.index("get_withdraw_limits(") < source.index(
             "broker_withdraw_limits_as_of"
         )
@@ -2068,13 +2068,17 @@ def test_tbank_withdraw_limits_observation_binds_request_in_same_call_frame(
     assert observation.raw_request_account_id == "synthetic-account"
     assert observation.service == "SandboxService"
     assert observation.method == "GetSandboxWithdrawLimits"
-    assert calls == [(
-        "SandboxService", "GetSandboxWithdrawLimits",
-        {"accountId": "synthetic-account"},
-    )]
+    assert calls == [
+        (
+            "SandboxService",
+            "GetSandboxWithdrawLimits",
+            {"accountId": "synthetic-account"},
+        )
+    ]
     response["money"].clear()
     assert observation.response["money"] != []
     client.close()
+
 
 def test_broker_view_observability_rejects_non_atomic_and_adversarial_values():
     class DictSubclass(dict):

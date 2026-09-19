@@ -68,58 +68,139 @@ _CODECS = (CL4_OPENING_CODEC, TBANK_OPERATION_CODEC)
 _PLANNED_COMMANDS = [
     {"command": "prepare", "confirmation": RuntimeCashAuthorityManager.PREPARE_PHRASE},
     {"command": "confirm", "confirmation": RuntimeCashAuthorityManager.CONFIRM_PHRASE},
-    {"command": "activate", "confirmation": RuntimeCashAuthorityManager.ACTIVATE_PHRASE},
+    {
+        "command": "activate",
+        "confirmation": RuntimeCashAuthorityManager.ACTIVATE_PHRASE,
+    },
     {"command": "arm", "confirmation": RuntimeCashAuthorityManager.ARM_PHRASE},
 ]
 
 _RECORD_FIELDS = {
     "v3.10-cl8-q7-offline-materialization": {
-        "version", "domain", "candidate_commit", "candidate_tree",
-        "contract_commit", "contract_tree", "contract_sha256",
-        "runtime_instance_id", "account_scope_sha256", "configured_set_sha256",
-        "configured_instrument_count", "secret_provider", "secret_provider_secure",
-        "token_present", "account_present", "identity_key_present", "identity_key_id",
-        "authority_state", "authority_revision", "authority_record_sha256",
-        "ledger_present", "central_present", "portfolio_present", "risk_present",
-        "b0_backup_sha256", "b0_backup_size_bytes", "b0_manifest_sha256",
-        "b0_verification_status", "provider_calls_performed",
-        "provider_mutations_performed", "overall_status", "generated_at",
+        "version",
+        "domain",
+        "candidate_commit",
+        "candidate_tree",
+        "contract_commit",
+        "contract_tree",
+        "contract_sha256",
+        "runtime_instance_id",
+        "account_scope_sha256",
+        "configured_set_sha256",
+        "configured_instrument_count",
+        "secret_provider",
+        "secret_provider_secure",
+        "token_present",
+        "account_present",
+        "identity_key_present",
+        "identity_key_id",
+        "authority_state",
+        "authority_revision",
+        "authority_record_sha256",
+        "ledger_present",
+        "central_present",
+        "portfolio_present",
+        "risk_present",
+        "b0_backup_sha256",
+        "b0_backup_size_bytes",
+        "b0_manifest_sha256",
+        "b0_verification_status",
+        "provider_calls_performed",
+        "provider_mutations_performed",
+        "overall_status",
+        "generated_at",
         "record_sha256",
     },
     "v3.10-cl8-q7-cl7-activation-preparation": {
-        "version", "domain", "experiment_id", "candidate_commit", "candidate_tree",
-        "implementation_commit", "implementation_tree", "contract_commit",
-        "contract_tree", "contract_sha256", "stage_a_record_sha256",
-        "stage_a_canonical_summary_sha256", "stage_a_overall_status",
-        "runtime_instance_id", "b0_backup_sha256", "b0_backup_size_bytes",
-        "b0_manifest_sha256", "configured_set_sha256",
-        "account_scope_nomination_sha256", "identity_key_id", "secret_provider",
-        "secret_provider_secure", "token_present", "account_present",
-        "identity_key_present", "pre_authority_state", "pre_authority_revision",
-        "pre_authority_sha256", "central_quiescent", "portfolio_valid",
-        "risk_valid", "ledger_valid", "sandbox_environment_proven",
-        "provider_calls_before_authorization", "provider_mutations_before_authorization",
-        "planned_commands", "overall_status", "generated_at", "record_sha256",
+        "version",
+        "domain",
+        "experiment_id",
+        "candidate_commit",
+        "candidate_tree",
+        "implementation_commit",
+        "implementation_tree",
+        "contract_commit",
+        "contract_tree",
+        "contract_sha256",
+        "stage_a_record_sha256",
+        "stage_a_canonical_summary_sha256",
+        "stage_a_overall_status",
+        "runtime_instance_id",
+        "b0_backup_sha256",
+        "b0_backup_size_bytes",
+        "b0_manifest_sha256",
+        "configured_set_sha256",
+        "account_scope_nomination_sha256",
+        "identity_key_id",
+        "secret_provider",
+        "secret_provider_secure",
+        "token_present",
+        "account_present",
+        "identity_key_present",
+        "pre_authority_state",
+        "pre_authority_revision",
+        "pre_authority_sha256",
+        "central_quiescent",
+        "portfolio_valid",
+        "risk_valid",
+        "ledger_valid",
+        "sandbox_environment_proven",
+        "provider_calls_before_authorization",
+        "provider_mutations_before_authorization",
+        "planned_commands",
+        "overall_status",
+        "generated_at",
+        "record_sha256",
     },
     "v3.10-cl8-q7-final-preparation": {
-        "version", "domain", "candidate_commit", "candidate_tree",
-        "implementation_commit", "implementation_tree", "contract_commit",
-        "contract_tree", "contract_sha256", "activation_preparation_sha256",
-        "activation_preparation_record_sha256", "activation_experiment_id",
-        "activation_overall_status", "runtime_instance_id",
-        "q4_artifact_identity_sha256", "q5_privacy_summary_sha256",
-        "configured_set_sha256", "configured_instrument_count",
-        "account_scope_sha256", "identity_key_id", "authority_state",
-        "authority_revision", "authority_record_sha256", "activation_context_sha256",
-        "fresh_context_sha256", "reconciliation_status", "availability_status",
-        "cash_context_status", "ledger_revision", "ledger_head_sha256",
-        "central_revision", "portfolio_revision", "risk_policy_hash",
-        "risk_state_revision", "b1_backup_sha256", "b1_backup_size_bytes",
-        "b1_manifest_sha256", "secret_provider", "secret_provider_secure",
-        "token_present", "account_present", "identity_key_present",
-        "post_attempt_count", "pending_dispatch_proof_sha256",
+        "version",
+        "domain",
+        "candidate_commit",
+        "candidate_tree",
+        "implementation_commit",
+        "implementation_tree",
+        "contract_commit",
+        "contract_tree",
+        "contract_sha256",
+        "activation_preparation_sha256",
+        "activation_preparation_record_sha256",
+        "activation_experiment_id",
+        "activation_overall_status",
+        "runtime_instance_id",
+        "q4_artifact_identity_sha256",
+        "q5_privacy_summary_sha256",
+        "configured_set_sha256",
+        "configured_instrument_count",
+        "account_scope_sha256",
+        "identity_key_id",
+        "authority_state",
+        "authority_revision",
+        "authority_record_sha256",
+        "activation_context_sha256",
+        "fresh_context_sha256",
+        "reconciliation_status",
+        "availability_status",
+        "cash_context_status",
+        "ledger_revision",
+        "ledger_head_sha256",
+        "central_revision",
+        "portfolio_revision",
+        "risk_policy_hash",
+        "risk_state_revision",
+        "b1_backup_sha256",
+        "b1_backup_size_bytes",
+        "b1_manifest_sha256",
+        "secret_provider",
+        "secret_provider_secure",
+        "token_present",
+        "account_present",
+        "identity_key_present",
+        "post_attempt_count",
+        "pending_dispatch_proof_sha256",
         "preparation_provider_read_rebuild_performed",
-        "preparation_provider_order_mutations", "overall_status", "generated_at",
+        "preparation_provider_order_mutations",
+        "overall_status",
+        "generated_at",
         "record_sha256",
     },
 }
@@ -177,7 +258,12 @@ def _record_schema(value: Mapping[str, Any]) -> None:
         raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
     if value.get("version") != 1:
         raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
-    for field in ("candidate_commit", "candidate_tree", "contract_commit", "contract_tree"):
+    for field in (
+        "candidate_commit",
+        "candidate_tree",
+        "contract_commit",
+        "contract_tree",
+    ):
         if _HEX40.fullmatch(str(value.get(field, ""))) is None:
             raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
     for field, item in value.items():
@@ -188,31 +274,55 @@ def _record_schema(value: Mapping[str, Any]) -> None:
         ):
             raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
     for field in (
-        "secret_provider_secure", "token_present", "account_present",
-        "identity_key_present", "central_present", "portfolio_present",
-        "risk_present", "ledger_present", "provider_calls_performed",
-        "provider_mutations_performed", "central_quiescent", "portfolio_valid",
-        "risk_valid", "ledger_valid", "sandbox_environment_proven",
+        "secret_provider_secure",
+        "token_present",
+        "account_present",
+        "identity_key_present",
+        "central_present",
+        "portfolio_present",
+        "risk_present",
+        "ledger_present",
+        "provider_calls_performed",
+        "provider_mutations_performed",
+        "central_quiescent",
+        "portfolio_valid",
+        "risk_valid",
+        "ledger_valid",
+        "sandbox_environment_proven",
         "preparation_provider_read_rebuild_performed",
     ):
         if field in value and type(value[field]) is not bool:
             raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
     for field in (
-        "configured_instrument_count", "authority_revision", "pre_authority_revision",
-        "provider_calls_before_authorization", "provider_mutations_before_authorization",
-        "ledger_revision", "central_revision", "portfolio_revision",
-        "risk_state_revision", "b0_backup_size_bytes", "b1_backup_size_bytes",
-        "post_attempt_count", "preparation_provider_order_mutations",
+        "configured_instrument_count",
+        "authority_revision",
+        "pre_authority_revision",
+        "provider_calls_before_authorization",
+        "provider_mutations_before_authorization",
+        "ledger_revision",
+        "central_revision",
+        "portfolio_revision",
+        "risk_state_revision",
+        "b0_backup_size_bytes",
+        "b1_backup_size_bytes",
+        "post_attempt_count",
+        "preparation_provider_order_mutations",
     ):
         if field in value and (type(value[field]) is not int or value[field] < 0):
             raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
     if _KEY_ID.fullmatch(str(value.get("identity_key_id", ""))) is None:
         raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
-    if value.get("contract_commit") != CONTRACT_COMMIT or value.get("contract_tree") != CONTRACT_TREE:
+    if (
+        value.get("contract_commit") != CONTRACT_COMMIT
+        or value.get("contract_tree") != CONTRACT_TREE
+    ):
         raise Q7PreparationError("EVIDENCE_CONTRACT_MISMATCH")
     if value.get("contract_sha256") != CONTRACT_SHA256:
         raise Q7PreparationError("EVIDENCE_CONTRACT_MISMATCH")
-    if not isinstance(value.get("generated_at"), str) or not value["generated_at"].strip():
+    if (
+        not isinstance(value.get("generated_at"), str)
+        or not value["generated_at"].strip()
+    ):
         raise Q7PreparationError("EVIDENCE_SCHEMA_INVALID")
     if domain == "v3.10-cl8-q7-offline-materialization":
         if (
@@ -221,10 +331,18 @@ def _record_schema(value: Mapping[str, Any]) -> None:
             or value["authority_revision"] != 0
             or value["b0_verification_status"] != "VERIFIED"
             or value["secret_provider_secure"] is not True
-            or any(value[field] is not True for field in (
-                "token_present", "account_present", "identity_key_present",
-                "ledger_present", "central_present", "portfolio_present", "risk_present",
-            ))
+            or any(
+                value[field] is not True
+                for field in (
+                    "token_present",
+                    "account_present",
+                    "identity_key_present",
+                    "ledger_present",
+                    "central_present",
+                    "portfolio_present",
+                    "risk_present",
+                )
+            )
             or value["provider_calls_performed"] is not False
             or value["provider_mutations_performed"] is not False
             or value["overall_status"] != "ACTIVATION_REQUIRED"
@@ -240,11 +358,19 @@ def _record_schema(value: Mapping[str, Any]) -> None:
             or value["pre_authority_revision"] != 0
             or value["planned_commands"] != _PLANNED_COMMANDS
             or value["secret_provider_secure"] is not True
-            or any(value[field] is not True for field in (
-                "token_present", "account_present", "identity_key_present",
-                "central_quiescent", "portfolio_valid", "risk_valid", "ledger_valid",
-                "sandbox_environment_proven",
-            ))
+            or any(
+                value[field] is not True
+                for field in (
+                    "token_present",
+                    "account_present",
+                    "identity_key_present",
+                    "central_quiescent",
+                    "portfolio_valid",
+                    "risk_valid",
+                    "ledger_valid",
+                    "sandbox_environment_proven",
+                )
+            )
             or value["provider_calls_before_authorization"] != 0
             or value["provider_mutations_before_authorization"] != 0
             or value["overall_status"] != "READY_FOR_SEPARATE_ACTIVATION_AUTHORIZATION"
@@ -255,16 +381,22 @@ def _record_schema(value: Mapping[str, Any]) -> None:
             value["implementation_commit"] != value["candidate_commit"]
             or value["implementation_tree"] != value["candidate_tree"]
             or value["activation_experiment_id"] != ACTIVATION_EXPERIMENT_ID
-            or value["activation_overall_status"] != "READY_FOR_SEPARATE_ACTIVATION_AUTHORIZATION"
+            or value["activation_overall_status"]
+            != "READY_FOR_SEPARATE_ACTIVATION_AUTHORIZATION"
             or value["authority_state"] != "EXACT_CASH_ARMED"
             or value["reconciliation_status"] != "MATCHED"
             or value["availability_status"] != "READY"
             or value["cash_context_status"] != "READY_FOR_LOCKED_REVALIDATION"
             or value["secret_provider_secure"] is not True
-            or any(value[field] is not True for field in (
-                "token_present", "account_present", "identity_key_present",
-                "preparation_provider_read_rebuild_performed",
-            ))
+            or any(
+                value[field] is not True
+                for field in (
+                    "token_present",
+                    "account_present",
+                    "identity_key_present",
+                    "preparation_provider_read_rebuild_performed",
+                )
+            )
             or value["post_attempt_count"] != 0
             or value["pending_dispatch_proof_sha256"] is not None
             or value["preparation_provider_order_mutations"] != 0
@@ -916,8 +1048,7 @@ def finalize_preparation(
         or fresh_evidence.context.identity_key_id != secrets.identity_key_id
         or fresh_evidence.context.central_order_revision != central.revision
         or fresh_evidence.context.portfolio_revision != portfolio.revision
-        or fresh_evidence.context.risk_policy_hash
-        != str(risk_profile["policy_hash"])
+        or fresh_evidence.context.risk_policy_hash != str(risk_profile["policy_hash"])
         or fresh_evidence.context.risk_state_guard_hash
         != risk_state_guard_hash(risk_state)
     ):
