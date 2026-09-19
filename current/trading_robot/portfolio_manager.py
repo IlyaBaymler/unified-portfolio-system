@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from .journal import EventJournal, JournalEvent
 from .portfolio_adapters import (
@@ -92,17 +92,27 @@ class CanonicalPortfolioManager:
                 "Canonical PortfolioState cutover is incomplete; trading is blocked."
             )
 
-    def refresh(self, *, record_event: bool = True) -> PortfolioState:
+    def refresh(
+        self,
+        *,
+        record_event: bool = True,
+        _stage_observer: Callable[[str], None] | None = None,
+    ) -> PortfolioState:
         """Refresh directly from broker API plus the previous canonical plan."""
 
+        if _stage_observer is not None:
+            _stage_observer("PROVIDER_PORTFOLIO")
         portfolio = self.api.get_portfolio(self.account_id)
         broker_orders: Iterable[Mapping[str, Any]] = ()
+        if _stage_observer is not None:
+            _stage_observer("PROVIDER_ORDERS")
         if hasattr(self.api, "get_orders"):
             broker_orders = self.api.get_orders(self.account_id)
         return self.refresh_from_api_portfolio(
             portfolio,
             broker_orders=broker_orders,
             record_event=record_event,
+            _stage_observer=_stage_observer,
         )
 
     def refresh_from_api_portfolio(
@@ -114,6 +124,7 @@ class CanonicalPortfolioManager:
         runtime_state: Mapping[str, Any] | None = None,
         record_event: bool = True,
         snapshot_at: str | None = None,
+        _stage_observer: Callable[[str], None] | None = None,
     ) -> PortfolioState:
         """Refresh using one exact broker observation.
 
@@ -123,7 +134,11 @@ class CanonicalPortfolioManager:
         """
 
         del runtime_state
+        if _stage_observer is not None:
+            _stage_observer("LOCAL_PRESTATE")
         previous = self.repository.load(expected_account_id=self.account_id)
+        if _stage_observer is not None:
+            _stage_observer("ADAPTER")
         broker = BrokerPortfolioAdapter.from_api_portfolio(
             portfolio,
             account_id=self.account_id,
@@ -137,6 +152,7 @@ class CanonicalPortfolioManager:
             runtime,
             previous=previous,
             record_event=record_event,
+            _stage_observer=_stage_observer,
         )
 
     def publish_from_records(
@@ -692,7 +708,10 @@ class CanonicalPortfolioManager:
         *,
         previous: PortfolioState,
         record_event: bool,
+        _stage_observer: Callable[[str], None] | None = None,
     ) -> PortfolioState:
+        if _stage_observer is not None:
+            _stage_observer("RECONCILIATION")
         evidence = self._journal_confirmed_instruments(since=previous.snapshot_at)
         origins = self._journal_position_origins()
         candidate = self.reconciler.reconcile(
@@ -707,6 +726,8 @@ class CanonicalPortfolioManager:
             ),
         )
         candidate = self._normalize_flat_positions(candidate)
+        if _stage_observer is not None:
+            _stage_observer("PUBLISH")
         result = self.transaction_coordinator.commit(
             "BROKER_SNAPSHOT_REFRESH",
             lambda current: replace(

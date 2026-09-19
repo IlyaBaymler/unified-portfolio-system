@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 CURRENT = Path(__file__).resolve().parents[1]
 if str(CURRENT) not in sys.path:
@@ -53,7 +53,7 @@ from trading_robot.secret_provider import (
     Q7SecretError,
     resolve_q7_protected_secrets,
 )
-from trading_robot.tbank_sandbox import TBankSandboxClient
+from trading_robot.tbank_sandbox import TBankAPIError, TBankSandboxClient
 
 COMMANDS = (
     "status",
@@ -87,6 +87,149 @@ _BROKER_VIEW_BOOL_FIELDS = (
 )
 _BROKER_VIEW_FIELDS = frozenset(_BROKER_VIEW_HASH_FIELDS + _BROKER_VIEW_BOOL_FIELDS)
 _LOWER_SHA256_RE = re.compile(r"[0-9a-f]{64}", re.ASCII)
+_PORTFOLIO_REFRESH_PHASES = frozenset(
+    {
+        "PROVIDER_PORTFOLIO",
+        "PROVIDER_ORDERS",
+        "LOCAL_PRESTATE",
+        "ADAPTER",
+        "RECONCILIATION",
+        "PUBLISH",
+        "READ_BACK",
+        "READ_BACK_MISMATCH",
+    }
+)
+_PORTFOLIO_PROVIDER_METHODS = {
+    "PROVIDER_PORTFOLIO": "GetSandboxPortfolio",
+    "PROVIDER_ORDERS": "GetSandboxOrders",
+}
+_PORTFOLIO_ERROR_CLASSES = frozenset(
+    {
+        "TBankAPIError",
+        "PortfolioRepositoryError",
+        "PortfolioModelError",
+        "PortfolioTransactionError",
+        "StatePersistenceError",
+        "ValueError",
+        "TypeError",
+        "KeyError",
+        "AttributeError",
+        "RuntimeError",
+        "OSError",
+        "TimeoutError",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "SSLError",
+        "ConnectionError",
+        "ChunkedEncodingError",
+        "IncompleteRead",
+        "ProtocolError",
+        "JSONDecodeError",
+        "OTHER",
+    }
+)
+_PORTFOLIO_OBSERVABILITY_FIELDS = frozenset(
+    {
+        "phase",
+        "error_class",
+        "service",
+        "method",
+        "status_code",
+        "provider_error_class",
+        "transient",
+        "tracking_id_sha256",
+    }
+)
+
+
+def _finite_portfolio_error_class(value: object) -> str:
+    return value if type(value) is str and value in _PORTFOLIO_ERROR_CLASSES else "OTHER"
+
+
+def _portfolio_provider_failure_meta(exc: BaseException, phase: str) -> dict[str, object]:
+    """Project only the current, phase-matched Sandbox READ exception."""
+
+    method = _PORTFOLIO_PROVIDER_METHODS.get(phase)
+    if (
+        method is None
+        or type(exc) is not TBankAPIError
+        or type(exc.service) is not str
+        or exc.service != "SandboxService"
+        or type(exc.method) is not str
+        or exc.method != method
+    ):
+        return {}
+    result: dict[str, object] = {"service": "SandboxService", "method": method}
+    status_code = exc.status_code
+    if status_code is None or (type(status_code) is int and 100 <= status_code <= 599):
+        result["status_code"] = status_code
+    if type(exc.transient) is bool:
+        result["transient"] = exc.transient
+    if exc.error_class is not None:
+        result["provider_error_class"] = _finite_portfolio_error_class(
+            exc.error_class
+        )
+    tracking_id = exc.tracking_id
+    if tracking_id is None:
+        result["tracking_id_sha256"] = None
+    elif type(tracking_id) is str and 0 < len(tracking_id) <= 4096:
+        try:
+            result["tracking_id_sha256"] = hashlib.sha256(
+                tracking_id.encode("utf-8")
+            ).hexdigest()
+        except UnicodeEncodeError:
+            pass
+    return result
+
+
+def _safe_portfolio_failure_observability(value: object) -> dict[str, object] | None:
+    if (
+        type(value) is not dict
+        or any(type(field) is not str for field in value)
+        or not frozenset(value).issubset(_PORTFOLIO_OBSERVABILITY_FIELDS)
+        or type(value.get("phase")) is not str
+        or value["phase"] not in _PORTFOLIO_REFRESH_PHASES
+        or type(value.get("error_class")) is not str
+        or value["error_class"] not in _PORTFOLIO_ERROR_CLASSES
+    ):
+        return None
+    result = {"phase": value["phase"], "error_class": value["error_class"]}
+    provider_fields = frozenset(value) - {"phase", "error_class"}
+    if provider_fields:
+        expected_method = _PORTFOLIO_PROVIDER_METHODS.get(value["phase"])
+        if (
+            expected_method is None
+            or type(value.get("service")) is not str
+            or value["service"] != "SandboxService"
+            or type(value.get("method")) is not str
+            or value["method"] != expected_method
+        ):
+            return None
+        result.update({"service": "SandboxService", "method": expected_method})
+        if "status_code" in value:
+            status_code = value["status_code"]
+            if status_code is not None and not (
+                type(status_code) is int and 100 <= status_code <= 599
+            ):
+                return None
+            result["status_code"] = status_code
+        if "provider_error_class" in value:
+            error_class = value["provider_error_class"]
+            if type(error_class) is not str or error_class not in _PORTFOLIO_ERROR_CLASSES:
+                return None
+            result["provider_error_class"] = error_class
+        if "transient" in value:
+            if type(value["transient"]) is not bool:
+                return None
+            result["transient"] = value["transient"]
+        if "tracking_id_sha256" in value:
+            digest = value["tracking_id_sha256"]
+            if digest is not None and (
+                type(digest) is not str or _LOWER_SHA256_RE.fullmatch(digest) is None
+            ):
+                return None
+            result["tracking_id_sha256"] = digest
+    return result
 
 
 def _timestamp() -> str:
@@ -251,6 +394,7 @@ def _blocked_payload(
     exc: CL7RuntimeError,
     *,
     provider_meta: object = None,
+    portfolio_observability: object = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "reason": exc.reason.value,
@@ -286,6 +430,12 @@ def _blocked_payload(
         }
     ):
         payload["dependency_reason"] = exc.dependency_reason
+        if exc.dependency_reason == RiskCashContextReason.PORTFOLIO_NOT_READY.value:
+            safe_portfolio = _safe_portfolio_failure_observability(
+                portfolio_observability
+            )
+            if safe_portfolio is not None:
+                payload["portfolio_refresh_observability"] = safe_portfolio
         if (
             exc.dependency_reason
             == RiskCashContextReason.CASH_AVAILABILITY_NOT_READY.value
@@ -339,32 +489,60 @@ class _Runtime:
     raw_account: str
     identity_key: bytes
     identity_key_id: str
+    portfolio_failure_observability: dict[str, object] | None = None
 
     def inputs(self) -> dict[str, Any]:
+        self.portfolio_failure_observability = None
         if self.provider is None or self.portfolio_manager is None:
             raise CL7RuntimeError(
                 CL7RuntimeReason.BROKER_READ_FAILED,
                 stage="PROVIDER_CREDENTIALS",
             )
-        try:
-            published = self.portfolio_manager.refresh(record_event=False)
-            read_back = self.portfolio.load(expected_account_id=self.raw_account)
-        except Exception:
+        phase = "PROVIDER_PORTFOLIO"
+
+        def note_phase(value: str) -> None:
+            nonlocal phase
+            phase = value
+
+        def block_portfolio(exc: BaseException | None, failure_phase: str) -> NoReturn:
+            observation: dict[str, object] = {
+                "phase": failure_phase,
+                "error_class": (
+                    _finite_portfolio_error_class(type(exc).__name__)
+                    if exc is not None
+                    else "OTHER"
+                ),
+            }
+            if failure_phase in _PORTFOLIO_PROVIDER_METHODS:
+                observation.update(
+                    _portfolio_provider_failure_meta(exc, failure_phase)
+                    if exc is not None
+                    else {}
+                )
+            self.portfolio_failure_observability = observation
             raise CL7RuntimeError(
                 CL7RuntimeReason.CONTEXT_BLOCKED,
                 RiskCashContextReason.PORTFOLIO_NOT_READY.value,
                 stage="CL6_CONTEXT",
             ) from None
-        if (
-            type(published) is not PortfolioState
-            or type(read_back) is not PortfolioState
-            or published.to_dict() != read_back.to_dict()
-        ):
-            raise CL7RuntimeError(
-                CL7RuntimeReason.CONTEXT_BLOCKED,
-                RiskCashContextReason.PORTFOLIO_NOT_READY.value,
-                stage="CL6_CONTEXT",
+
+        try:
+            published = self.portfolio_manager.refresh(
+                record_event=False, _stage_observer=note_phase
             )
+        except Exception as exc:  # noqa: BLE001 - finite privacy-safe phase boundary
+            block_portfolio(exc, phase)
+        try:
+            read_back = self.portfolio.load(expected_account_id=self.raw_account)
+            exact = (
+                type(published) is PortfolioState
+                and type(read_back) is PortfolioState
+                and published.to_dict() == read_back.to_dict()
+            )
+        except Exception as exc:  # noqa: BLE001 - finite privacy-safe read-back boundary
+            block_portfolio(exc, "READ_BACK")
+        if not exact:
+            block_portfolio(None, "READ_BACK_MISMATCH")
         return {
             "ledger_store": self.ledger,
             "portfolio_repository": self.portfolio,
@@ -715,12 +893,22 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except CL7RuntimeError as exc:
         provider_meta: object = None
+        portfolio_observability: object = None
         if runtime is not None and runtime.provider is not None:
             try:
                 provider_meta = runtime.provider.last_response_meta
             except Exception:  # noqa: BLE001 - privacy-safe observability boundary
                 provider_meta = None
-        _print(_blocked_payload(exc, provider_meta=provider_meta))
+            portfolio_observability = getattr(
+                runtime, "portfolio_failure_observability", None
+            )
+        _print(
+            _blocked_payload(
+                exc,
+                provider_meta=provider_meta,
+                portfolio_observability=portfolio_observability,
+            )
+        )
         return 2
     except Q7SecretError as exc:
         _print(

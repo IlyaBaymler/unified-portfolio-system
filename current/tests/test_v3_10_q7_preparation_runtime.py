@@ -39,6 +39,8 @@ from trading_robot.multi_instrument_config import (
     MultiInstrumentProfileStore,
 )
 from trading_robot.portfolio_model import PortfolioState
+from trading_robot.portfolio_manager import CanonicalPortfolioManager
+from trading_robot import portfolio_adapters as portfolio_adapters_module
 from trading_robot.reporting_risk_cash_context import RiskCashContextReason
 from trading_robot.risk import RiskState
 from trading_robot.runtime_cash_authority import (
@@ -52,7 +54,7 @@ from trading_robot.secret_provider import (
     provision_q7_identity,
     resolve_q7_protected_secrets,
 )
-from trading_robot.tbank_sandbox import TBankSandboxClient
+from trading_robot.tbank_sandbox import TBankAPIError, TBankSandboxClient
 
 ROOT = Path(__file__).resolve().parents[2]
 CURRENT = ROOT / "current"
@@ -2405,7 +2407,8 @@ def test_cutover_inputs_refresh_canonical_portfolio_before_exact_read_back():
     )
 
     class Manager:
-        def refresh(self, *, record_event):
+        def refresh(self, *, record_event, _stage_observer):
+            _stage_observer("PROVIDER_PORTFOLIO")
             events.append(("refresh", record_event))
             return state
 
@@ -2448,8 +2451,9 @@ def test_cutover_inputs_fail_closed_when_canonical_refresh_is_not_exact(failure)
     )
 
     class Manager:
-        def refresh(self, *, record_event):
+        def refresh(self, *, record_event, _stage_observer):
             assert record_event is False
+            _stage_observer("PROVIDER_PORTFOLIO")
             if failure == "refresh":
                 raise RuntimeError("PRIVATE_REFRESH_CANARY")
             return published
@@ -2486,6 +2490,265 @@ def test_cutover_inputs_fail_closed_when_canonical_refresh_is_not_exact(failure)
         == RiskCashContextReason.PORTFOLIO_NOT_READY.value
     )
     assert "PRIVATE" not in str(caught.value)
+    assert runtime.portfolio_failure_observability == {
+        "phase": {
+            "refresh": "PROVIDER_PORTFOLIO",
+            "read_back": "READ_BACK",
+            "mismatch": "READ_BACK_MISMATCH",
+        }[failure],
+        "error_class": "OTHER" if failure == "mismatch" else "RuntimeError",
+    }
+
+
+@pytest.mark.parametrize(
+    "failure_phase",
+    [
+        "PROVIDER_PORTFOLIO",
+        "PROVIDER_ORDERS",
+        "LOCAL_PRESTATE",
+        "ADAPTER",
+        "RECONCILIATION",
+        "PUBLISH",
+    ],
+)
+def test_canonical_refresh_observer_marks_exact_failure_boundary(
+    monkeypatch, tmp_path, failure_phase
+):
+    class OfflineAPI:
+        def get_portfolio(self, _account_id):
+            return {
+                "totalAmountPortfolio": {"currency": "rub", "units": "0", "nano": 0},
+                "totalAmountCurrencies": {"currency": "rub", "units": "0", "nano": 0},
+                "positions": [],
+            }
+
+        def get_orders(self, _account_id):
+            return []
+
+    api = OfflineAPI()
+    manager = CanonicalPortfolioManager(
+        api,
+        ACCOUNT,
+        robot_state_file=tmp_path / "robot_state.json",
+        portfolio_state_file=tmp_path / "portfolio_state.json",
+        journal_file=tmp_path / "trading_events.db",
+    )
+    success_phases = []
+    manager.refresh(record_event=False, _stage_observer=success_phases.append)
+    assert success_phases == [
+        "PROVIDER_PORTFOLIO",
+        "PROVIDER_ORDERS",
+        "LOCAL_PRESTATE",
+        "ADAPTER",
+        "RECONCILIATION",
+        "PUBLISH",
+    ]
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("PRIVATE_REFRESH_CANARY")
+
+    if failure_phase == "PROVIDER_PORTFOLIO":
+        monkeypatch.setattr(api, "get_portfolio", fail)
+    elif failure_phase == "PROVIDER_ORDERS":
+        monkeypatch.setattr(api, "get_orders", fail)
+    elif failure_phase == "LOCAL_PRESTATE":
+        monkeypatch.setattr(manager.repository, "load", fail)
+    elif failure_phase == "ADAPTER":
+        monkeypatch.setattr(
+            portfolio_adapters_module.BrokerPortfolioAdapter,
+            "from_api_portfolio",
+            staticmethod(fail),
+        )
+    elif failure_phase == "RECONCILIATION":
+        monkeypatch.setattr(manager.reconciler, "reconcile", fail)
+    else:
+        monkeypatch.setattr(manager.transaction_coordinator, "commit", fail)
+
+    observed = []
+    with pytest.raises(RuntimeError, match="PRIVATE_REFRESH_CANARY"):
+        manager.refresh(record_event=False, _stage_observer=observed.append)
+    assert observed[-1] == failure_phase
+
+
+def test_cutover_portfolio_provider_failure_observability_is_bounded():
+    class Manager:
+        def refresh(self, *, record_event, _stage_observer):
+            assert record_event is False
+            _stage_observer("PROVIDER_PORTFOLIO")
+            raise TBankAPIError(
+                "TOKEN_AND_ACCOUNT_PRIVATE_CANARY",
+                service="SandboxService",
+                method="GetSandboxPortfolio",
+                status_code=400,
+                error_class="ConnectTimeout",
+                tracking_id="RAW_TRACKING_CANARY",
+            )
+
+    provider = SimpleNamespace(
+        last_response_meta={
+            "event_type": "API_REQUEST_FAILED",
+            "service": "SandboxService",
+            "method": "GetSandboxOrders",
+            "status_code": 503,
+            "error_class": "ReadTimeout",
+            "transient": True,
+            "attempt_count": 99,
+            "tracking_id": "STALE_TRACKING_CANARY",
+            "error": "TOKEN_AND_ACCOUNT_PRIVATE_CANARY",
+            "account_id": "RAW_ACCOUNT_CANARY",
+        }
+    )
+    runtime = cutover._Runtime(
+        root=Path("synthetic"),
+        authority=SimpleNamespace(),
+        ledger=SimpleNamespace(),
+        portfolio=SimpleNamespace(),
+        profiles=SimpleNamespace(),
+        risk_state=SimpleNamespace(),
+        central=SimpleNamespace(),
+        provider=provider,
+        portfolio_manager=Manager(),
+        raw_account=ACCOUNT,
+        identity_key=b"k" * 32,
+        identity_key_id="Q7R_TEST_V1",
+    )
+    with pytest.raises(CL7RuntimeError) as caught:
+        runtime.inputs()
+    payload = cutover._blocked_payload(
+        caught.value,
+        portfolio_observability=runtime.portfolio_failure_observability,
+    )
+    assert payload["portfolio_refresh_observability"] == {
+        "phase": "PROVIDER_PORTFOLIO",
+        "error_class": "TBankAPIError",
+        "service": "SandboxService",
+        "method": "GetSandboxPortfolio",
+        "status_code": 400,
+        "provider_error_class": "ConnectTimeout",
+        "transient": False,
+        "tracking_id_sha256": sha256(b"RAW_TRACKING_CANARY").hexdigest(),
+    }
+    assert "PRIVATE_CANARY" not in json.dumps(payload, sort_keys=True)
+    assert "RAW_ACCOUNT" not in json.dumps(payload, sort_keys=True)
+    assert "RAW_TRACKING" not in json.dumps(payload, sort_keys=True)
+
+
+@pytest.mark.parametrize(
+    "malicious",
+    [
+        {"phase": "ADAPTER", "error_class": "RuntimeError", "token": "PRIVATE"},
+        {"phase": "PROVIDER_ORDERS", "error_class": "RuntimeError", "service": "SandboxService", "method": "GetSandboxPortfolio"},
+        {"phase": "PROVIDER_PORTFOLIO", "error_class": "RuntimeError", "service": "OrdersService", "method": "GetSandboxPortfolio"},
+        {"phase": "PROVIDER_PORTFOLIO", "error_class": "RuntimeError", "service": "SandboxService", "method": "GetSandboxPortfolio", "status_code": True},
+        {"phase": "PROVIDER_PORTFOLIO", "error_class": "RuntimeError", "service": "SandboxService", "method": "GetSandboxPortfolio", "attempt_count": 1},
+        {"phase": "PROVIDER_PORTFOLIO", "error_class": "RuntimeError", "service": "SandboxService", "method": "GetSandboxPortfolio", "tracking_id_sha256": "RAW_TRACKING_CANARY"},
+        {"phase": "ADAPTER", "error_class": "PRIVATE_ACCOUNT_ID"},
+        {"phase": "UNKNOWN", "error_class": "RuntimeError"},
+    ],
+)
+def test_cutover_portfolio_observability_rejects_unsafe_fields(malicious):
+    error = CL7RuntimeError(
+        CL7RuntimeReason.CONTEXT_BLOCKED,
+        RiskCashContextReason.PORTFOLIO_NOT_READY.value,
+        stage="CL6_CONTEXT",
+    )
+    payload = cutover._blocked_payload(error, portfolio_observability=malicious)
+    assert "portfolio_refresh_observability" not in payload
+
+
+def test_cutover_portfolio_provider_metadata_rejects_stale_method():
+    stale = cutover._portfolio_provider_failure_meta(
+        TBankAPIError(
+            "PRIVATE_ACCOUNT_CANARY",
+            service="SandboxService",
+            method="GetSandboxPortfolio",
+            status_code=400,
+        ),
+        "PROVIDER_ORDERS",
+    )
+    assert stale == {}
+    assert cutover._portfolio_provider_failure_meta(
+        TBankAPIError(
+            "PRIVATE_ACCOUNT_CANARY",
+            service="OrdersService",
+            method="GetSandboxPortfolio",
+        ),
+        "PROVIDER_PORTFOLIO",
+    ) == {}
+    assert cutover._portfolio_provider_failure_meta(
+        RuntimeError("PRIVATE_ACCOUNT_CANARY"), "PROVIDER_PORTFOLIO"
+    ) == {}
+
+    class EqualityTrap:
+        def __eq__(self, _other):
+            raise AssertionError("untrusted equality must not run")
+
+    assert cutover._portfolio_provider_failure_meta(
+        TBankAPIError(
+            "PRIVATE_ACCOUNT_CANARY",
+            service=EqualityTrap(),
+            method="GetSandboxPortfolio",
+        ),
+        "PROVIDER_PORTFOLIO",
+    ) == {}
+
+
+def test_cutover_portfolio_observability_requires_exact_failure_binding():
+    valid = {"phase": "READ_BACK", "error_class": "PortfolioRepositoryError"}
+    wrong_reason = CL7RuntimeError(
+        CL7RuntimeReason.CONTEXT_BLOCKED,
+        RiskCashContextReason.PORTFOLIO_STALE.value,
+        stage="CL6_CONTEXT",
+    )
+    wrong_stage = CL7RuntimeError(
+        CL7RuntimeReason.CONTEXT_BLOCKED,
+        RiskCashContextReason.PORTFOLIO_NOT_READY.value,
+        stage="CL4_OPENING",
+    )
+    for error in (wrong_reason, wrong_stage):
+        assert "portfolio_refresh_observability" not in cutover._blocked_payload(
+            error, portfolio_observability=valid
+        )
+    assert cutover._safe_portfolio_failure_observability(
+        type("MappingSubclass", (dict,), {})({**valid, "token": "PRIVATE"})
+    ) is None
+
+
+def test_cutover_cli_emits_only_safe_portfolio_refresh_failure(
+    monkeypatch, tmp_path, capsys
+):
+    def blocked_inputs():
+        raise CL7RuntimeError(
+            CL7RuntimeReason.CONTEXT_BLOCKED,
+            RiskCashContextReason.PORTFOLIO_NOT_READY.value,
+            stage="CL6_CONTEXT",
+        )
+
+    runtime = SimpleNamespace(
+        authority=SimpleNamespace(),
+        ledger=SimpleNamespace(close=lambda: None),
+        provider=SimpleNamespace(last_response_meta={"token": "PRIVATE_TOKEN"}),
+        portfolio_failure_observability={
+            "phase": "PROVIDER_ORDERS",
+            "error_class": "TBankAPIError",
+            "service": "SandboxService",
+            "method": "GetSandboxOrders",
+            "status_code": 400,
+        },
+        inputs=blocked_inputs,
+    )
+    monkeypatch.setattr(cutover, "_open_runtime", lambda *_args, **_kwargs: runtime)
+    assert cutover.main(["prepare", "--runtime-dir", str(tmp_path)]) == 2
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert payload["portfolio_refresh_observability"] == {
+        "phase": "PROVIDER_ORDERS",
+        "error_class": "TBankAPIError",
+        "service": "SandboxService",
+        "method": "GetSandboxOrders",
+        "status_code": 400,
+    }
+    assert "PRIVATE" not in output
 
 
 def test_open_runtime_composes_existing_canonical_portfolio_owner(
