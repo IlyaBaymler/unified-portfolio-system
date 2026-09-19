@@ -506,6 +506,47 @@ def _fresh_runtime_context(root: Path) -> tuple[Any, Any]:
         live.ledger.close()
 
 
+def _require_fresh_authority(before: Any, fresh: Any, readback: Any) -> None:
+    """Accept only the same armed record or this sync's direct custody successor."""
+
+    if (
+        fresh.state is not RuntimeCashAuthorityState.EXACT_CASH_ARMED
+        or fresh.post_attempt_count != 0
+        or fresh.pending_dispatch_proof_sha256 is not None
+        or readback.sha256 != fresh.sha256
+    ):
+        raise Q7PreparationError("FRESH_AUTHORITY_SUBSTITUTION")
+    if fresh.sha256 == before.sha256:
+        if fresh.record_revision != before.record_revision:
+            raise Q7PreparationError("FRESH_AUTHORITY_SUBSTITUTION")
+        return
+    if (
+        fresh.transition_kind != "SYNC_ADVANCED"
+        or fresh.record_revision != before.record_revision + 1
+        or fresh.previous_record_sha256 != before.sha256
+    ):
+        raise Q7PreparationError("FRESH_AUTHORITY_SUBSTITUTION")
+    # The store validates the full transition pair; these bindings make the
+    # accepted change explicit at the final preparation boundary as well.
+    for name in (
+        "account_scope_sha256",
+        "activation_context_sha256",
+        "cutover_generation",
+        "environment",
+        "ever_exact_activated",
+        "identity_key_id",
+        "opening_cutoff",
+        "opening_record_sha256",
+        "version",
+    ):
+        if (
+            not hasattr(before, name)
+            or not hasattr(fresh, name)
+            or getattr(fresh, name) != getattr(before, name)
+        ):
+            raise Q7PreparationError("FRESH_AUTHORITY_SUBSTITUTION")
+
+
 def _backup_binding(root: Path, output: Path) -> dict[str, Any]:
     manager = RuntimeBackupManager(root, app_version=__version__)
     path = manager.create_backup(output)
@@ -832,11 +873,17 @@ def finalize_preparation(
     finally:
         ledger.close()
     fresh_authority, fresh_evidence = _fresh_runtime_context(root)
-    if (
-        fresh_authority.sha256 != authority.sha256
-        or fresh_authority.state is not RuntimeCashAuthorityState.EXACT_CASH_ARMED
-    ):
-        raise Q7PreparationError("FRESH_AUTHORITY_SUBSTITUTION")
+    _require_fresh_authority(
+        authority,
+        fresh_authority,
+        RuntimeCashAuthorityStore(root).load(allow_missing_legacy=False),
+    )
+    authority = fresh_authority
+    ledger = _open_ledger(root, create=False)
+    try:
+        ledger_snapshot = ledger.validate()
+    finally:
+        ledger.close()
     reconciliation_status = getattr(
         getattr(fresh_evidence.reconciliation, "status", None), "value", None
     )
@@ -876,6 +923,11 @@ def finalize_preparation(
     ):
         raise Q7PreparationError("FRESH_OWNER_BINDING_MISMATCH")
     backup = _backup_binding(root, Path(backup_output))
+    if (
+        RuntimeCashAuthorityStore(root).load(allow_missing_legacy=False).sha256
+        != authority.sha256
+    ):
+        raise Q7PreparationError("FRESH_AUTHORITY_SUBSTITUTION")
     payload = {
         "version": 1,
         "domain": "v3.10-cl8-q7-final-preparation",

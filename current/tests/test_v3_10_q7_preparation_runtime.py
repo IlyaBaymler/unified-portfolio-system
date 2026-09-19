@@ -1287,6 +1287,12 @@ def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
         state=RuntimeCashAuthorityState.EXACT_CASH_ARMED,
         post_attempt_count=0,
         pending_dispatch_proof_sha256=None,
+        cutover_generation=1,
+        environment="SANDBOX",
+        ever_exact_activated=True,
+        opening_cutoff="2026-09-19T00:00:00.000000000Z",
+        opening_record_sha256="d" * 64,
+        version=1,
         identity_key_id=secrets.identity_key_id,
         account_scope_sha256=account_scope,
         record_revision=7,
@@ -1421,6 +1427,147 @@ def test_q7r_24_29_exact_armed_state_creates_b1_binding_without_burnin(
             provider=provider,
         )
     assert not (tmp_path / "b1-ledger-drift.zip").exists()
+
+    # A fresh CL7 sync may legitimately advance the watermark while armed.
+    # Final preparation must bind the successor authority, not the pre-sync SHA.
+    ledger_snapshots = iter(
+        (
+            SimpleNamespace(ledger_revision=6, ledger_head_sha256="5" * 64),
+            SimpleNamespace(ledger_revision=7, ledger_head_sha256="6" * 64),
+        )
+    )
+    ledger.validate = lambda: next(ledger_snapshots)
+    fresh_evidence.context.ledger_revision = 7
+    fresh_evidence.context.ledger_head_sha256 = "6" * 64
+    synced = SimpleNamespace(
+        **{
+            **vars(authority),
+            "sha256": "e" * 64,
+            "record_revision": 8,
+            "previous_record_sha256": authority.sha256,
+            "transition_kind": "SYNC_ADVANCED",
+            "operations_complete_through": "2026-09-19T00:01:00.000000000Z",
+            "ledger_revision": 7,
+            "ledger_head_sha256": "6" * 64,
+        }
+    )
+    loads = iter((authority, synced, synced))
+    monkeypatch.setattr(
+        q7,
+        "RuntimeCashAuthorityStore",
+        lambda _root: SimpleNamespace(load=lambda **_kwargs: next(loads)),
+    )
+    monkeypatch.setattr(
+        q7, "_fresh_runtime_context", lambda _root: (synced, fresh_evidence)
+    )
+    q7.finalize_preparation(
+        runtime_dir=runtime,
+        activation_record=activation,
+        output_record=tmp_path / "final-synced.json",
+        backup_output=tmp_path / "b1-synced.zip",
+        candidate_commit=COMMIT,
+        candidate_tree=TREE,
+        q4_artifact_identity_sha256="8" * 64,
+        q5_privacy_summary_sha256="9" * 64,
+        provider=provider,
+    )
+    synced_record = q7.verify_record_bytes((tmp_path / "final-synced.json").read_bytes())
+    assert synced_record["authority_revision"] == 8
+    assert synced_record["authority_record_sha256"] == synced.sha256
+    assert synced_record["ledger_revision"] == 7
+    assert synced_record["ledger_head_sha256"] == "6" * 64
+
+    ledger_snapshots = iter(
+        (
+            SimpleNamespace(ledger_revision=6, ledger_head_sha256="5" * 64),
+            SimpleNamespace(ledger_revision=7, ledger_head_sha256="6" * 64),
+        )
+    )
+    ledger.validate = lambda: next(ledger_snapshots)
+    loads = iter((authority, synced, SimpleNamespace(sha256="f" * 64)))
+    with pytest.raises(q7.Q7PreparationError, match="FRESH_AUTHORITY_SUBSTITUTION"):
+        q7.finalize_preparation(
+            runtime_dir=runtime,
+            activation_record=activation,
+            output_record=tmp_path / "final-post-backup-drift.json",
+            backup_output=tmp_path / "b1-post-backup-drift.zip",
+            candidate_commit=COMMIT,
+            candidate_tree=TREE,
+            q4_artifact_identity_sha256="8" * 64,
+            q5_privacy_summary_sha256="9" * 64,
+            provider=provider,
+        )
+    assert not (tmp_path / "final-post-backup-drift.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("change", "readback_sha"),
+    [
+        ({"previous_record_sha256": "f" * 64}, "2" * 64),
+        ({"record_revision": 9}, "2" * 64),
+        ({"transition_kind": "ARM_EXACT"}, "2" * 64),
+        ({"account_scope_sha256": "f" * 64}, "2" * 64),
+        ({"activation_context_sha256": "f" * 64}, "2" * 64),
+        ({"cutover_generation": 2}, "2" * 64),
+        ({"state": RuntimeCashAuthorityState.EXACT_CASH_DISARMED}, "2" * 64),
+        ({"post_attempt_count": 1}, "2" * 64),
+        ({"pending_dispatch_proof_sha256": "f" * 64}, "2" * 64),
+        ({}, "f" * 64),
+    ],
+)
+def test_finalization_rejects_foreign_fresh_authority(change, readback_sha):
+    before = SimpleNamespace(
+        sha256="1" * 64,
+        record_revision=7,
+        state=RuntimeCashAuthorityState.EXACT_CASH_ARMED,
+        post_attempt_count=0,
+        pending_dispatch_proof_sha256=None,
+        cutover_generation=1,
+        environment="SANDBOX",
+        ever_exact_activated=True,
+        account_scope_sha256="a" * 64,
+        identity_key_id="SYNTHETIC_V1",
+        activation_context_sha256="b" * 64,
+        opening_cutoff="2026-09-19T00:00:00.000000000Z",
+        opening_record_sha256="c" * 64,
+        version=1,
+    )
+    after = SimpleNamespace(
+        **{
+            **vars(before),
+            "sha256": "2" * 64,
+            "record_revision": 8,
+            "previous_record_sha256": before.sha256,
+            "transition_kind": "SYNC_ADVANCED",
+            **change,
+        }
+    )
+    readback = SimpleNamespace(sha256=readback_sha)
+    with pytest.raises(q7.Q7PreparationError, match="FRESH_AUTHORITY_SUBSTITUTION"):
+        q7._require_fresh_authority(before, after, readback)
+
+
+def test_finalization_rejects_missing_fresh_authority_binding():
+    before = SimpleNamespace(
+        sha256="1" * 64,
+        record_revision=7,
+        state=RuntimeCashAuthorityState.EXACT_CASH_ARMED,
+        post_attempt_count=0,
+        pending_dispatch_proof_sha256=None,
+        account_scope_sha256="a" * 64,
+    )
+    after = SimpleNamespace(
+        sha256="2" * 64,
+        record_revision=8,
+        state=RuntimeCashAuthorityState.EXACT_CASH_ARMED,
+        post_attempt_count=0,
+        pending_dispatch_proof_sha256=None,
+        previous_record_sha256=before.sha256,
+        transition_kind="SYNC_ADVANCED",
+        account_scope_sha256="a" * 64,
+    )
+    with pytest.raises(q7.Q7PreparationError, match="FRESH_AUTHORITY_SUBSTITUTION"):
+        q7._require_fresh_authority(before, after, after)
 
 
 @pytest.mark.parametrize("field", VECTORS["evidence_tamper_fields"])
