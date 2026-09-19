@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Any, Protocol
 from uuid import uuid4
@@ -19,6 +21,7 @@ from .instrument_runtime import (
     InstrumentRuntimeConflictError,
     InstrumentRuntimeStore,
 )
+from .journal import EventJournal, JournalEvent
 from .multi_instrument_config import (
     MAX_V3_8_INSTRUMENTS,
     MultiInstrumentProfile,
@@ -30,6 +33,10 @@ from .multi_instrument_strategy import (
     build_strategy_proposal,
 )
 from .portfolio_risk_runtime import PortfolioRiskRuntime
+from .portfolio_risk_shadow import (
+    PortfolioRiskCandidateQuote,
+    PortfolioRiskShadowError,
+)
 from .runtime_cash_authority import (
     RuntimeCashAuthorityRecord,
     RuntimeCashAuthorityState,
@@ -37,6 +44,66 @@ from .runtime_cash_authority import (
 from .sandbox_execution_adapter import SandboxExecutionAdapter, SandboxExecutionPolicy
 
 _CL4_MONEY_KEYS = frozenset({"currency", "nano", "units"})
+_QUOTE_UNITS = re.compile(r"[0-9]+\Z")
+_SAFE_AUDIT_STATUS = re.compile(r"[A-Z0-9_]{1,80}\Z")
+_GUI_AUDIT_BLOCKERS = frozenset(
+    {
+        "CANDIDATE_QUOTE_READ_FAILED",
+        "CANDIDATE_QUOTE_INVALID",
+        "CANDIDATE_QUOTE_NOT_FRESH",
+        "DECISION_AUDIT_UNAVAILABLE",
+    }
+)
+
+
+def _audit_status(value: Any) -> str:
+    status = value if type(value) is str else ""
+    return status if _SAFE_AUDIT_STATUS.fullmatch(status) else "UNKNOWN"
+
+
+@dataclass(slots=True)
+class _GuiSchedulerJournalSink:
+    """Keep scheduler audit useful without exporting raw account or error text."""
+
+    journal: EventJournal
+    account_scope_sha256: str
+
+    def record_scheduler_event(self, event: Any) -> None:
+        payload = event.payload if type(event.payload) is dict else {}
+        detail = payload.get("detail")
+        blocker = (
+            detail.removeprefix("GuiRuntimeBlockedError: ")
+            if type(detail) is str
+            and detail.startswith("GuiRuntimeBlockedError: ")
+            else None
+        )
+        self.journal.record(
+            JournalEvent(
+                category=(
+                    "scheduler"
+                    if event.event_type.startswith("SCHEDULER_")
+                    else "runtime"
+                ),
+                event_type=_audit_status(event.event_type),
+                severity=event.severity,
+                session_id=event.session_id,
+                instrument_id=event.instrument_id,
+                ticker=event.ticker,
+                candle_time=event.candle_time,
+                mode="SANDBOX_EXECUTION",
+                status=_audit_status(event.status),
+                action=_audit_status(event.action),
+                config_hash=event.config_hash,
+                payload={
+                    "account_scope_sha256": self.account_scope_sha256,
+                    "revision": payload.get("revision")
+                    if type(payload.get("revision")) is int
+                    else None,
+                    "blocker": blocker if blocker in _GUI_AUDIT_BLOCKERS else None,
+                },
+                timestamp_utc=event.occurred_at.isoformat(),
+            )
+        )
 
 
 def normalize_cl4_portfolio_response(response: object) -> object:
@@ -155,6 +222,7 @@ class GuiCoordinationRequest:
     lot_size: int
     cash_buffer_bps: int = 100
     portfolio_risk_candidate_quote: Any | None = None
+    evaluated_at: datetime | None = None
 
 
 class GuiStrategyHooks(InstrumentRuntimeHooks, Protocol):
@@ -179,6 +247,7 @@ class _ProductionGuiHooks:
         profiles: Mapping[str, MultiInstrumentProfile],
         frames: Mapping[str, Any],
         lot_sizes: Mapping[str, int],
+        clock: Callable[[], datetime],
     ) -> None:
         self.provider = provider
         self.risk_runtime = risk_runtime
@@ -186,6 +255,7 @@ class _ProductionGuiHooks:
         self.profiles = dict(profiles)
         self.frames = dict(frames)
         self.lot_sizes = dict(lot_sizes)
+        self.clock = clock
 
     def refresh_market_status(self, runtime: InstrumentRuntime, now: datetime) -> Any:
         del now
@@ -232,11 +302,59 @@ class _ProductionGuiHooks:
     ) -> GuiCoordinationRequest:
         del candle_time, now
         instrument_id = runtime.config.instrument_id
+        try:
+            prices = self.provider.get_last_prices([instrument_id])
+        except Exception:
+            raise GuiRuntimeBlockedError("CANDIDATE_QUOTE_READ_FAILED") from None
+        if type(prices) is not list or len(prices) != 1:
+            raise GuiRuntimeBlockedError("CANDIDATE_QUOTE_INVALID")
+        raw = prices[0]
+        if (
+            type(raw) is not dict
+            or type(raw.get("instrumentUid")) is not str
+            or raw["instrumentUid"] != instrument_id
+            or type(raw.get("time")) is not str
+        ):
+            raise GuiRuntimeBlockedError("CANDIDATE_QUOTE_INVALID")
+        price = raw.get("price")
+        if type(price) is not dict:
+            raise GuiRuntimeBlockedError("CANDIDATE_QUOTE_INVALID")
+        units, nano = price.get("units"), price.get("nano")
+        if (
+            type(units) is not str
+            or _QUOTE_UNITS.fullmatch(units) is None
+            or len(units) > 18
+            or type(nano) is not int
+            or not 0 <= nano < 1_000_000_000
+        ):
+            raise GuiRuntimeBlockedError("CANDIDATE_QUOTE_INVALID")
+        try:
+            quote = PortfolioRiskCandidateQuote(
+                unit_price_rub=float(
+                    Decimal(units) + Decimal(nano) / Decimal(1_000_000_000)
+                ),
+                price_at=raw["time"],
+                source="TBANK_LAST_PRICE_EXCHANGE",
+            )
+        except (InvalidOperation, OverflowError, TypeError, ValueError, PortfolioRiskShadowError):
+            raise GuiRuntimeBlockedError("CANDIDATE_QUOTE_INVALID") from None
+        evaluated_at = self.clock()
+        if (
+            not isinstance(evaluated_at, datetime)
+            or evaluated_at.tzinfo is None
+            or evaluated_at.utcoffset() is None
+        ):
+            raise GuiRuntimeBlockedError("CYCLE_CLOCK_INVALID")
+        age_seconds = (evaluated_at.astimezone(timezone.utc) - quote.price_at).total_seconds()
+        if age_seconds < -5 or age_seconds > 300:
+            raise GuiRuntimeBlockedError("CANDIDATE_QUOTE_NOT_FRESH")
         return GuiCoordinationRequest(
             proposal=proposal,
             profile=self.profiles[instrument_id],
             candles=self.frames[instrument_id],
             lot_size=self.lot_sizes[instrument_id],
+            portfolio_risk_candidate_quote=quote,
+            evaluated_at=evaluated_at.astimezone(timezone.utc),
         )
 
 
@@ -314,6 +432,7 @@ class ProductionGuiCycleSource:
             profiles=profile_map,
             frames=frames,
             lot_sizes=lots,
+            clock=self.clock,
         )
         return now.astimezone(timezone.utc), latest, hooks
 
@@ -345,6 +464,7 @@ class _CoordinatingHooks:
         proposal = self.hooks.evaluate_closed_candle(runtime, candle_time, now)
         if proposal is None:
             return None
+        self.controller._record_primary_decision(runtime, proposal, now)
         request = self.hooks.coordination_request(runtime, proposal, candle_time, now)
         if request is None:
             raise GuiRuntimeBlockedError(
@@ -357,9 +477,12 @@ class _CoordinatingHooks:
             request.profile,
             candles=request.candles,
             lot_size=request.lot_size,
-            now=now,
+            now=request.evaluated_at or now,
             cash_buffer_bps=request.cash_buffer_bps,
             portfolio_risk_candidate_quote=request.portfolio_risk_candidate_quote,
+        )
+        self.controller._record_coordination_result(
+            runtime, proposal, outcome, request.evaluated_at or now
         )
         if str(getattr(outcome, "status", "")).upper() in {
             "QUEUED",
@@ -397,6 +520,7 @@ class GuiRuntimeController:
         ]
         | None = None,
         session_id: str | None = None,
+        journal: EventJournal | None = None,
     ) -> None:
         self.profile_store = profile_store
         self.runtime_store = runtime_store
@@ -409,6 +533,7 @@ class GuiRuntimeController:
         self.account_scope_sha256 = str(account_scope_sha256 or "").strip().lower()
         self.cycle_source = cycle_source
         self.session_id = str(session_id or uuid4())
+        self.journal = journal
         self.market_state = "OPEN"
         self.connected = True
         self.scheduler: GlobalScheduler | None = None
@@ -432,6 +557,7 @@ class GuiRuntimeController:
         instance.connected = False
         instance.account_id = ""
         instance.account_scope_sha256 = ""
+        instance.journal = None
         instance.scheduler = None
         instance._configured_set = None
         instance._composition_blocker = GuiRuntimeBlockedError(reason, detail)
@@ -455,6 +581,7 @@ class GuiRuntimeController:
         cl7_identity_key: bytes | None = None,
         cl7_identity_key_id: str | None = None,
         cl7_ledger_store: Any | None = None,
+        journal: EventJournal,
         cycle_source: Callable[
             [], tuple[datetime, Mapping[str, datetime | None], GuiStrategyHooks]
         ]
@@ -490,6 +617,7 @@ class GuiRuntimeController:
             account_id=account_id,
             account_scope_sha256=account_scope_sha256,
             cycle_source=cycle_source,
+            journal=journal,
         )
 
     def restore(self) -> ConfiguredExecutionSet:
@@ -497,6 +625,11 @@ class GuiRuntimeController:
         self.scheduler = GlobalScheduler.restore(
             self.runtime_store,
             expected_account_id=self.account_id,
+            event_sink=(
+                _GuiSchedulerJournalSink(self.journal, self.account_scope_sha256)
+                if self.journal is not None
+                else None
+            ),
             session_id=self.session_id,
         )
         if tuple(item.runtime_key for item in self.scheduler.runtimes) != (
@@ -508,6 +641,94 @@ class GuiRuntimeController:
             )
         self._configured_set = configured
         return configured
+
+    def _record_primary_decision(
+        self, runtime: InstrumentRuntime, proposal: Any, now: datetime
+    ) -> None:
+        if self.journal is None:
+            return
+        primary = proposal.decisions[proposal.primary_strategy]
+        signal = primary.signal if type(primary.signal) is int else None
+        target = (
+            proposal.primary_target_lots
+            if type(proposal.primary_target_lots) is int
+            else None
+        )
+        try:
+            self.journal.record(
+                JournalEvent(
+                    category="strategy",
+                    event_type="PRIMARY_STRATEGY_DECISION",
+                    session_id=self.session_id,
+                    instrument_id=runtime.config.instrument_id,
+                    ticker=runtime.config.ticker,
+                    candle_time=proposal.candle_time,
+                    mode="SANDBOX_EXECUTION",
+                    status="PROPOSED_NOT_AUTHORIZED",
+                    action=("LONG" if signal == 1 else "FLAT" if signal == 0 else "UNKNOWN"),
+                    strategy_id=str(proposal.primary_strategy),
+                    config_hash=proposal.strategy_profile_hash,
+                    payload={
+                        "account_scope_sha256": self.account_scope_sha256,
+                        "signal": signal,
+                        "proposed_target_lots": target,
+                        "execution_authorized": False,
+                    },
+                    timestamp_utc=now.astimezone(timezone.utc).isoformat(),
+                )
+            )
+        except Exception:
+            raise GuiRuntimeBlockedError("DECISION_AUDIT_UNAVAILABLE") from None
+
+    def _record_coordination_result(
+        self,
+        runtime: InstrumentRuntime,
+        proposal: Any,
+        outcome: Any,
+        now: datetime,
+    ) -> None:
+        if self.journal is None:
+            return
+        current = getattr(outcome, "current_lots", None)
+        target = proposal.primary_target_lots
+        if type(current) is int and type(target) is int:
+            action = "BUY" if target > current else "SELL" if target < current else "HOLD"
+        else:
+            action = "UNDETERMINED"
+        approved = getattr(outcome, "approved_target_lots", None)
+        try:
+            self.journal.record(
+                JournalEvent(
+                    category="decision",
+                    event_type="CENTRAL_COORDINATION_RESULT",
+                    session_id=self.session_id,
+                    instrument_id=runtime.config.instrument_id,
+                    ticker=runtime.config.ticker,
+                    candle_time=proposal.candle_time,
+                    mode="SANDBOX_EXECUTION",
+                    status=_audit_status(getattr(outcome, "status", None)),
+                    action=action,
+                    strategy_id=str(proposal.primary_strategy),
+                    config_hash=proposal.strategy_profile_hash,
+                    payload={
+                        "account_scope_sha256": self.account_scope_sha256,
+                        "current_lots": current if type(current) is int else None,
+                        "proposed_target_lots": target if type(target) is int else None,
+                        "approved_target_lots": approved if type(approved) is int else None,
+                        "preflight_status": _audit_status(
+                            getattr(outcome, "preflight_status", None)
+                        ),
+                        "risk_status": _audit_status(getattr(outcome, "risk_status", None)),
+                        "portfolio_risk_status": _audit_status(
+                            getattr(outcome, "portfolio_risk_status", None)
+                        ),
+                        "execution_authorized": False,
+                    },
+                    timestamp_utc=now.astimezone(timezone.utc).isoformat(),
+                )
+            )
+        except Exception:
+            raise GuiRuntimeBlockedError("DECISION_AUDIT_UNAVAILABLE") from None
 
     def start_configured_set(self) -> GuiRuntimeTransitionResult:
         configured = self._prevalidate_start()

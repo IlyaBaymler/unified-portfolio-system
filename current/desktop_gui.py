@@ -268,6 +268,7 @@ def _compose_production_gui_runtime(
                 cl7_identity_key=protected.identity_key,
                 cl7_identity_key_id=protected.identity_key_id,
                 cl7_ledger_store=ledger,
+                journal=EventJournal(root / "trading_events.db"),
                 cycle_source=cycle_source,
             )
         except BaseException:
