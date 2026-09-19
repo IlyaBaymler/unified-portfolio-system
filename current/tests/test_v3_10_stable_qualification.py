@@ -1950,6 +1950,33 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
     branch = _git("branch", "--show-current", text=True).stdout.strip()
     checked_out_head = _git("rev-parse", "HEAD", text=True).stdout.strip()
     head = checked_out_head
+    if branch == "agent/v3-10-clean-cl8-q7-burnin-quote-audit-correction":
+        base = "b6e2e56360073dad803ffcca5235984d839f74e4"
+        implementation = "30d9dc694ae174930a376bce0e90d039495e708c"
+
+        def exact(*args: str) -> str:
+            return _git(*args, text=True).stdout.strip()
+
+        assert exact("rev-parse", f"{base}^{{tree}}") == (
+            "5cf71d2fcaa4518f549f1f6c4105e95807b50b14"
+        )
+        assert exact("rev-parse", f"{implementation}^{{tree}}") == (
+            "a546f42d2574c6426a4cf2f5eb1f7c06c96c1869"
+        )
+        assert exact("rev-parse", f"{implementation}^") == base
+        assert exact("rev-parse", f"{head}^") == implementation
+        assert exact("merge-base", base, head) == base
+        assert set(exact("diff", "--name-only", f"{base}..{implementation}").splitlines()) == {
+            "current/desktop_gui.py",
+            "current/trading_robot/gui_runtime_controller.py",
+            "current/tests/test_v3_10_q7_gui_quote_audit.py",
+        }
+        assert set(exact("diff", "--name-only", f"{implementation}..{head}").splitlines()) == {
+            "current/tests/test_v3_10_issue72_gui_runtime.py",
+            "current/tests/test_v3_10_stable_qualification.py",
+        }
+        assert exact("status", "--porcelain=v1") == ""
+        return
     bvm_pr: dict[str, object] | None = None
     q7r_pr: dict[str, object] | None = None
     hotfix_pr: dict[str, object] | None = None
