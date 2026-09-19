@@ -1977,6 +1977,32 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
         }
         assert exact("status", "--porcelain=v1") == ""
         return
+    if branch == "agent/v3-10-clean-cl8-q7-offline-bootstrap-smoke":
+        base = "a32d5de53c9c9504dc7e1365db8bc76524a70741"
+        implementation = "92973398aeb803239bf18bb7424f0bfb4f9d5345"
+
+        def exact(*args: str) -> str:
+            return _git(*args, text=True).stdout.strip()
+
+        assert exact("rev-parse", f"{base}^{{tree}}") == (
+            "c88535d34ac1583653b2238be8acfd870e91fc90"
+        )
+        assert exact("rev-parse", f"{implementation}^{{tree}}") == (
+            "bf4ecee6cf522b5c5cb3182c72a632559d1a8167"
+        )
+        assert exact("rev-parse", f"{implementation}^") == base
+        assert exact("rev-parse", f"{head}^") == implementation
+        assert exact("merge-base", base, head) == base
+        assert set(exact("diff", "--name-only", f"{base}..{implementation}").splitlines()) == {
+            "current/trading_robot/secret_provider.py",
+            "current/tests/test_support_readiness_rc1.py",
+        }
+        assert set(exact("diff", "--name-only", f"{implementation}..{head}").splitlines()) == {
+            "current/tests/test_v3_10_issue72_gui_runtime.py",
+            "current/tests/test_v3_10_stable_qualification.py",
+        }
+        assert exact("status", "--porcelain=v1") == ""
+        return
     bvm_pr: dict[str, object] | None = None
     q7r_pr: dict[str, object] | None = None
     hotfix_pr: dict[str, object] | None = None
