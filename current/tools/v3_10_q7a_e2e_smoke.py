@@ -80,9 +80,16 @@ def _fail(reason: str) -> None:
 
 
 def _canonical(value: Mapping[str, object]) -> bytes:
+    def plain(item: object) -> object:
+        if isinstance(item, Mapping):
+            return {key: plain(child) for key, child in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [plain(child) for child in item]
+        return item
+
     try:
         return json.dumps(
-            value,
+            plain(value),
             ensure_ascii=False,
             allow_nan=False,
             sort_keys=True,
@@ -96,12 +103,34 @@ def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-class _FrozenDict(dict):
-    """Prevent the controlled proposal's nested maps changing after issuance."""
+class _FrozenDict(frozenset, Mapping):
+    """Store issued proposal maps in immutable, attribute-free storage."""
+
+    __slots__ = ()
+
+    def __new__(cls, values: Mapping[object, object]):
+        try:
+            return frozenset.__new__(cls, values.items())
+        except TypeError:
+            _fail("CONTROLLED_PROPOSAL_INVALID")
+
+    def __getitem__(self, key: object) -> object:
+        for item_key, value in frozenset.__iter__(self):
+            if item_key == key:
+                return value
+        raise KeyError(key)
+
+    def __iter__(self):
+        return (key for key, _value in frozenset.__iter__(self))
+
+    def __len__(self) -> int:
+        return frozenset.__len__(self)
 
     def _deny(self, *_args: object, **_kwargs: object) -> None:
         _fail("PROPOSAL_MARKER_INVALID")
 
+    __setattr__ = _deny
+    __delattr__ = _deny
     __setitem__ = _deny
     __delitem__ = _deny
     clear = _deny

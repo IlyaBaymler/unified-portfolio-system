@@ -781,7 +781,7 @@ def _central(
     return repository, central, intent
 
 
-def _connected_owner_admission(root: Path):
+def _connected_owner_admission(root: Path, *, probe_post_hook_mutation: bool = False):
     """Use the accepted Risk/Portfolio Risk coordinator for the control proposal."""
 
     configured = _configured(active=True)
@@ -856,7 +856,11 @@ def _connected_owner_admission(root: Path):
             primary_strategy="sma",
             primary_target_lots=1,
             decisions={"sma": decision},
-            comparison={},
+            comparison={
+                "signals": {"sma": 1},
+                "target_lots": {"sma": 1},
+                "disagreeing_strategies": [],
+            },
             generated_at=T6,
         )
 
@@ -905,7 +909,27 @@ def _connected_owner_admission(root: Path):
         controlled_proposal=controlled,
     )
     proposal = hooks.evaluate_closed_candle(target, now, now)
+    assert q7a._canonical(proposal.to_dict()) == q7a._canonical(
+        controlled(target, now, now).to_dict()
+    )
     request = hooks.coordination_request(target, proposal, now, now)
+    if probe_post_hook_mutation:
+        marked_sha256 = hooks.proposal_sha256
+        assert marked_sha256 is not None
+        for target_map in (
+            proposal.decisions,
+            proposal.decisions["sma"].indicators,
+            proposal.comparison,
+            proposal.comparison["signals"],
+        ):
+            assert not isinstance(target_map, dict)
+            with pytest.raises(TypeError):
+                dict.__setitem__(target_map, "close", 101.0)
+            with pytest.raises((AttributeError, TypeError)):
+                object.__setattr__(target_map, "_items", (("close", 101.0),))
+        assert hashlib.sha256(q7a._canonical(proposal.to_dict())).hexdigest() == (
+            marked_sha256
+        )
     result = CentralOrderCoordinator(
         central,
         repository,
@@ -932,6 +956,20 @@ def _connected_owner_admission(root: Path):
     assert intent.authorization.portfolio_risk.finalized is True
     assert hooks.proposal_sha256 is not None
     return record, hooks, proposal, risk, portfolio_risk, repository, central, intent
+
+
+def test_post_hook_dict_base_mutation_cannot_change_central_admission(
+    tmp_path: Path,
+) -> None:
+    _, hooks, proposal, _, _, _, central, intent = _connected_owner_admission(
+        tmp_path, probe_post_hook_mutation=True
+    )
+    assert intent.status == "QUEUED"
+    assert central.state().queued[0].intent_id == intent.intent_id
+    assert (
+        hooks.proposal_sha256
+        == hashlib.sha256(q7a._canonical(proposal.to_dict())).hexdigest()
+    )
 
 
 class _ExactRiskGate:
