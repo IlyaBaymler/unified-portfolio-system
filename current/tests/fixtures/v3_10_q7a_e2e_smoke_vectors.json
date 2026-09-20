@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "accepted_contract_commit": "13cf47dbff0b1b1cb4310ee7a49641b580d559e3",
+  "accepted_contract_tree": "44384da47d41cf873bdd7d947804960bb403bb6e",
+  "candidate_commit": "5cb5b093a8eab3472c7599c882626358c03f5a59",
+  "candidate_tree": "039efd92fbb71245a8f4e87d3a9060f013564667",
+  "account_scope_sha256": "15ef4629fb500c526720663db4c3335cff5ede994c5e23036f4457e71a9101a3",
+  "created_at": "2026-09-20T00:00:00.000000Z",
+  "configured_instruments": ["uid-sber", "uid-lkoh"],
+  "target_instrument_id": "uid-sber",
+  "target_lot_size": 10,
+  "dispatch_cases": [
+    {"scenario": "filled", "dispatch_status": "SUBMITTED", "central_status": "SUBMITTED", "cl7_state": "EXACT_CASH_DISPATCH_PENDING", "post_calls": 1, "post_attempts": 1, "pending_proof": true, "portfolio_effects": 0, "ledger_effects": 0, "risk_effects": 0, "classification": "INCOMPLETE"},
+    {"scenario": "rejected", "dispatch_status": "SUBMISSION_REJECTED", "central_status": "FAILED", "cl7_state": "EXACT_CASH_ARMED", "post_calls": 1, "post_attempts": 1, "pending_proof": false, "portfolio_effects": 0, "ledger_effects": 0, "risk_effects": 0, "classification": "SAFE_REJECTED"},
+    {"scenario": "timeout", "dispatch_status": "SUBMISSION_UNCERTAIN", "central_status": "UNCERTAIN", "cl7_state": "EXACT_CASH_DISPATCH_PENDING", "post_calls": 1, "post_attempts": 1, "pending_proof": true, "portfolio_effects": 0, "ledger_effects": 0, "risk_effects": 0, "classification": "INDETERMINATE"},
+    {"scenario": "ambiguous_success", "dispatch_status": "SUBMISSION_UNCERTAIN", "central_status": "UNCERTAIN", "cl7_state": "EXACT_CASH_DISPATCH_PENDING", "post_calls": 1, "post_attempts": 1, "pending_proof": true, "portfolio_effects": 0, "ledger_effects": 0, "risk_effects": 0, "classification": "INDETERMINATE"},
+    {"scenario": "partial", "dispatch_status": "SUBMITTED", "central_status": "SUBMITTED", "cl7_state": "EXACT_CASH_DISPATCH_PENDING", "post_calls": 1, "post_attempts": 1, "pending_proof": true, "portfolio_effects": 0, "ledger_effects": 0, "risk_effects": 0, "classification": "INCOMPLETE"},
+    {"scenario": "unfilled", "dispatch_status": "SUBMITTED", "central_status": "SUBMITTED", "cl7_state": "EXACT_CASH_DISPATCH_PENDING", "post_calls": 1, "post_attempts": 1, "pending_proof": true, "portfolio_effects": 0, "ledger_effects": 0, "risk_effects": 0, "classification": "INCOMPLETE"}
+  ]
+}
