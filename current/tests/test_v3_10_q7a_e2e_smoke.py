@@ -12,7 +12,6 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
-
 from tools import v3_10_q7a_e2e_smoke as q7a
 from trading_robot import broker_read_adapters as broker
 from trading_robot import cash_ledger_opening_reconciliation as cl4
@@ -781,8 +780,8 @@ def _central(
     return repository, central, intent
 
 
-def _connected_owner_admission(root: Path, *, probe_post_hook_mutation: bool = False):
-    """Use the accepted Risk/Portfolio Risk coordinator for the control proposal."""
+def _owner_admission_setup(root: Path):
+    """Prepare the real Risk/Portfolio Risk/Central owners before admission."""
 
     configured = _configured(active=True)
     metadata_path = _metadata(root)
@@ -913,6 +912,35 @@ def _connected_owner_admission(root: Path, *, probe_post_hook_mutation: bool = F
         controlled(target, now, now).to_dict()
     )
     request = hooks.coordination_request(target, proposal, now, now)
+    return (
+        record,
+        hooks,
+        proposal,
+        risk,
+        portfolio_risk,
+        repository,
+        central,
+        target,
+        request,
+    )
+
+
+def _connected_owner_admission(
+    root: Path, *, probe_post_hook_mutation: bool = False, via_bridge: bool = True
+):
+    """Use the accepted Risk/Portfolio Risk coordinator for the control proposal."""
+
+    (
+        record,
+        hooks,
+        proposal,
+        risk,
+        portfolio_risk,
+        repository,
+        central,
+        target,
+        request,
+    ) = _owner_admission_setup(root)
     if probe_post_hook_mutation:
         marked_sha256 = hooks.proposal_sha256
         assert marked_sha256 is not None
@@ -930,20 +958,23 @@ def _connected_owner_admission(root: Path, *, probe_post_hook_mutation: bool = F
         assert hashlib.sha256(q7a._canonical(proposal.to_dict())).hexdigest() == (
             marked_sha256
         )
-    result = CentralOrderCoordinator(
-        central,
-        repository,
-        risk,
-        portfolio_risk_runtime=portfolio_risk,
-    ).coordinate(
-        request.proposal,
-        target,
-        request.profile,
-        candles=request.candles,
-        lot_size=request.lot_size,
-        now=request.evaluated_at,
-        portfolio_risk_candidate_quote=request.portfolio_risk_candidate_quote,
+    coordinator = CentralOrderCoordinator(
+        central, repository, risk, portfolio_risk_runtime=portfolio_risk
     )
+    if via_bridge:
+        result = hooks.coordinate_marked(
+            coordinator=coordinator, runtime=target, request=request
+        )
+    else:
+        result = coordinator.coordinate(
+            request.proposal,
+            target,
+            request.profile,
+            candles=request.candles,
+            lot_size=request.lot_size,
+            now=request.evaluated_at,
+            portfolio_risk_candidate_quote=request.portfolio_risk_candidate_quote,
+        )
     assert result.status == "QUEUED"
     intent = central.state().queued[0]
     assert result.intent_id == intent.intent_id
@@ -970,6 +1001,248 @@ def test_post_hook_dict_base_mutation_cannot_change_central_admission(
         hooks.proposal_sha256
         == hashlib.sha256(q7a._canonical(proposal.to_dict())).hexdigest()
     )
+
+
+@pytest.mark.parametrize("mutation", ["target", "nested_price", "authority_bit"])
+def test_post_marker_public_mutation_rejected_before_owner_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    (
+        _,
+        hooks,
+        proposal,
+        risk,
+        portfolio_risk,
+        repository,
+        central,
+        target,
+        request,
+    ) = _owner_admission_setup(tmp_path)
+    before_central = central.state()
+    before_risk = risk.state_store.load_account(ACCOUNT)
+    if mutation == "nested_price":
+        object.__setattr__(proposal.decisions["sma"], "indicators", {"close": 101.0})
+    elif mutation == "target":
+        object.__setattr__(proposal, "primary_target_lots", 0)
+    else:
+        # Production to_dict masks this field, but Central reads the live bit.
+        object.__setattr__(proposal, "execution_authorized", True)
+    coordinator = CentralOrderCoordinator(
+        central, repository, risk, portfolio_risk_runtime=portfolio_risk
+    )
+    calls = 0
+    original = CentralOrderCoordinator.coordinate
+
+    def counted(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(CentralOrderCoordinator, "coordinate", counted)
+    _reason(
+        "Q7A_PROPOSAL_DRIFT",
+        hooks.coordinate_marked,
+        coordinator=coordinator,
+        runtime=target,
+        request=request,
+    )
+    assert calls == 0
+    assert central.state() == before_central
+    assert central.state().queued == ()
+    assert risk.state_store.load_account(ACCOUNT) == before_risk
+    assert hooks.admission_binding_raw is None
+    assert not (tmp_path / "q7a-synthetic-lineage.json").exists()
+    assert not (tmp_path / "runtime_cash_authority.json").exists()
+
+
+def test_late_public_mutation_cannot_change_real_central_risk_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (
+        _,
+        hooks,
+        public,
+        risk,
+        portfolio_risk,
+        repository,
+        central,
+        target,
+        request,
+    ) = _owner_admission_setup(tmp_path)
+    coordinator = CentralOrderCoordinator(
+        central, repository, risk, portfolio_risk_runtime=portfolio_risk
+    )
+    observed_prices: list[float] = []
+    observed_private: list[StrategyProposal] = []
+    actual_coordinate = CentralOrderCoordinator.coordinate
+    actual_evaluate = risk.evaluate
+
+    def evaluate_with_price(**kwargs):
+        observed_prices.append(kwargs["price_rub"])
+        return actual_evaluate(**kwargs)
+
+    def coordinate_after_public_mutation(self, private, *args, **kwargs):
+        observed_private.append(private)
+        assert private is not public
+        assert private.decisions is not public.decisions
+        assert private.decisions["sma"] is not public.decisions["sma"]
+        assert (
+            private.decisions["sma"].indicators
+            is not public.decisions["sma"].indicators
+        )
+        assert private.comparison is not public.comparison
+        assert private.comparison["signals"] is not public.comparison["signals"]
+        object.__setattr__(public.decisions["sma"], "indicators", {"close": 101.0})
+        object.__setattr__(public, "primary_target_lots", 0)
+        assert private.decisions["sma"].indicators["close"] == 100.0
+        assert private.primary_target_lots == 1
+        return actual_coordinate(self, private, *args, **kwargs)
+
+    monkeypatch.setattr(risk, "evaluate", evaluate_with_price)
+    monkeypatch.setattr(
+        CentralOrderCoordinator, "coordinate", coordinate_after_public_mutation
+    )
+    result = hooks.coordinate_marked(
+        coordinator=coordinator, runtime=target, request=request
+    )
+    assert result.status == "QUEUED"
+    assert len(observed_private) == 1
+    assert observed_prices == [100.0]
+    assert public.decisions["sma"].indicators["close"] == 101.0
+    assert public.primary_target_lots == 0
+    queued = central.state().queued[0]
+    assert queued.candidate.target_lots == 1
+    assert queued.candidate.estimated_price_kopecks == 10_000
+    assert queued.candidate.strategy_id == "sma"
+    assert queued.authorization.risk_order_allowed is True
+    binding = json.loads(hooks.admission_binding_raw)
+    assert binding["private_proposal_pre_sha256"] == hooks.proposal_sha256
+    assert binding["private_proposal_post_sha256"] == hooks.proposal_sha256
+    assert (
+        binding["central_candidate_sha256"]
+        == hashlib.sha256(q7a._canonical(queued.candidate.to_dict())).hexdigest()
+    )
+    before_repeat = central.state()
+    _reason(
+        "Q7A_ADMISSION_REQUEST_INVALID",
+        hooks.coordinate_marked,
+        coordinator=coordinator,
+        runtime=target,
+        request=request,
+    )
+    assert central.state() == before_repeat
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "wrong_sha",
+        "missing_field",
+        "extra_field",
+        "invalid_decision",
+        "wrong_type",
+        "invalid_enum",
+    ],
+)
+def test_private_snapshot_tampering_fails_before_central(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    (
+        _,
+        hooks,
+        _,
+        risk,
+        portfolio_risk,
+        repository,
+        central,
+        target,
+        request,
+    ) = _owner_admission_setup(tmp_path)
+    coordinator = CentralOrderCoordinator(
+        central, repository, risk, portfolio_risk_runtime=portfolio_risk
+    )
+    calls = 0
+    actual_coordinate = CentralOrderCoordinator.coordinate
+
+    def counted(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return actual_coordinate(self, *args, **kwargs)
+
+    monkeypatch.setattr(CentralOrderCoordinator, "coordinate", counted)
+    snapshot = json.loads(hooks._issued_proposal_canonical)
+    if tamper == "wrong_sha":
+        snapshot["primary_target_lots"] = 0
+    elif tamper == "missing_field":
+        del snapshot["ticker"]
+    elif tamper == "extra_field":
+        snapshot["unexpected"] = "value"
+    elif tamper == "invalid_decision":
+        snapshot["decisions"]["sma"]["signal"] = "BUY"
+    elif tamper == "wrong_type":
+        snapshot["primary_target_lots"] = "1"
+    else:
+        snapshot["primary_strategy"] = "not-a-strategy"
+    altered = q7a._canonical(snapshot)
+    if tamper != "wrong_sha":
+        _reason("PROPOSAL_SNAPSHOT_INVALID", q7a._proposal_from_snapshot, altered)
+    hooks._issued_proposal_canonical = altered
+    _reason(
+        "PROPOSAL_SNAPSHOT_INVALID",
+        hooks.coordinate_marked,
+        coordinator=coordinator,
+        runtime=target,
+        request=request,
+    )
+    assert calls == 0
+    assert central.state().queued == ()
+    assert hooks.admission_binding_raw is None
+
+
+def test_private_snapshot_rejects_noncanonical_bytes(tmp_path: Path) -> None:
+    _, hooks, _, _, _, _, _, _, _ = _owner_admission_setup(tmp_path)
+    snapshot = hooks._issued_proposal_canonical
+    assert snapshot is not None
+    assert q7a._proposal_canonical(q7a._proposal_from_snapshot(snapshot)) == snapshot
+    _reason("PROPOSAL_SNAPSHOT_INVALID", q7a._proposal_from_snapshot, snapshot + b"\n")
+
+
+def test_private_proposal_mutation_during_owner_call_invalidates_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (
+        _,
+        hooks,
+        _,
+        risk,
+        portfolio_risk,
+        repository,
+        central,
+        target,
+        request,
+    ) = _owner_admission_setup(tmp_path)
+    coordinator = CentralOrderCoordinator(
+        central, repository, risk, portfolio_risk_runtime=portfolio_risk
+    )
+    actual_coordinate = CentralOrderCoordinator.coordinate
+
+    def mutate_after_owner(self, private, *args, **kwargs):
+        result = actual_coordinate(self, private, *args, **kwargs)
+        object.__setattr__(private.decisions["sma"], "indicators", {"close": 101.0})
+        return result
+
+    monkeypatch.setattr(CentralOrderCoordinator, "coordinate", mutate_after_owner)
+    _reason(
+        "Q7A_PRIVATE_PROPOSAL_DRIFT",
+        hooks.coordinate_marked,
+        coordinator=coordinator,
+        runtime=target,
+        request=request,
+    )
+    assert len(central.state().queued) == 1
+    assert hooks.admission_binding_raw is None
 
 
 class _ExactRiskGate:
@@ -1324,15 +1597,16 @@ def _ledger_with_opening(
     return ledger, opening, descriptor
 
 
+@pytest.mark.parametrize("via_bridge", [True, False])
 def test_filled_fake_provider_closes_exact_owner_lineage_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, via_bridge: bool
 ) -> None:
     # No success-side authority is fabricated: control -> owner admission ->
     # Central -> real CL7 pre-POST rebuild -> fake provider -> CL3/CL2/Portfolio/Risk.
     clock = [T6]
     monkeypatch.setattr(central_module, "_now", lambda: clock[0])
     record, hooks, proposal, risk, portfolio_risk, repository, central, intent = (
-        _connected_owner_admission(tmp_path)
+        _connected_owner_admission(tmp_path, via_bridge=via_bridge)
     )
     _reason(
         "PROPOSAL_MARKER_INVALID",
@@ -1554,6 +1828,14 @@ def test_filled_fake_provider_closes_exact_owner_lineage_once(
         "identity_key": KEY,
         "identity_key_id": KEY_ID,
     }
+    if not via_bridge:
+        assert hooks.admission_binding_raw is None
+        _reason(
+            "ADMISSION_BINDING_INVALID",
+            q7a.build_synthetic_lineage_evidence,
+            **lineage_inputs,
+        )
+        return
     lineage = q7a.build_synthetic_lineage_evidence(**lineage_inputs)
     with (tmp_path / "q7a-synthetic-lineage.json").open("xb") as stream:
         stream.write(lineage)
@@ -1565,6 +1847,11 @@ def test_filled_fake_provider_closes_exact_owner_lineage_once(
     assert fields["control_record_sha256"] == record.record_sha256
     assert fields["proposal_sha256"] == hooks.proposal_sha256
     assert (
+        fields["admission_binding_sha256"]
+        == hashlib.sha256(hooks.admission_binding_raw).hexdigest()
+    )
+    assert fields["admission_binding_status"] == "VALID"
+    assert (
         fields["operation_source_scope_sha256"]
         == observation.source.source_scope_sha256
     )
@@ -1572,6 +1859,26 @@ def test_filled_fake_provider_closes_exact_owner_lineage_once(
     assert fields["reconciliation_sha256"] == reconciliation.sha256
     assert fields["locked_dispatch_proof_sha256"] == pending_proof_sha256
     assert fields["authority_record_sha256"] == recovered.sha256
+    binding_raw = hooks.admission_binding_raw
+    assert binding_raw is not None
+    binding = json.loads(binding_raw)
+    assert binding["private_proposal_pre_sha256"] == hooks.proposal_sha256
+    assert binding["private_proposal_post_sha256"] == hooks.proposal_sha256
+    assert ACCOUNT.encode() not in binding_raw
+    assert intent.intent_id.encode() not in binding_raw
+    binding["central_intent_id_sha256"] = "0" * 64
+    binding["record_sha256"] = hashlib.sha256(
+        q7a._canonical(
+            {key: value for key, value in binding.items() if key != "record_sha256"}
+        )
+    ).hexdigest()
+    hooks._admission_binding_raw = q7a._canonical(binding)
+    _reason(
+        "ADMISSION_BINDING_INVALID",
+        q7a.build_synthetic_lineage_evidence,
+        **lineage_inputs,
+    )
+    hooks._admission_binding_raw = binding_raw
     _reason(
         "LINEAGE_MISMATCH",
         q7a.build_synthetic_lineage_evidence,

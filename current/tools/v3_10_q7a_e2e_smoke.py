@@ -23,6 +23,10 @@ from typing import Any
 
 from trading_robot.cash_ledger_domain import LedgerClassification
 from trading_robot.cash_ledger_persistence import LedgerHead
+from trading_robot.central_order_coordinator import (
+    CentralOrderCoordinationResult,
+    CentralOrderCoordinator,
+)
 from trading_robot.central_order_manager import CentralOrderIntent
 from trading_robot.gui_runtime_controller import (
     ConfiguredExecutionSet,
@@ -32,6 +36,7 @@ from trading_robot.instrument_runtime import InstrumentRuntime
 from trading_robot.multi_instrument_strategy import StrategyProposal
 from trading_robot.portfolio_risk_read_service import load_portfolio_risk_metadata
 from trading_robot.portfolio_risk_shadow import PortfolioRiskCandidateQuote
+from trading_robot.strategy_runtime import VALID_STRATEGIES, StrategyDecision
 from trading_robot.tbank_sandbox import TBankAPIError
 
 CONTRACT_COMMIT = "13cf47dbff0b1b1cb4310ee7a49641b580d559e3"
@@ -103,6 +108,16 @@ def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _proposal_canonical(proposal: StrategyProposal) -> bytes:
+    """Bind the live authority bit which production to_dict intentionally masks."""
+
+    if type(proposal) is not StrategyProposal:
+        _fail("PROPOSAL_SNAPSHOT_INVALID")
+    fields = proposal.to_dict()
+    fields["execution_authorized"] = proposal.execution_authorized
+    return _canonical(fields)
+
+
 class _FrozenDict(frozenset, Mapping):
     """Store issued proposal maps in immutable, attribute-free storage."""
 
@@ -167,6 +182,148 @@ def _seal_proposal(proposal: StrategyProposal) -> StrategyProposal:
         ),
         comparison=_seal_json(proposal.comparison),
     )
+
+
+_PROPOSAL_SNAPSHOT_FIELDS = frozenset(
+    {
+        "runtime_key",
+        "instrument_id",
+        "ticker",
+        "candle_interval",
+        "candle_time",
+        "strategy_profile_hash",
+        "primary_strategy",
+        "primary_target_lots",
+        "decisions",
+        "comparison",
+        "generated_at",
+        "execution_authorized",
+        "next_gate",
+    }
+)
+_DECISION_SNAPSHOT_FIELDS = frozenset(
+    {
+        "candle_time",
+        "strategy_id",
+        "strategy_version",
+        "role",
+        "config_hash",
+        "signal",
+        "target_weight",
+        "target_lots",
+        "reason",
+        "indicators",
+        "bars_used",
+        "required_bars",
+        "stop_level",
+    }
+)
+_ADMISSION_BINDING_FIELDS = frozenset(
+    {
+        "domain",
+        "version",
+        "control_record_sha256",
+        "proposal_canonical_sha256",
+        "private_proposal_pre_sha256",
+        "private_proposal_post_sha256",
+        "configured_set_sha256",
+        "target_instrument_id",
+        "central_revision_before",
+        "central_revision_after",
+        "central_intent_id_sha256",
+        "central_candidate_sha256",
+        "central_result_sha256",
+        "status",
+        "record_sha256",
+    }
+)
+
+
+def _proposal_from_snapshot(raw: bytes) -> StrategyProposal:
+    """Rebuild the exact marker-era proposal without sharing public objects."""
+
+    if type(raw) is not bytes:
+        _fail("PROPOSAL_SNAPSHOT_INVALID")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError, TypeError):
+        _fail("PROPOSAL_SNAPSHOT_INVALID")
+    if (
+        type(data) is not dict
+        or set(data) != _PROPOSAL_SNAPSHOT_FIELDS
+        or _canonical(data) != raw
+        or data["execution_authorized"] is not False
+        or data["next_gate"] != "PORTFOLIO_POLICY_RISK_PREFLIGHT_EXECUTION"
+        or type(data["primary_target_lots"]) is not int
+        or data["primary_target_lots"] != 1
+        or type(data["decisions"]) is not dict
+        or type(data["comparison"]) is not dict
+        or type(data["primary_strategy"]) is not str
+        or data["primary_strategy"] not in VALID_STRATEGIES
+        or data["primary_strategy"] not in data["decisions"]
+    ):
+        _fail("PROPOSAL_SNAPSHOT_INVALID")
+    for key in (
+        "runtime_key",
+        "instrument_id",
+        "ticker",
+        "candle_interval",
+        "candle_time",
+        "strategy_profile_hash",
+        "generated_at",
+    ):
+        if type(data[key]) is not str or not data[key]:
+            _fail("PROPOSAL_SNAPSHOT_INVALID")
+    decisions: dict[str, StrategyDecision] = {}
+    for key, item in data["decisions"].items():
+        if (
+            type(key) is not str
+            or key not in VALID_STRATEGIES
+            or type(item) is not dict
+            or set(item) != _DECISION_SNAPSHOT_FIELDS
+            or item["strategy_id"] != key
+            or item["role"]
+            != ("PRIMARY" if key == data["primary_strategy"] else "SHADOW")
+            or type(item["signal"]) is not int
+            or item["signal"] not in (-1, 0, 1)
+            or type(item["target_lots"]) is not int
+            or type(item["bars_used"]) is not int
+            or type(item["required_bars"]) is not int
+            or type(item["target_weight"]) is not float
+            or type(item["indicators"]) is not dict
+            or any(type(name) is not str for name in item["indicators"])
+            or type(item["stop_level"]) not in (float, type(None))
+        ):
+            _fail("PROPOSAL_SNAPSHOT_INVALID")
+        for field in (
+            "candle_time",
+            "strategy_id",
+            "strategy_version",
+            "role",
+            "config_hash",
+            "reason",
+        ):
+            if type(item[field]) is not str:
+                _fail("PROPOSAL_SNAPSHOT_INVALID")
+        decisions[key] = StrategyDecision(**item)
+    primary = decisions[data["primary_strategy"]]
+    if (
+        type(primary.indicators.get("close")) not in (int, float)
+        or primary.target_lots != data["primary_target_lots"]
+        or primary.candle_time != data["candle_time"]
+    ):
+        _fail("PROPOSAL_SNAPSHOT_INVALID")
+    proposal = StrategyProposal(
+        **{
+            key: value
+            for key, value in data.items()
+            if key not in {"decisions", "next_gate"}
+        },
+        decisions=decisions,
+    )
+    if _proposal_canonical(proposal) != raw:
+        _fail("PROPOSAL_SNAPSHOT_INVALID")
+    return proposal
 
 
 def _hex(value: object, pattern: re.Pattern[str], reason: str) -> str:
@@ -428,14 +585,23 @@ class Q7AControlledHooks:
             _fail("PROPOSAL_MARKER_PATH_INVALID")
         self.proposal_marker_path = proposal_marker_path
         self._proposal_marker_raw: bytes | None = None
+        self._issued_proposal_canonical: bytes | None = None
         self._issued_proposal_sha256: str | None = None
         self._proposal_sha256: str | None = None
         self._issued_proposal: StrategyProposal | None = None
+        self._issued_request: GuiCoordinationRequest | None = None
+        self._admission_binding_raw: bytes | None = None
+        self._admission_result: CentralOrderCoordinationResult | None = None
+        self._admission_attempted = False
         self._target_evaluation_used = False
 
     @property
     def proposal_sha256(self) -> str | None:
         return self._proposal_sha256
+
+    @property
+    def admission_binding_raw(self) -> bytes | None:
+        return self._admission_binding_raw
 
     def refresh_market_status(self, runtime: InstrumentRuntime, now: datetime) -> Any:
         return self.delegate.refresh_market_status(runtime, now)
@@ -466,7 +632,8 @@ class Q7AControlledHooks:
                 self.record.fields["created_at"].replace("Z", "+00:00")
             ):
                 _fail("CONTROL_TIME_INVALID")
-            proposal_sha256 = _sha256(_canonical(proposal.to_dict()))
+            proposal_canonical = _proposal_canonical(proposal)
+            proposal_sha256 = _sha256(proposal_canonical)
             marker = _canonical(
                 {
                     "domain": "CL8_Q7A_PROPOSAL_MARKER_V1",
@@ -483,6 +650,7 @@ class Q7AControlledHooks:
             )
             _write_once(self.proposal_marker_path, marker, "PROPOSAL_ALREADY_ISSUED")
             self._proposal_marker_raw = marker
+            self._issued_proposal_canonical = proposal_canonical
             self._issued_proposal_sha256 = proposal_sha256
             self._issued_proposal = proposal
             self._target_evaluation_used = True
@@ -524,12 +692,12 @@ class Q7AControlledHooks:
             _fail("PROPOSAL_MARKER_INVALID")
         if self._proposal_marker_raw is None or marker != self._proposal_marker_raw:
             _fail("PROPOSAL_MARKER_INVALID")
-        if self._issued_proposal_sha256 != _sha256(_canonical(proposal.to_dict())):
+        if self._issued_proposal_sha256 != _sha256(_proposal_canonical(proposal)):
             _fail("PROPOSAL_MARKER_INVALID")
         request = self.delegate.coordination_request(
             runtime, proposal, candle_time, now
         )
-        if self._issued_proposal_sha256 != _sha256(_canonical(proposal.to_dict())):
+        if self._issued_proposal_sha256 != _sha256(_proposal_canonical(proposal)):
             _fail("PROPOSAL_MARKER_INVALID")
         if (
             type(request) is not GuiCoordinationRequest
@@ -561,7 +729,152 @@ class Q7AControlledHooks:
         if quote_age < -5 or quote_age > 300:
             _fail("QUOTE_NOT_FRESH")
         self._proposal_sha256 = self._issued_proposal_sha256
+        self._issued_request = request
         return request
+
+    def coordinate_marked(
+        self,
+        *,
+        coordinator: CentralOrderCoordinator,
+        runtime: InstrumentRuntime,
+        request: GuiCoordinationRequest,
+    ) -> CentralOrderCoordinationResult:
+        """Admit only a private marker-era proposal through the existing owner."""
+
+        snapshot = self._issued_proposal_canonical
+        if (
+            type(coordinator) is not CentralOrderCoordinator
+            or type(request) is not GuiCoordinationRequest
+            or request is not self._issued_request
+            or request.proposal is not self._issued_proposal
+            or self._admission_binding_raw is not None
+            or self._admission_attempted
+            or self._proposal_sha256 is None
+            or type(snapshot) is not bytes
+            or self._proposal_marker_raw is None
+            or coordinator.manager.account_id != runtime.config.account_id
+            or runtime.config.instrument_id
+            != self.record.fields["target_instrument_id"]
+            or request.profile.to_runtime_config(runtime.config.account_id).to_dict()
+            != runtime.config.to_dict()
+            or type(request.lot_size) is not int
+            or request.lot_size != self.record.fields["target_lot_size"]
+            or type(request.portfolio_risk_candidate_quote)
+            is not PortfolioRiskCandidateQuote
+            or type(request.evaluated_at) is not datetime
+        ):
+            _fail("Q7A_ADMISSION_REQUEST_INVALID")
+        try:
+            marker = self.proposal_marker_path.read_bytes()
+        except OSError:
+            _fail("PROPOSAL_MARKER_INVALID")
+        if marker != self._proposal_marker_raw:
+            _fail("PROPOSAL_MARKER_INVALID")
+        try:
+            marker_fields = json.loads(marker)
+            control_fields = self.record.fields
+        except (UnicodeError, ValueError, TypeError):
+            _fail("PROPOSAL_MARKER_INVALID")
+        if type(marker_fields) is not dict or type(control_fields) is not dict:
+            _fail("PROPOSAL_MARKER_INVALID")
+        control_preimage = {
+            key: value
+            for key, value in control_fields.items()
+            if key != "record_sha256"
+        }
+        if (
+            set(control_fields) != _CONTROL_FIELDS
+            or self.record.raw != _canonical(control_fields)
+            or control_fields["record_sha256"] != _sha256(_canonical(control_preimage))
+            or marker_fields.get("domain") != "CL8_Q7A_PROPOSAL_MARKER_V1"
+            or marker_fields.get("version") != 1
+            or marker_fields.get("control_record_sha256") != self.record.record_sha256
+            or marker_fields.get("target_runtime_key_sha256")
+            != self.record.fields["target_runtime_key_sha256"]
+            or _sha256(snapshot) != self._issued_proposal_sha256
+            or marker_fields.get("proposal_sha256") != _sha256(snapshot)
+            or self._proposal_sha256 != _sha256(snapshot)
+        ):
+            _fail("PROPOSAL_SNAPSHOT_INVALID")
+        try:
+            public_canonical = _proposal_canonical(request.proposal)
+        except (Q7ASyntheticError, AttributeError, KeyError, TypeError, ValueError):
+            _fail("Q7A_PROPOSAL_DRIFT")
+        if public_canonical != snapshot:
+            _fail("Q7A_PROPOSAL_DRIFT")
+        private = _proposal_from_snapshot(snapshot)
+        if (
+            private is request.proposal
+            or private.decisions is request.proposal.decisions
+            or any(
+                private.decisions[key] is request.proposal.decisions[key]
+                or private.decisions[key].indicators
+                is request.proposal.decisions[key].indicators
+                for key in private.decisions
+            )
+        ):
+            _fail("PROPOSAL_SNAPSHOT_INVALID")
+        pre_sha256 = _sha256(_proposal_canonical(private))
+        if pre_sha256 != self._proposal_sha256:
+            _fail("PROPOSAL_SNAPSHOT_INVALID")
+        before = coordinator.manager.state()
+        self._admission_attempted = True
+        result = coordinator.coordinate(
+            private,
+            runtime,
+            request.profile,
+            candles=request.candles,
+            lot_size=request.lot_size,
+            now=request.evaluated_at,
+            cash_buffer_bps=request.cash_buffer_bps,
+            portfolio_risk_candidate_quote=request.portfolio_risk_candidate_quote,
+        )
+        post_sha256 = _sha256(_proposal_canonical(private))
+        if post_sha256 != pre_sha256:
+            _fail("Q7A_PRIVATE_PROPOSAL_DRIFT")
+        if result.status != "QUEUED" or type(result.intent_id) is not str:
+            return result
+        after = coordinator.manager.state()
+        queued = tuple(
+            item for item in after.queued if item.intent_id == result.intent_id
+        )
+        if (
+            len(queued) != 1
+            or after.revision <= before.revision
+            or result.instrument_id != private.instrument_id
+            or result.proposed_target_lots != private.primary_target_lots
+            or queued[0].candidate.instrument_id != private.instrument_id
+            or queued[0].candidate.runtime_key != private.runtime_key
+            or queued[0].candidate.strategy_id != private.primary_strategy
+            or queued[0].candidate.strategy_profile_hash
+            != private.strategy_profile_hash
+            or queued[0].candidate.target_lots != private.primary_target_lots
+            or datetime.fromisoformat(queued[0].candidate.candle_time)
+            != datetime.fromisoformat(private.candle_time.replace("Z", "+00:00"))
+        ):
+            _fail("Q7A_ADMISSION_BINDING_INVALID")
+        binding = {
+            "domain": "CL8_Q7A_ADMISSION_BINDING_V1",
+            "version": 1,
+            "control_record_sha256": self.record.record_sha256,
+            "proposal_canonical_sha256": _sha256(snapshot),
+            "private_proposal_pre_sha256": pre_sha256,
+            "private_proposal_post_sha256": post_sha256,
+            "configured_set_sha256": self.record.fields["configured_set_sha256"],
+            "target_instrument_id": self.record.fields["target_instrument_id"],
+            "central_revision_before": before.revision,
+            "central_revision_after": after.revision,
+            "central_intent_id_sha256": _sha256(result.intent_id.encode("utf-8")),
+            "central_candidate_sha256": _sha256(
+                _canonical(queued[0].candidate.to_dict())
+            ),
+            "central_result_sha256": _sha256(_canonical(result.to_dict())),
+            "status": result.status,
+        }
+        binding["record_sha256"] = _sha256(_canonical(binding))
+        self._admission_binding_raw = _canonical(binding)
+        self._admission_result = result
+        return result
 
 
 def build_synthetic_lineage_evidence(
@@ -593,11 +906,48 @@ def build_synthetic_lineage_evidence(
     the returned canonical bytes.
     """
 
+    binding_raw = hooks.admission_binding_raw
+    if type(binding_raw) is not bytes or type(queued) is not CentralOrderIntent:
+        _fail("ADMISSION_BINDING_INVALID")
+    try:
+        binding = json.loads(binding_raw)
+    except (UnicodeError, ValueError, TypeError):
+        _fail("ADMISSION_BINDING_INVALID")
+    if type(binding) is not dict or set(binding) != _ADMISSION_BINDING_FIELDS:
+        _fail("ADMISSION_BINDING_INVALID")
+    binding_preimage = {
+        key: value for key, value in binding.items() if key != "record_sha256"
+    }
+    if (
+        _canonical(binding) != binding_raw
+        or binding["record_sha256"] != _sha256(_canonical(binding_preimage))
+        or binding["domain"] != "CL8_Q7A_ADMISSION_BINDING_V1"
+        or binding["version"] != 1
+        or binding["status"] != "QUEUED"
+        or binding["control_record_sha256"] != record.record_sha256
+        or binding["configured_set_sha256"] != record.fields["configured_set_sha256"]
+        or binding["target_instrument_id"] != record.fields["target_instrument_id"]
+        or binding["proposal_canonical_sha256"] != hooks.proposal_sha256
+        or binding["private_proposal_pre_sha256"] != hooks.proposal_sha256
+        or binding["private_proposal_post_sha256"] != hooks.proposal_sha256
+        or binding["central_intent_id_sha256"]
+        != _sha256(queued.intent_id.encode("utf-8"))
+        or binding["central_candidate_sha256"]
+        != _sha256(_canonical(queued.candidate.to_dict()))
+        or type(hooks._admission_result) is not CentralOrderCoordinationResult
+        or binding["central_result_sha256"]
+        != _sha256(_canonical(hooks._admission_result.to_dict()))
+        or hooks._admission_result.intent_id != queued.intent_id
+        or type(binding["central_revision_before"]) is not int
+        or type(binding["central_revision_after"]) is not int
+        or binding["central_revision_after"] <= binding["central_revision_before"]
+    ):
+        _fail("ADMISSION_BINDING_INVALID")
     if (
         type(record) is not Q7AControlRecord
         or hooks.record.record_sha256 != record.record_sha256
         or type(proposal) is not StrategyProposal
-        or hooks.proposal_sha256 != _sha256(_canonical(proposal.to_dict()))
+        or hooks.proposal_sha256 != _sha256(_proposal_canonical(proposal))
         or type(queued) is not CentralOrderIntent
         or type(terminal) is not CentralOrderIntent
         or queued.status != "QUEUED"
@@ -697,6 +1047,11 @@ def build_synthetic_lineage_evidence(
             "version": 1,
             "control_record_sha256": record.record_sha256,
             "proposal_sha256": hooks.proposal_sha256,
+            "admission_binding_sha256": _sha256(binding_raw),
+            "control_record_status": "VALID",
+            "proposal_snapshot_status": "VALID",
+            "admission_binding_status": "VALID",
+            "owner_lifecycle_status": "VALID",
             "account_scope_sha256": record.fields["account_scope_sha256"],
             "intent_id_sha256": _sha256(queued.intent_id.encode("utf-8")),
             "provider_order_id_sha256": _sha256(
