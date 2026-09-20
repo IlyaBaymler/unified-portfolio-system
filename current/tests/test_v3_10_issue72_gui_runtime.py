@@ -224,6 +224,41 @@ def test_exact_contract_branch_and_fourteen_path_custody():
     assert _git("rev-parse", f"{ACCEPTED_CONTRACT}^{{tree}}") == ACCEPTED_CONTRACT_TREE
     assert _git("merge-base", ACCEPTED_CONTRACT, head) == ACCEPTED_CONTRACT
     branch = _git("branch", "--show-current")
+    decision_visibility_base = "3f1450c4c5ffb72b07e5ce641319ce7de496fe51"
+    decision_visibility_implementation = "7493668a443366464a28067fef149b79d5336b4c"
+    if branch in {"agent/v3-10-clean-cl8-q7-decision-visibility", ""} and (
+        _git("rev-parse", f"{head}^") == decision_visibility_implementation
+    ):
+        assert _git("rev-parse", f"{decision_visibility_base}^{{tree}}") == (
+            "32e9c672a1ddd5d8ca308976c7cc89328101bb07"
+        )
+        assert _git("rev-parse", f"{decision_visibility_implementation}^{{tree}}") == (
+            "ad13f638537340238f5fde4f46613bac2e703592"
+        )
+        assert _git("merge-base", decision_visibility_base, head) == (
+            decision_visibility_base
+        )
+        assert set(
+            _git(
+                "diff",
+                "--name-only",
+                f"{decision_visibility_base}..{decision_visibility_implementation}",
+            ).splitlines()
+        ) == {
+            "current/desktop_gui.py",
+            "current/tests/test_dashboard_view.py",
+            "current/trading_robot/dashboard_view.py",
+        }
+        assert set(
+            _git(
+                "diff", "--name-only", f"{decision_visibility_implementation}..{head}"
+            ).splitlines()
+        ) == {
+            "current/tests/test_v3_10_issue72_gui_runtime.py",
+            "current/tests/test_v3_10_stable_qualification.py",
+        }
+        assert _git("status", "--porcelain=v1") == ""
+        return
     if branch in {"agent/v3-10-clean-cl8-q7-portfolio-refresh-observability", ""}:
         base = "f89aa5f79709a4a32f2ecbd2f934d3fc42485f20"
         implementation = "67d58388c12632108d7711e91e8ee895eb38cd5b"
@@ -381,9 +416,10 @@ def test_exact_contract_branch_and_fourteen_path_custody():
             CL8_Q7_BVM_ACCEPTED_CONTRACT
         )
         if head != CL8_Q7_BVM_ACCEPTED_CONTRACT:
-            assert head == CL8_Q7_BVM_RESCOPE_PARENT or _git(
-                "rev-parse", f"{head}^"
-            ) == CL8_Q7_BVM_RESCOPE_PARENT
+            assert (
+                head == CL8_Q7_BVM_RESCOPE_PARENT
+                or _git("rev-parse", f"{head}^") == CL8_Q7_BVM_RESCOPE_PARENT
+            )
             assert (
                 _git("rev-parse", f"{CL8_Q7_BVM_RESCOPE_PARENT}^{{tree}}")
                 == CL8_Q7_BVM_RESCOPE_PARENT_TREE
@@ -409,13 +445,16 @@ def test_exact_contract_branch_and_fourteen_path_custody():
             assert _git("merge-base", CL8_Q7_BVM_INTEGRATION_BASE, head) == (
                 CL8_Q7_BVM_INTEGRATION_BASE
             )
-            assert set(
-                _git(
-                    "diff",
-                    "--name-only",
-                    f"{CL8_Q7_BVM_INTEGRATION_BASE}..{head}",
-                ).splitlines()
-            ) == CL8_Q7_BVM_STABLE_PATHS
+            assert (
+                set(
+                    _git(
+                        "diff",
+                        "--name-only",
+                        f"{CL8_Q7_BVM_INTEGRATION_BASE}..{head}",
+                    ).splitlines()
+                )
+                == CL8_Q7_BVM_STABLE_PATHS
+            )
         return
     if branch == CL8_Q7R_IMPLEMENTATION_BRANCH or q7r_pr is not None:
         assert (

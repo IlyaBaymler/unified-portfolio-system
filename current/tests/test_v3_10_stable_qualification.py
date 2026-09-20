@@ -1950,6 +1950,47 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
     branch = _git("branch", "--show-current", text=True).stdout.strip()
     checked_out_head = _git("rev-parse", "HEAD", text=True).stdout.strip()
     head = checked_out_head
+    decision_visibility_base = "3f1450c4c5ffb72b07e5ce641319ce7de496fe51"
+    decision_visibility_implementation = "7493668a443366464a28067fef149b79d5336b4c"
+    if branch in {"agent/v3-10-clean-cl8-q7-decision-visibility", ""}:
+
+        def exact(*args: str) -> str:
+            return _git(*args, text=True).stdout.strip()
+
+        if exact("rev-parse", f"{head}^") == decision_visibility_implementation:
+            assert exact("rev-parse", f"{decision_visibility_base}^{{tree}}") == (
+                "32e9c672a1ddd5d8ca308976c7cc89328101bb07"
+            )
+            assert (
+                exact("rev-parse", f"{decision_visibility_implementation}^{{tree}}")
+                == "ad13f638537340238f5fde4f46613bac2e703592"
+            )
+            assert exact("merge-base", decision_visibility_base, head) == (
+                decision_visibility_base
+            )
+            assert set(
+                exact(
+                    "diff",
+                    "--name-only",
+                    f"{decision_visibility_base}..{decision_visibility_implementation}",
+                ).splitlines()
+            ) == {
+                "current/desktop_gui.py",
+                "current/tests/test_dashboard_view.py",
+                "current/trading_robot/dashboard_view.py",
+            }
+            assert set(
+                exact(
+                    "diff",
+                    "--name-only",
+                    f"{decision_visibility_implementation}..{head}",
+                ).splitlines()
+            ) == {
+                "current/tests/test_v3_10_issue72_gui_runtime.py",
+                "current/tests/test_v3_10_stable_qualification.py",
+            }
+            assert exact("status", "--porcelain=v1") == ""
+            return
     if branch in {"agent/v3-10-clean-cl8-q7-portfolio-refresh-observability", ""}:
         base = "f89aa5f79709a4a32f2ecbd2f934d3fc42485f20"
         implementation = "67d58388c12632108d7711e91e8ee895eb38cd5b"
@@ -1966,12 +2007,16 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
             )
             assert exact("rev-parse", f"{implementation}^") == base
             assert exact("merge-base", base, head) == base
-            assert set(exact("diff", "--name-only", f"{base}..{implementation}").splitlines()) == {
+            assert set(
+                exact("diff", "--name-only", f"{base}..{implementation}").splitlines()
+            ) == {
                 "current/trading_robot/portfolio_manager.py",
                 "current/tools/v3_10_runtime_cash_cutover.py",
                 "current/tests/test_v3_10_q7_preparation_runtime.py",
             }
-            assert set(exact("diff", "--name-only", f"{implementation}..{head}").splitlines()) == {
+            assert set(
+                exact("diff", "--name-only", f"{implementation}..{head}").splitlines()
+            ) == {
                 "current/tests/test_v3_10_issue72_gui_runtime.py",
                 "current/tests/test_v3_10_stable_qualification.py",
             }
@@ -1993,12 +2038,16 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
         assert exact("rev-parse", f"{implementation}^") == base
         assert exact("rev-parse", f"{head}^") == implementation
         assert exact("merge-base", base, head) == base
-        assert set(exact("diff", "--name-only", f"{base}..{implementation}").splitlines()) == {
+        assert set(
+            exact("diff", "--name-only", f"{base}..{implementation}").splitlines()
+        ) == {
             "current/desktop_gui.py",
             "current/trading_robot/gui_runtime_controller.py",
             "current/tests/test_v3_10_q7_gui_quote_audit.py",
         }
-        assert set(exact("diff", "--name-only", f"{implementation}..{head}").splitlines()) == {
+        assert set(
+            exact("diff", "--name-only", f"{implementation}..{head}").splitlines()
+        ) == {
             "current/tests/test_v3_10_issue72_gui_runtime.py",
             "current/tests/test_v3_10_stable_qualification.py",
         }
@@ -2020,11 +2069,15 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
         assert exact("rev-parse", f"{implementation}^") == base
         assert exact("rev-parse", f"{head}^") == implementation
         assert exact("merge-base", base, head) == base
-        assert set(exact("diff", "--name-only", f"{base}..{implementation}").splitlines()) == {
+        assert set(
+            exact("diff", "--name-only", f"{base}..{implementation}").splitlines()
+        ) == {
             "current/trading_robot/secret_provider.py",
             "current/tests/test_support_readiness_rc1.py",
         }
-        assert set(exact("diff", "--name-only", f"{implementation}..{head}").splitlines()) == {
+        assert set(
+            exact("diff", "--name-only", f"{implementation}..{head}").splitlines()
+        ) == {
             "current/tests/test_v3_10_issue72_gui_runtime.py",
             "current/tests/test_v3_10_stable_qualification.py",
         }
@@ -2186,14 +2239,17 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
                 ).stdout.strip()
                 == CL8_Q7_BVM_INTEGRATION_BASE
             )
-            assert set(
-                _git(
-                    "diff",
-                    "--name-only",
-                    f"{CL8_Q7_BVM_INTEGRATION_BASE}..{head}",
-                    text=True,
-                ).stdout.splitlines()
-            ) == CL8_Q7_BVM_STABLE_PATHS
+            assert (
+                set(
+                    _git(
+                        "diff",
+                        "--name-only",
+                        f"{CL8_Q7_BVM_INTEGRATION_BASE}..{head}",
+                        text=True,
+                    ).stdout.splitlines()
+                )
+                == CL8_Q7_BVM_STABLE_PATHS
+            )
         return
     if branch == CL8_Q7R_IMPLEMENTATION_BRANCH or q7r_pr is not None:
         assert (
