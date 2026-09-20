@@ -61,9 +61,7 @@ def _decision_event(
         "mode": "SANDBOX_EXECUTION",
         "event_type": event_type,
         "category": (
-            "strategy"
-            if event_type == "PRIMARY_STRATEGY_DECISION"
-            else "decision"
+            "strategy" if event_type == "PRIMARY_STRATEGY_DECISION" else "decision"
         ),
         "action": action,
         "status": status,

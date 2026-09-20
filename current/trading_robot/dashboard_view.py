@@ -91,9 +91,7 @@ class SandboxDecisionDisplay:
 _DECISION_EVENT_TYPES = frozenset(
     {"PRIMARY_STRATEGY_DECISION", "CENTRAL_COORDINATION_RESULT"}
 )
-_DECISION_ACTIONS = frozenset(
-    {"LONG", "FLAT", "BUY", "HOLD", "SELL", "UNDETERMINED"}
-)
+_DECISION_ACTIONS = frozenset({"LONG", "FLAT", "BUY", "HOLD", "SELL", "UNDETERMINED"})
 _SAFE_DECISION_STATUS = re.compile(r"[A-Z0-9_]{1,80}\Z")
 
 
@@ -198,12 +196,8 @@ def _runtime_profile_mismatches(
         "decision_cadence_seconds": profile.decision_cadence_seconds,
         "scheduler_cadence_seconds": profile.scheduler_cadence_seconds,
         "risk_refresh_cadence_seconds": profile.risk_refresh_cadence_seconds,
-        "reconciliation_cadence_seconds": (
-            profile.reconciliation_cadence_seconds
-        ),
-        "market_status_cadence_seconds": (
-            profile.market_status_cadence_seconds
-        ),
+        "reconciliation_cadence_seconds": (profile.reconciliation_cadence_seconds),
+        "market_status_cadence_seconds": (profile.market_status_cadence_seconds),
     }
     return tuple(
         field
@@ -287,10 +281,7 @@ def build_multi_instrument_dashboard(
             cash_actionability_status=cash_actionability_status,
             account_scope_sha256=account_scope_sha256,
         )
-        if (
-            owner_evidence_requested
-            and owner_fields.get("source_status") != "READY"
-        ):
+        if owner_evidence_requested and owner_fields.get("source_status") != "READY":
             attention = True
         rows.append(
             InstrumentRuntimeView(
@@ -352,9 +343,7 @@ def build_multi_instrument_dashboard(
             )
         )
 
-    account_ids = sorted(
-        {runtime.config.account_id for runtime in selected_runtimes}
-    )
+    account_ids = sorted({runtime.config.account_id for runtime in selected_runtimes})
     account_id = account_ids[0] if len(account_ids) == 1 else ""
     if len(account_ids) > 1:
         attention = True
@@ -428,9 +417,7 @@ def _owner_fields(
                 else "UNKNOWN"
             ),
             portfolio_revision=int(getattr(portfolio_state, "revision", 0)),
-            reconciliation_status=_status_text(
-                getattr(reconciliation, "status", None)
-            ),
+            reconciliation_status=_status_text(getattr(reconciliation, "status", None)),
             ownership_status=_status_text(position.ownership_status),
         )
 
@@ -448,7 +435,9 @@ def _owner_fields(
             == instrument_id
         )
         statuses = {_status_text(getattr(item, "status", None)) for item in intents}
-        queued = tuple(item for item in intents if _status_text(item.status) == "QUEUED")
+        queued = tuple(
+            item for item in intents if _status_text(item.status) == "QUEUED"
+        )
         values.update(
             central_revision=int(central_state.revision),
             queued_reserved_cash=(
@@ -578,13 +567,10 @@ def build_kill_switch_banner(
 
     if active:
         title = "KILL SWITCH: ON — НОВЫЕ ВХОДЫ ЗАБЛОКИРОВАНЫ"
-        effect = (
-            "Новые BUY и увеличение позиции заблокированы. Reduce-only: "
-            + (
-                "разрешён при однозначной reconciled-позиции."
-                if summary.get("kill_switch_reduce_only_allowed")
-                else "заблокирован."
-            )
+        effect = "Новые BUY и увеличение позиции заблокированы. Reduce-only: " + (
+            "разрешён при однозначной reconciled-позиции."
+            if summary.get("kill_switch_reduce_only_allowed")
+            else "заблокирован."
         )
         background = "#8b1a1a"
     else:
