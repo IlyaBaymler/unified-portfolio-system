@@ -37,6 +37,7 @@ from trading_robot.config_persistence import (
 )
 from trading_robot.dashboard_view import (
     build_kill_switch_banner,
+    latest_sandbox_decisions,
     load_multi_instrument_dashboard,
 )
 from trading_robot.diagnostic_feedback import build_diagnostic_feedback
@@ -1802,6 +1803,8 @@ class TradingRobotGUI(tk.Tk):
             "timeframe",
             "strategy",
             "runtime",
+            "decision",
+            "decision_time",
             "identity",
             "revision",
             "actual",
@@ -1837,6 +1840,8 @@ class TradingRobotGUI(tk.Tk):
             "timeframe": "Свеча",
             "strategy": "PRIMARY",
             "runtime": "Runtime",
+            "decision": "Решение / исход (не заявка)",
+            "decision_time": "Решение UTC",
             "identity": "Identity",
             "revision": "Rev",
             "actual": "Actual",
@@ -1865,6 +1870,8 @@ class TradingRobotGUI(tk.Tk):
             "timeframe": 145,
             "strategy": 80,
             "runtime": 95,
+            "decision": 285,
+            "decision_time": 165,
             "identity": 105,
             "revision": 55,
             "actual": 65,
@@ -2018,6 +2025,51 @@ class TradingRobotGUI(tk.Tk):
             )
             return
 
+        sandbox_projection = mode == "SANDBOX_EXECUTION" and bool(
+            self.gui_runtime_controller
+        )
+        decisions = {}
+        decision_audit_unavailable = False
+        portfolio_policy_status = "NOT_APPLICABLE"
+        if sandbox_projection:
+            controller = self.gui_runtime_controller
+            try:
+                if self.event_journal is None:
+                    raise RuntimeError("Decision journal is unavailable.")
+                events = (
+                    *self.event_journal.recent(
+                        limit=256,
+                        session_id=controller.session_id,
+                        event_type="PRIMARY_STRATEGY_DECISION",
+                    ),
+                    *self.event_journal.recent(
+                        limit=256,
+                        session_id=controller.session_id,
+                        event_type="CENTRAL_COORDINATION_RESULT",
+                    ),
+                )
+                decisions = latest_sandbox_decisions(
+                    events,
+                    session_id=controller.session_id,
+                    account_scope_sha256=controller.account_scope_sha256,
+                    instrument_ids=(row.instrument_id for row in snapshot.rows),
+                )
+            except Exception:
+                # Display failure cannot turn a proposal into an order or hide
+                # an unavailable audit behind the unrelated owner UNKNOWN.
+                decision_audit_unavailable = True
+            try:
+                loaded = controller.portfolio_risk_runtime.profile_store.load_profile(
+                    "SANDBOX_EXECUTION"
+                )
+                portfolio_policy_status = (
+                    str(loaded["portfolio_policy_status"])
+                    if loaded is not None
+                    else "MISSING"
+                )
+            except RiskPersistenceError:
+                portfolio_policy_status = "INVALID"
+
         scopes = {
             row.account_scope_sha256
             for row in snapshot.rows
@@ -2026,11 +2078,27 @@ class TradingRobotGUI(tk.Tk):
         account = (
             f" | Account scope: {next(iter(scopes))[:16]}…" if len(scopes) == 1 else ""
         )
-        self.multi_instrument_status.set(
+        status_detail = (
             f"{snapshot.mode}: {snapshot.state} — {snapshot.detail}{account}"
         )
+        if sandbox_projection:
+            status_detail += (
+                f" | Portfolio Risk profile: {portfolio_policy_status}"
+                " | Decision audit: "
+                + ("UNAVAILABLE" if decision_audit_unavailable else "READ_ONLY")
+            )
+        self.multi_instrument_status.set(status_detail)
         for row in snapshot.rows:
             tag = "" if row.identity_status == "MATCHED" else "ATTENTION"
+            decision = decisions.get(row.instrument_id)
+            if not sandbox_projection:
+                decision_text = "—"
+            elif decision_audit_unavailable:
+                decision_text = "AUDIT_UNAVAILABLE"
+            elif decision is None:
+                decision_text = "NO_DECISION_YET"
+            else:
+                decision_text = f"{decision.action} / {decision.status}"
             self.multi_instrument_tree.insert(
                 "",
                 "end",
@@ -2041,6 +2109,8 @@ class TradingRobotGUI(tk.Tk):
                     row.candle_interval,
                     row.strategy_id,
                     row.runtime_status,
+                    decision_text,
+                    decision.at_utc if sandbox_projection and decision else "—",
                     row.identity_status,
                     row.runtime_revision,
                     row.actual_lots,

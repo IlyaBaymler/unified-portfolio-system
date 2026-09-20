@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +77,103 @@ class MultiInstrumentDashboard:
     account_id: str
     detail: str
     rows: tuple[InstrumentRuntimeView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxDecisionDisplay:
+    """One sanitized journal outcome; this is never an order-status owner."""
+
+    action: str
+    status: str
+    at_utc: str
+
+
+_DECISION_EVENT_TYPES = frozenset(
+    {"PRIMARY_STRATEGY_DECISION", "CENTRAL_COORDINATION_RESULT"}
+)
+_DECISION_ACTIONS = frozenset(
+    {"LONG", "FLAT", "BUY", "HOLD", "SELL", "UNDETERMINED"}
+)
+_SAFE_DECISION_STATUS = re.compile(r"[A-Z0-9_]{1,80}\Z")
+
+
+def latest_sandbox_decisions(
+    events: Iterable[Mapping[str, Any]],
+    *,
+    session_id: str,
+    account_scope_sha256: str,
+    instrument_ids: Iterable[str],
+) -> dict[str, SandboxDecisionDisplay]:
+    """Project the latest current-session decision without inferring an order.
+
+    EventJournal rows contain private identifiers and payloads.  Only finite
+    action/status/time values leave this function, and cross-session/account
+    rows cannot become GUI evidence for the configured set.
+    """
+
+    configured = {item for item in instrument_ids if type(item) is str}
+    latest: dict[str, tuple[int, SandboxDecisionDisplay]] = {}
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        event_type = event.get("event_type")
+        event_session = event.get("session_id")
+        event_mode = event.get("mode")
+        if (
+            type(event_type) is not str
+            or event_type not in _DECISION_EVENT_TYPES
+            or type(event_session) is not str
+            or event_session != session_id
+            or type(event_mode) is not str
+            or event_mode != "SANDBOX_EXECUTION"
+        ):
+            continue
+        instrument_id = event.get("instrument_id")
+        if type(instrument_id) is not str or instrument_id not in configured:
+            continue
+        payload = event.get("payload")
+        if type(payload) is not dict:
+            continue
+        scope = payload.get("account_scope_sha256")
+        if type(scope) is not str or scope != account_scope_sha256:
+            continue
+        event_id = event.get("id")
+        if type(event_id) is not int or event_id < 1:
+            continue
+        if instrument_id in latest and event_id <= latest[instrument_id][0]:
+            continue
+
+        action = event.get("action")
+        status = event.get("status")
+        timestamp = event.get("timestamp_utc")
+        valid = (
+            type(action) is str
+            and action in _DECISION_ACTIONS
+            and type(status) is str
+            and _SAFE_DECISION_STATUS.fullmatch(status) is not None
+            and type(timestamp) is str
+        )
+        at_utc = "—"
+        if valid:
+            try:
+                parsed = datetime.fromisoformat(timestamp)
+                if parsed.tzinfo is None or parsed.utcoffset() is None:
+                    valid = False
+                else:
+                    at_utc = parsed.astimezone(timezone.utc).strftime(
+                        "%Y-%m-%d %H:%M:%SZ"
+                    )
+            except ValueError:
+                valid = False
+        latest[instrument_id] = (
+            event_id,
+            SandboxDecisionDisplay(
+                action=action if valid else "AUDIT_INVALID",
+                status=status if valid else "AUDIT_INVALID",
+                at_utc=at_utc if valid else "—",
+            ),
+        )
+    return {instrument_id: value for instrument_id, (_, value) in latest.items()}
 
 
 def _runtime_profile_mismatches(
