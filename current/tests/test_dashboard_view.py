@@ -60,6 +60,11 @@ def _decision_event(
         "session_id": session_id,
         "mode": "SANDBOX_EXECUTION",
         "event_type": event_type,
+        "category": (
+            "strategy"
+            if event_type == "PRIMARY_STRATEGY_DECISION"
+            else "decision"
+        ),
         "action": action,
         "status": status,
         "timestamp_utc": timestamp_utc,
@@ -135,6 +140,12 @@ def test_custom_equality_cannot_impersonate_account_scope():
 
     event = _decision_event(5, status="SUBMITTED")
     event["payload"] = {"account_scope_sha256": EqualToEverything()}
+    assert _project(event) == {}
+
+
+def test_wrong_journal_category_cannot_impersonate_coordination_outcome():
+    event = _decision_event(6, status="SUBMITTED")
+    event["category"] = "provider"
     assert _project(event) == {}
 
 
@@ -254,5 +265,6 @@ def test_gui_row_separates_journal_decision_from_unknown_position(tmp_path):
     assert "Portfolio Risk profile: CONFIGURATION_REQUIRED" in status.get()
 
     gui.event_journal = SimpleNamespace(recent=lambda **_kwargs: 1 / 0)
+    del gui._sandbox_decision_display_cache
     TradingRobotGUI._refresh_multi_instrument_dashboard(gui)
     assert tree.values[0][5] == "AUDIT_UNAVAILABLE"

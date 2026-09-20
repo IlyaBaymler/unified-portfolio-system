@@ -117,11 +117,17 @@ def latest_sandbox_decisions(
         if not isinstance(event, Mapping):
             continue
         event_type = event.get("event_type")
+        category = event.get("category")
         event_session = event.get("session_id")
         event_mode = event.get("mode")
+        if type(event_type) is not str or event_type not in _DECISION_EVENT_TYPES:
+            continue
+        expected_category = (
+            "strategy" if event_type == "PRIMARY_STRATEGY_DECISION" else "decision"
+        )
         if (
-            type(event_type) is not str
-            or event_type not in _DECISION_EVENT_TYPES
+            type(category) is not str
+            or category != expected_category
             or type(event_session) is not str
             or event_session != session_id
             or type(event_mode) is not str

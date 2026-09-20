@@ -2033,31 +2033,53 @@ class TradingRobotGUI(tk.Tk):
         portfolio_policy_status = "NOT_APPLICABLE"
         if sandbox_projection:
             controller = self.gui_runtime_controller
-            try:
-                if self.event_journal is None:
-                    raise RuntimeError("Decision journal is unavailable.")
-                events = (
-                    *self.event_journal.recent(
-                        limit=256,
+            read_key = (
+                controller.session_id,
+                controller.account_scope_sha256,
+                tuple(sorted(row.instrument_id for row in snapshot.rows)),
+            )
+            read_at = time.monotonic()
+            cached = getattr(self, "_sandbox_decision_display_cache", None)
+            if (
+                cached is not None
+                and cached[0] == read_key
+                and read_at - cached[1] < 2.0
+            ):
+                decisions, decision_audit_unavailable = cached[2], cached[3]
+            else:
+                try:
+                    if self.event_journal is None:
+                        raise RuntimeError("Decision journal is unavailable.")
+                    events = (
+                        *self.event_journal.recent(
+                            limit=256,
+                            category="strategy",
+                            session_id=controller.session_id,
+                            event_type="PRIMARY_STRATEGY_DECISION",
+                        ),
+                        *self.event_journal.recent(
+                            limit=256,
+                            category="decision",
+                            session_id=controller.session_id,
+                            event_type="CENTRAL_COORDINATION_RESULT",
+                        ),
+                    )
+                    decisions = latest_sandbox_decisions(
+                        events,
                         session_id=controller.session_id,
-                        event_type="PRIMARY_STRATEGY_DECISION",
-                    ),
-                    *self.event_journal.recent(
-                        limit=256,
-                        session_id=controller.session_id,
-                        event_type="CENTRAL_COORDINATION_RESULT",
-                    ),
+                        account_scope_sha256=controller.account_scope_sha256,
+                        instrument_ids=(row.instrument_id for row in snapshot.rows),
+                    )
+                except Exception:
+                    # Display failure cannot turn a proposal into an order or
+                    # hide unavailable audit behind unrelated owner UNKNOWN.
+                    decision_audit_unavailable = True
+                self._sandbox_decision_display_cache = (
+                    read_key,
+                    read_at,
+                    decisions,
+                    decision_audit_unavailable,
                 )
-                decisions = latest_sandbox_decisions(
-                    events,
-                    session_id=controller.session_id,
-                    account_scope_sha256=controller.account_scope_sha256,
-                    instrument_ids=(row.instrument_id for row in snapshot.rows),
-                )
-            except Exception:
-                # Display failure cannot turn a proposal into an order or hide
-                # an unavailable audit behind the unrelated owner UNKNOWN.
-                decision_audit_unavailable = True
             try:
                 loaded = controller.portfolio_risk_runtime.profile_store.load_profile(
                     "SANDBOX_EXECUTION"
