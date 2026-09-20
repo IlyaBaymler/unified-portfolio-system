@@ -226,8 +226,10 @@ def test_exact_contract_branch_and_fourteen_path_custody():
     branch = _git("branch", "--show-current")
     decision_visibility_base = "3f1450c4c5ffb72b07e5ce641319ce7de496fe51"
     decision_visibility_implementation = "7493668a443366464a28067fef149b79d5336b4c"
+    decision_visibility_oracle = "8fc80e9a3af1cc8acefd5b822c1ce0011dba5e51"
+    parent = _git("rev-parse", f"{head}^")
     if branch in {"agent/v3-10-clean-cl8-q7-decision-visibility", ""} and (
-        _git("rev-parse", f"{head}^") == decision_visibility_implementation
+        parent in {decision_visibility_implementation, decision_visibility_oracle}
     ):
         assert _git("rev-parse", f"{decision_visibility_base}^{{tree}}") == (
             "32e9c672a1ddd5d8ca308976c7cc89328101bb07"
@@ -249,14 +251,47 @@ def test_exact_contract_branch_and_fourteen_path_custody():
             "current/tests/test_dashboard_view.py",
             "current/trading_robot/dashboard_view.py",
         }
-        assert set(
-            _git(
-                "diff", "--name-only", f"{decision_visibility_implementation}..{head}"
-            ).splitlines()
-        ) == {
+        oracle_paths = {
             "current/tests/test_v3_10_issue72_gui_runtime.py",
             "current/tests/test_v3_10_stable_qualification.py",
         }
+        assert (
+            set(
+                _git(
+                    "diff",
+                    "--name-only",
+                    f"{decision_visibility_implementation}..{decision_visibility_oracle}",
+                ).splitlines()
+            )
+            == oracle_paths
+        )
+        if parent == decision_visibility_implementation:
+            assert head == decision_visibility_oracle
+        else:
+            assert _git("rev-parse", f"{decision_visibility_oracle}^{{tree}}") == (
+                "0cecb77c6284828c925866fa7168a2caf25861f8"
+            )
+            assert _git("rev-parse", f"{decision_visibility_oracle}^") == (
+                decision_visibility_implementation
+            )
+            correction_paths = oracle_paths | {
+                "current/desktop_gui.py",
+                "current/tests/test_dashboard_view.py",
+                "current/trading_robot/journal.py",
+            }
+            assert (
+                set(
+                    _git(
+                        "diff", "--name-only", f"{decision_visibility_oracle}..{head}"
+                    ).splitlines()
+                )
+                == correction_paths
+            )
+            assert set(
+                _git(
+                    "diff", "--name-only", f"{decision_visibility_base}..{head}"
+                ).splitlines()
+            ) == correction_paths | {"current/trading_robot/dashboard_view.py"}
         assert _git("status", "--porcelain=v1") == ""
         return
     if branch in {"agent/v3-10-clean-cl8-q7-portfolio-refresh-observability", ""}:

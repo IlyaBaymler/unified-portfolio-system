@@ -1952,12 +1952,14 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
     head = checked_out_head
     decision_visibility_base = "3f1450c4c5ffb72b07e5ce641319ce7de496fe51"
     decision_visibility_implementation = "7493668a443366464a28067fef149b79d5336b4c"
+    decision_visibility_oracle = "8fc80e9a3af1cc8acefd5b822c1ce0011dba5e51"
     if branch in {"agent/v3-10-clean-cl8-q7-decision-visibility", ""}:
 
         def exact(*args: str) -> str:
             return _git(*args, text=True).stdout.strip()
 
-        if exact("rev-parse", f"{head}^") == decision_visibility_implementation:
+        parent = exact("rev-parse", f"{head}^")
+        if parent in {decision_visibility_implementation, decision_visibility_oracle}:
             assert exact("rev-parse", f"{decision_visibility_base}^{{tree}}") == (
                 "32e9c672a1ddd5d8ca308976c7cc89328101bb07"
             )
@@ -1979,16 +1981,49 @@ def test_exact_qualification_delta_and_predecessor_immutability() -> None:
                 "current/tests/test_dashboard_view.py",
                 "current/trading_robot/dashboard_view.py",
             }
-            assert set(
-                exact(
-                    "diff",
-                    "--name-only",
-                    f"{decision_visibility_implementation}..{head}",
-                ).splitlines()
-            ) == {
+            oracle_paths = {
                 "current/tests/test_v3_10_issue72_gui_runtime.py",
                 "current/tests/test_v3_10_stable_qualification.py",
             }
+            assert (
+                set(
+                    exact(
+                        "diff",
+                        "--name-only",
+                        f"{decision_visibility_implementation}..{decision_visibility_oracle}",
+                    ).splitlines()
+                )
+                == oracle_paths
+            )
+            if parent == decision_visibility_implementation:
+                assert head == decision_visibility_oracle
+            else:
+                assert exact("rev-parse", f"{decision_visibility_oracle}^{{tree}}") == (
+                    "0cecb77c6284828c925866fa7168a2caf25861f8"
+                )
+                assert exact("rev-parse", f"{decision_visibility_oracle}^") == (
+                    decision_visibility_implementation
+                )
+                correction_paths = oracle_paths | {
+                    "current/desktop_gui.py",
+                    "current/tests/test_dashboard_view.py",
+                    "current/trading_robot/journal.py",
+                }
+                assert (
+                    set(
+                        exact(
+                            "diff",
+                            "--name-only",
+                            f"{decision_visibility_oracle}..{head}",
+                        ).splitlines()
+                    )
+                    == correction_paths
+                )
+                assert set(
+                    exact(
+                        "diff", "--name-only", f"{decision_visibility_base}..{head}"
+                    ).splitlines()
+                ) == correction_paths | {"current/trading_robot/dashboard_view.py"}
             assert exact("status", "--porcelain=v1") == ""
             return
     if branch in {"agent/v3-10-clean-cl8-q7-portfolio-refresh-observability", ""}:

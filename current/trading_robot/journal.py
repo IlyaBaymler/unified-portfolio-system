@@ -68,6 +68,7 @@ class EventJournal:
     def __init__(self, path: str | Path, *, read_only: bool = False) -> None:
         self.path = Path(path)
         self.read_only = bool(read_only)
+        self._decision_index_ready = False
         if self.read_only:
             if not self.path.is_file():
                 raise FileNotFoundError(f"EventJournal does not exist: {self.path}")
@@ -242,6 +243,14 @@ class EventJournal:
             default=str,
         )
         with self._connection() as connection:
+            if not self._decision_index_ready:
+                # Opening a pre-upgrade journal must preserve its exact bytes.
+                # The first append is the first point where its schema may grow.
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_events_decision_scope "
+                    "ON events(session_id, instrument_id, category, event_type, id DESC)"
+                )
+                self._decision_index_ready = True
             cursor = connection.execute(
                 """
                 INSERT INTO events(
@@ -400,6 +409,7 @@ class EventJournal:
         account_id: str | None = None,
         severity: str | None = None,
         session_id: str | None = None,
+        instrument_id: str | None = None,
         event_type: str | None = None,
         search: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -422,6 +432,11 @@ class EventJournal:
         if session_id:
             where.append("session_id = ?")
             params.append(session_id)
+        if instrument_id is not None:
+            if type(instrument_id) is not str or not instrument_id.strip():
+                raise ValueError("instrument_id must be a non-empty exact string")
+            where.append("instrument_id = ?")
+            params.append(instrument_id)
         if event_type:
             where.append("event_type = ?")
             params.append(event_type)

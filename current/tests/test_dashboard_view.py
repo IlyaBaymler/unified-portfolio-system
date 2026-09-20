@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
+from dataclasses import replace
 from types import SimpleNamespace
+
+import pytest
 
 from trading_robot.dashboard_view import (
     InstrumentRuntimeView,
@@ -266,3 +270,120 @@ def test_gui_row_separates_journal_decision_from_unknown_position(tmp_path):
     del gui._sandbox_decision_display_cache
     TradingRobotGUI._refresh_multi_instrument_dashboard(gui)
     assert tree.values[0][5] == "AUDIT_UNAVAILABLE"
+
+    for _ in range(256):
+        journal.record(
+            JournalEvent(
+                category="decision",
+                event_type="CENTRAL_COORDINATION_RESULT",
+                session_id="current-session",
+                instrument_id="noisy-instrument",
+                mode="SANDBOX_EXECUTION",
+                action="HOLD",
+                status="RISK_BLOCKED",
+                payload={"account_scope_sha256": "a" * 64},
+                timestamp_utc="2026-09-20T10:31:04+00:00",
+            )
+        )
+    assert all(
+        event["instrument_id"] == "noisy-instrument"
+        for event in journal.recent(
+            limit=256,
+            category="decision",
+            session_id="current-session",
+            event_type="CENTRAL_COORDINATION_RESULT",
+        )
+    )
+    with pytest.raises(ValueError, match="instrument_id"):
+        journal.recent(instrument_id="")
+    with pytest.raises(ValueError, match="instrument_id"):
+        journal.recent(
+            instrument_id=type("InstrumentSubclass", (str,), {})(
+                "configured-instrument"
+            )
+        )
+    with sqlite3.connect(journal.path) as connection:
+        plan = connection.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM events WHERE category = ? "
+            "AND session_id = ? AND instrument_id = ? AND event_type = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (
+                "decision",
+                "current-session",
+                "configured-instrument",
+                "CENTRAL_COORDINATION_RESULT",
+            ),
+        ).fetchall()
+    assert any("idx_events_decision_scope" in row[3] for row in plan)
+
+    noisy_row = replace(row, instrument_id="noisy-instrument", ticker="NOISY")
+    controller.dashboard = lambda: MultiInstrumentDashboard(
+        mode="SANDBOX_EXECUTION",
+        state="ATTENTION",
+        account_id="synthetic-account",
+        detail="Synthetic read-only decision test",
+        rows=(row, noisy_row),
+    )
+    gui.event_journal = journal
+    del gui._sandbox_decision_display_cache
+    TradingRobotGUI._refresh_multi_instrument_dashboard(gui)
+    assert tree.values[0][5] == "BUY / RISK_BLOCKED"
+    assert tree.values[1][5] == "HOLD / RISK_BLOCKED"
+
+    journal.record(
+        JournalEvent(
+            category="decision",
+            event_type="CENTRAL_COORDINATION_RESULT",
+            session_id="current-session",
+            instrument_id="configured-instrument",
+            mode="SANDBOX_EXECUTION",
+            action="SELL",
+            status="SUBMITTED",
+            payload={"account_scope_sha256": "b" * 64},
+            timestamp_utc="2026-09-20T10:32:04+00:00",
+        )
+    )
+    del gui._sandbox_decision_display_cache
+    TradingRobotGUI._refresh_multi_instrument_dashboard(gui)
+    assert tree.values[0][5] == "AUDIT_INVALID"
+
+
+def test_existing_journal_bytes_are_preserved_until_first_append(tmp_path):
+    path = tmp_path / "pre-upgrade-events.db"
+    old = EventJournal(path)
+    old.record(
+        JournalEvent(
+            category="decision",
+            event_type="CENTRAL_COORDINATION_RESULT",
+            session_id="session",
+            instrument_id="instrument",
+        )
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP INDEX idx_events_decision_scope")
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    before = path.read_bytes()
+
+    upgraded = EventJournal(path)
+    assert path.read_bytes() == before
+    assert len(upgraded.recent(session_id="session", instrument_id="instrument")) == 1
+    assert path.read_bytes() == before
+    with sqlite3.connect(path) as connection:
+        indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(events)").fetchall()
+        }
+    assert "idx_events_decision_scope" not in indexes
+
+    upgraded.record(
+        JournalEvent(
+            category="decision",
+            event_type="CENTRAL_COORDINATION_RESULT",
+            session_id="session",
+            instrument_id="instrument",
+        )
+    )
+    with sqlite3.connect(path) as connection:
+        indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(events)").fetchall()
+        }
+    assert "idx_events_decision_scope" in indexes

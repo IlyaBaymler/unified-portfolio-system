@@ -2029,6 +2029,7 @@ class TradingRobotGUI(tk.Tk):
             self.gui_runtime_controller
         )
         decisions = {}
+        event_instruments = set()
         decision_audit_unavailable = False
         portfolio_policy_status = "NOT_APPLICABLE"
         if sandbox_projection:
@@ -2042,28 +2043,32 @@ class TradingRobotGUI(tk.Tk):
             cached = getattr(self, "_sandbox_decision_display_cache", None)
             if (
                 cached is not None
+                and len(cached) == 5
                 and cached[0] == read_key
                 and read_at - cached[1] < 2.0
             ):
                 decisions, decision_audit_unavailable = cached[2], cached[3]
+                event_instruments = cached[4]
             else:
                 try:
                     if self.event_journal is None:
                         raise RuntimeError("Decision journal is unavailable.")
-                    events = (
-                        *self.event_journal.recent(
-                            limit=256,
-                            category="strategy",
-                            session_id=controller.session_id,
-                            event_type="PRIMARY_STRATEGY_DECISION",
-                        ),
-                        *self.event_journal.recent(
-                            limit=256,
-                            category="decision",
-                            session_id=controller.session_id,
-                            event_type="CENTRAL_COORDINATION_RESULT",
-                        ),
-                    )
+                    events = []
+                    for row in snapshot.rows:
+                        for category, event_type in (
+                            ("strategy", "PRIMARY_STRATEGY_DECISION"),
+                            ("decision", "CENTRAL_COORDINATION_RESULT"),
+                        ):
+                            recent = self.event_journal.recent(
+                                limit=1,
+                                category=category,
+                                session_id=controller.session_id,
+                                instrument_id=row.instrument_id,
+                                event_type=event_type,
+                            )
+                            if recent:
+                                event_instruments.add(row.instrument_id)
+                                events.extend(recent)
                     decisions = latest_sandbox_decisions(
                         events,
                         session_id=controller.session_id,
@@ -2079,6 +2084,7 @@ class TradingRobotGUI(tk.Tk):
                     read_at,
                     decisions,
                     decision_audit_unavailable,
+                    event_instruments,
                 )
             try:
                 loaded = controller.portfolio_risk_runtime.profile_store.load_profile(
@@ -2118,7 +2124,11 @@ class TradingRobotGUI(tk.Tk):
             elif decision_audit_unavailable:
                 decision_text = "AUDIT_UNAVAILABLE"
             elif decision is None:
-                decision_text = "NO_DECISION_YET"
+                decision_text = (
+                    "AUDIT_INVALID"
+                    if row.instrument_id in event_instruments
+                    else "NO_DECISION_YET"
+                )
             else:
                 decision_text = f"{decision.action} / {decision.status}"
             self.multi_instrument_tree.insert(
