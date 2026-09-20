@@ -15,11 +15,15 @@ import json
 import os
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from trading_robot.cash_ledger_domain import LedgerClassification
+from trading_robot.cash_ledger_persistence import LedgerHead
+from trading_robot.central_order_manager import CentralOrderIntent
 from trading_robot.gui_runtime_controller import (
     ConfiguredExecutionSet,
     GuiCoordinationRequest,
@@ -90,6 +94,50 @@ def _canonical(value: Mapping[str, object]) -> bytes:
 
 def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+class _FrozenDict(dict):
+    """Prevent the controlled proposal's nested maps changing after issuance."""
+
+    def _deny(self, *_args: object, **_kwargs: object) -> None:
+        _fail("PROPOSAL_MARKER_INVALID")
+
+    __setitem__ = _deny
+    __delitem__ = _deny
+    clear = _deny
+    pop = _deny
+    popitem = _deny
+    setdefault = _deny
+    update = _deny
+    __ior__ = _deny
+
+    def __deepcopy__(self, memo: dict[int, object]) -> dict[object, object]:
+        # StrategyDecision.to_dict uses dataclasses.asdict; expose ordinary
+        # JSON data there while keeping the issued object itself sealed.
+        return {
+            deepcopy(key, memo): deepcopy(value, memo) for key, value in self.items()
+        }
+
+
+def _seal_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return _FrozenDict({key: _seal_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_seal_json(item) for item in value)
+    return value
+
+
+def _seal_proposal(proposal: StrategyProposal) -> StrategyProposal:
+    return replace(
+        proposal,
+        decisions=_FrozenDict(
+            {
+                key: replace(decision, indicators=_seal_json(decision.indicators))
+                for key, decision in proposal.decisions.items()
+            }
+        ),
+        comparison=_seal_json(proposal.comparison),
+    )
 
 
 def _hex(value: object, pattern: re.Pattern[str], reason: str) -> str:
@@ -351,6 +399,7 @@ class Q7AControlledHooks:
             _fail("PROPOSAL_MARKER_PATH_INVALID")
         self.proposal_marker_path = proposal_marker_path
         self._proposal_marker_raw: bytes | None = None
+        self._issued_proposal_sha256: str | None = None
         self._proposal_sha256: str | None = None
         self._issued_proposal: StrategyProposal | None = None
         self._target_evaluation_used = False
@@ -377,6 +426,7 @@ class Q7AControlledHooks:
             proposal = self.controlled_proposal(runtime, candle_time, now)
             if type(proposal) is not StrategyProposal:
                 _fail("CONTROLLED_PROPOSAL_INVALID")
+            proposal = _seal_proposal(proposal)
             if (
                 type(now) is not datetime
                 or now.tzinfo is None
@@ -387,12 +437,13 @@ class Q7AControlledHooks:
                 self.record.fields["created_at"].replace("Z", "+00:00")
             ):
                 _fail("CONTROL_TIME_INVALID")
+            proposal_sha256 = _sha256(_canonical(proposal.to_dict()))
             marker = _canonical(
                 {
                     "domain": "CL8_Q7A_PROPOSAL_MARKER_V1",
                     "version": 1,
                     "control_record_sha256": self.record.record_sha256,
-                    "proposal_sha256": _sha256(_canonical(proposal.to_dict())),
+                    "proposal_sha256": proposal_sha256,
                     "target_runtime_key_sha256": self.record.fields[
                         "target_runtime_key_sha256"
                     ],
@@ -403,6 +454,7 @@ class Q7AControlledHooks:
             )
             _write_once(self.proposal_marker_path, marker, "PROPOSAL_ALREADY_ISSUED")
             self._proposal_marker_raw = marker
+            self._issued_proposal_sha256 = proposal_sha256
             self._issued_proposal = proposal
             self._target_evaluation_used = True
         else:
@@ -443,9 +495,13 @@ class Q7AControlledHooks:
             _fail("PROPOSAL_MARKER_INVALID")
         if self._proposal_marker_raw is None or marker != self._proposal_marker_raw:
             _fail("PROPOSAL_MARKER_INVALID")
+        if self._issued_proposal_sha256 != _sha256(_canonical(proposal.to_dict())):
+            _fail("PROPOSAL_MARKER_INVALID")
         request = self.delegate.coordination_request(
             runtime, proposal, candle_time, now
         )
+        if self._issued_proposal_sha256 != _sha256(_canonical(proposal.to_dict())):
+            _fail("PROPOSAL_MARKER_INVALID")
         if (
             type(request) is not GuiCoordinationRequest
             or request.proposal is not proposal
@@ -475,8 +531,166 @@ class Q7AControlledHooks:
         ).total_seconds()
         if quote_age < -5 or quote_age > 300:
             _fail("QUOTE_NOT_FRESH")
-        self._proposal_sha256 = _sha256(_canonical(proposal.to_dict()))
+        self._proposal_sha256 = self._issued_proposal_sha256
         return request
+
+
+def build_synthetic_lineage_evidence(
+    *,
+    record: Q7AControlRecord,
+    hooks: Q7AControlledHooks,
+    proposal: StrategyProposal,
+    queued: CentralOrderIntent,
+    terminal: CentralOrderIntent,
+    provider_order: Mapping[str, object],
+    operation_id: str,
+    observation: Any,
+    transaction: Any,
+    opening_ledger_revision: int,
+    opening_ledger_head_sha256: str,
+    ledger_snapshot: Any,
+    reconciliation: Any,
+    portfolio: Any,
+    risk_execution_ids: tuple[str, ...],
+    authority: Any,
+    locked_proof_sha256: str,
+    identity_key: bytes,
+    identity_key_id: str,
+) -> bytes:
+    """Bind the one offline fake fill to accepted owner read-backs.
+
+    This is evidence only: it cannot create an order, ledger posting, Risk
+    effect, Portfolio state or CL7 transition.  Raw private IDs stay out of
+    the returned canonical bytes.
+    """
+
+    if (
+        type(record) is not Q7AControlRecord
+        or hooks.record.record_sha256 != record.record_sha256
+        or type(proposal) is not StrategyProposal
+        or hooks.proposal_sha256 != _sha256(_canonical(proposal.to_dict()))
+        or type(queued) is not CentralOrderIntent
+        or type(terminal) is not CentralOrderIntent
+        or queued.status != "QUEUED"
+        or terminal.status != "RECONCILED"
+        or queued.intent_id != terminal.intent_id
+        or queued.candidate != terminal.candidate
+        or queued.authorization != terminal.authorization
+        or queued.candidate.instrument_id != record.fields["target_instrument_id"]
+        or queued.candidate.runtime_key != proposal.runtime_key
+        or queued.candidate.strategy_profile_hash != proposal.strategy_profile_hash
+        or queued.candidate.target_lots != proposal.primary_target_lots
+        or queued.authorization.risk_order_allowed is not True
+        or queued.authorization.portfolio_risk is None
+        or queued.authorization.portfolio_risk.finalized is not True
+        or provider_order.get("orderRequestId") != queued.intent_id
+        or provider_order.get("orderId") != terminal.broker_order_id
+        or provider_order.get("executionReportStatus") != "EXECUTION_REPORT_STATUS_FILL"
+        or provider_order.get("lotsExecuted") != "1"
+        or operation_id != f"synthetic-operation-for-{queued.intent_id}"
+        or terminal.executed_lots != 1
+        or terminal.outcome != "FILLED"
+        or terminal.risk_execution_status != "RECORDED"
+        or terminal.risk_execution_id != queued.intent_id
+        or risk_execution_ids != (queued.intent_id,)
+        or type(identity_key) is not bytes
+        or type(identity_key_id) is not str
+        or len(identity_key) < 32
+    ):
+        _fail("LINEAGE_MISMATCH")
+    ledger_head = LedgerHead.from_canonical_bytes(
+        ledger_snapshot.ledger_head_json_ascii
+    )
+    source = observation.source
+    expected_source_scope = hmac.new(
+        identity_key,
+        _canonical(
+            {
+                "account_scope_sha256": record.fields["account_scope_sha256"],
+                "component": "PAYMENT",
+                "domain": "v3.10-cl3-source-scope",
+                "identity_key_id": identity_key_id,
+                "operation_id": operation_id,
+                "operation_state": "OPERATION_STATE_EXECUTED",
+                "provider": "TBANK",
+                "version": 1,
+            }
+        ),
+        hashlib.sha256,
+    ).hexdigest()
+    positions = tuple(
+        position
+        for position in portfolio.positions
+        if position.instrument_id == queued.candidate.instrument_id
+    )
+    if (
+        source.account_scope_sha256 != record.fields["account_scope_sha256"]
+        or source.source_kind != "TBANK_OPERATION"
+        or source.source_scope_sha256 != expected_source_scope
+        or transaction.source != source
+        or transaction.classification is not LedgerClassification.TRADE_SETTLEMENT
+        or ledger_snapshot.ledger_revision != opening_ledger_revision + 1
+        or ledger_head.sha256 != ledger_snapshot.ledger_head_sha256
+        or ledger_head.previous_head_sha256 != opening_ledger_head_sha256
+        or ledger_head.transition_kind != "TRANSACTION"
+        or ledger_head.transition_sha256 != transaction.sha256
+        or reconciliation.status.value != "MATCHED"
+        or reconciliation.delta_minor_units != 0
+        or reconciliation.proof.account_scope_sha256
+        != record.fields["account_scope_sha256"]
+        or reconciliation.proof.identity_key_id != identity_key_id
+        or reconciliation.projection.opening_record_sha256
+        != authority.opening_record_sha256
+        or reconciliation.projection.ledger_head_sha256
+        != ledger_snapshot.ledger_head_sha256
+        or reconciliation.projection.ledger_revision != ledger_snapshot.ledger_revision
+        or portfolio.account.account_id != queued.candidate.account_id
+        or len(positions) != 1
+        or positions[0].actual_lots != 1
+        or positions[0].target is None
+        or positions[0].target.target_lots != 1
+        or positions[0].target.strategy_id != queued.candidate.strategy_id
+        or positions[0].ownership is None
+        or positions[0].ownership.config_hash != queued.candidate.strategy_profile_hash
+        or positions[0].reconciliation.status.value != "MATCHED"
+        or terminal.reconciled_portfolio_revision != portfolio.revision
+        or authority.account_scope_sha256 != record.fields["account_scope_sha256"]
+        or authority.identity_key_id != identity_key_id
+        or authority.post_attempt_count != 1
+        or authority.pending_dispatch_proof_sha256 is not None
+        or authority.state.value != "EXACT_CASH_DISARMED"
+        or terminal.cl7_locked_dispatch_proof_sha256 != locked_proof_sha256
+    ):
+        _fail("LINEAGE_MISMATCH")
+    return _canonical(
+        {
+            "domain": "CL8_Q7A_SYNTHETIC_LINEAGE_V1",
+            "version": 1,
+            "control_record_sha256": record.record_sha256,
+            "proposal_sha256": hooks.proposal_sha256,
+            "account_scope_sha256": record.fields["account_scope_sha256"],
+            "intent_id_sha256": _sha256(queued.intent_id.encode("utf-8")),
+            "provider_order_id_sha256": _sha256(
+                terminal.broker_order_id.encode("utf-8")
+            ),
+            "operation_source_scope_sha256": source.source_scope_sha256,
+            "observation_sha256": observation.sha256,
+            "transaction_sha256": transaction.sha256,
+            "risk_decision_id_sha256": _sha256(
+                queued.authorization.risk_decision_id.encode("utf-8")
+            ),
+            "portfolio_risk_decision_sha256": queued.authorization.portfolio_risk.decision_id,
+            "portfolio_revision": portfolio.revision,
+            "ledger_revision": ledger_snapshot.ledger_revision,
+            "ledger_head_sha256": ledger_snapshot.ledger_head_sha256,
+            "reconciliation_sha256": reconciliation.sha256,
+            "locked_dispatch_proof_sha256": locked_proof_sha256,
+            "authority_record_revision": authority.record_revision,
+            "authority_record_sha256": authority.sha256,
+            "post_attempt_count": authority.post_attempt_count,
+            "terminal_status": terminal.status,
+        }
+    )
 
 
 class Q7AFakeSandboxTransport:
@@ -628,6 +842,7 @@ __all__ = (
     "Q7AFakeSandboxTransport",
     "Q7ASyntheticError",
     "build_control_record",
+    "build_synthetic_lineage_evidence",
     "verify_control_record",
     "write_control_record_once",
 )

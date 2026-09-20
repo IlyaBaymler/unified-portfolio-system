@@ -3,28 +3,26 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from tools import v3_10_q7a_e2e_smoke as q7a
 from trading_robot import broker_read_adapters as broker
 from trading_robot import cash_ledger_opening_reconciliation as cl4
 from trading_robot import cash_ledger_persistence as persistence
+from trading_robot import central_order_manager as central_module
 from trading_robot import runtime_cash_authority as cl7
+from trading_robot import tbank_sandbox
 from trading_robot.bot import BotConfig
-from trading_robot.cash_ledger_domain import (
-    LedgerAccount,
-    LedgerClassification,
-    LedgerPosting,
-    LedgerTransaction,
-    Money,
-    SourceIdentity,
-)
+from trading_robot.cash_ledger_domain import Money
+from trading_robot.central_order_coordinator import CentralOrderCoordinator
 from trading_robot.central_order_manager import (
     CentralOrderCandidate,
     CentralOrderConflictError,
@@ -42,34 +40,31 @@ from trading_robot.gui_runtime_controller import (
 from trading_robot.instrument_runtime import InstrumentRuntime
 from trading_robot.multi_instrument_config import MultiInstrumentProfile
 from trading_robot.multi_instrument_strategy import StrategyProposal
+from trading_robot.portfolio_manager import CanonicalPortfolioManager
 from trading_robot.portfolio_model import (
     AccountState,
     CashBalance,
-    OwnershipStatus,
     PortfolioState,
-    PortfolioTarget,
-    PositionOrigin,
-    PositionOwnership,
-    PositionState,
-    ReconciliationResult,
     ReconciliationStatus,
     SnapshotFreshness,
 )
 from trading_robot.portfolio_preflight import PortfolioSnapshotLease
 from trading_robot.portfolio_repository import PortfolioRepository
+from trading_robot.portfolio_risk_read_service import load_portfolio_risk_metadata
+from trading_robot.portfolio_risk_runtime import PortfolioRiskRuntime
 from trading_robot.portfolio_risk_shadow import PortfolioRiskCandidateQuote
 from trading_robot.risk import RiskPolicy
 from trading_robot.risk_persistence import RiskProfileStore, RiskStateStore
 from trading_robot.risk_runtime import (
     RiskDispatchAuthorizationError,
     RiskRuntimeAdapter,
-    risk_state_guard_hash,
 )
 from trading_robot.sandbox_execution_adapter import (
     SandboxExecutionAdapter,
     SandboxExecutionPolicy,
 )
 from trading_robot.state_persistence import atomic_write_json
+from trading_robot.strategy_runtime import StrategyDecision
 
 ROOT = Path(__file__).resolve().parents[2]
 VECTORS = json.loads(
@@ -113,7 +108,9 @@ def _profile(ticker: str, interval: str) -> MultiInstrumentProfile:
     )
 
 
-def _configured(scope: str | None = None) -> ConfiguredExecutionSet:
+def _configured(
+    scope: str | None = None, *, active: bool = False
+) -> ConfiguredExecutionSet:
     profiles = (
         _profile("SBER", "CANDLE_INTERVAL_HOUR"),
         _profile("LKOH", "CANDLE_INTERVAL_30_MIN"),
@@ -122,7 +119,11 @@ def _configured(scope: str | None = None) -> ConfiguredExecutionSet:
         account_scope_sha256=scope or VECTORS["account_scope_sha256"],
         bindings=tuple(
             ConfiguredRuntimeBinding(
-                profile, InstrumentRuntime(profile.to_runtime_config(ACCOUNT))
+                profile,
+                InstrumentRuntime(
+                    profile.to_runtime_config(ACCOUNT),
+                    status="ACTIVE" if active else "STOPPED",
+                ),
             )
             for profile in profiles
         ),
@@ -566,7 +567,87 @@ def test_proposal_marker_tamper_blocks_coordination(tmp_path: Path) -> None:
     assert hooks.proposal_sha256 is None
 
 
-def _armed_chain(root: Path, *, ledger_revision: int, ledger_head_sha256: str):
+def test_nested_proposal_mutation_cannot_escape_marker_binding(tmp_path: Path) -> None:
+    configured = _configured()
+    metadata_path = _metadata(tmp_path)
+    target = configured.bindings[0].runtime
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    delegate = _Hooks(configured.bindings[0].profile)
+    hooks = q7a.Q7AControlledHooks(
+        delegate=delegate,
+        configured=configured,
+        record=_record(configured, metadata_path),
+        candidate_commit=VECTORS["candidate_commit"],
+        candidate_tree=VECTORS["candidate_tree"],
+        metadata_path=metadata_path,
+        proposal_marker_path=tmp_path / "private" / "proposal-marker.json",
+        controlled_proposal=lambda runtime, *_args: _proposal(runtime),
+    )
+    proposal = hooks.evaluate_closed_candle(target, now, now)
+    _reason(
+        "PROPOSAL_MARKER_INVALID",
+        proposal.comparison.__setitem__,
+        "changed_after_marker",
+        "untrusted",
+    )
+    _reason(
+        "PROPOSAL_MARKER_INVALID",
+        proposal.decisions.__setitem__,
+        "changed_after_marker",
+        1,
+    )
+    assert delegate.coordination_calls == 0
+    assert hooks.proposal_sha256 is None
+    request = hooks.coordination_request(target, proposal, now, now)
+    assert request.proposal is proposal
+    assert (
+        hooks.proposal_sha256
+        == hashlib.sha256(q7a._canonical(proposal.to_dict())).hexdigest()
+    )
+
+
+def test_delegate_cannot_mutate_proposal_during_coordination(tmp_path: Path) -> None:
+    class MutatingHooks(_Hooks):
+        def coordination_request(self, runtime, proposal, *args):
+            request = super().coordination_request(runtime, proposal, *args)
+            proposal.comparison["changed_during_coordination"] = "untrusted"
+            return request
+
+    configured = _configured()
+    metadata_path = _metadata(tmp_path)
+    target = configured.bindings[0].runtime
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    delegate = MutatingHooks(configured.bindings[0].profile)
+    hooks = q7a.Q7AControlledHooks(
+        delegate=delegate,
+        configured=configured,
+        record=_record(configured, metadata_path),
+        candidate_commit=VECTORS["candidate_commit"],
+        candidate_tree=VECTORS["candidate_tree"],
+        metadata_path=metadata_path,
+        proposal_marker_path=tmp_path / "private" / "proposal-marker.json",
+        controlled_proposal=lambda runtime, *_args: _proposal(runtime),
+    )
+    proposal = hooks.evaluate_closed_candle(target, now, now)
+    _reason(
+        "PROPOSAL_MARKER_INVALID",
+        hooks.coordination_request,
+        target,
+        proposal,
+        now,
+        now,
+    )
+    assert delegate.coordination_calls == 1
+    assert hooks.proposal_sha256 is None
+
+
+def _armed_chain(
+    root: Path,
+    *,
+    ledger_revision: int,
+    ledger_head_sha256: str,
+    opening_record_sha256: str = "7" * 64,
+):
     store = cl7.RuntimeCashAuthorityStore(root)
     manager = cl7.RuntimeCashAuthorityManager(store)
     current = store.bootstrap(transition_at=T0)
@@ -589,7 +670,7 @@ def _armed_chain(root: Path, *, ledger_revision: int, ledger_head_sha256: str):
                 "ledger_revision": ledger_revision,
                 "ledger_head_sha256": ledger_head_sha256,
                 "opening_cutoff": T0,
-                "opening_record_sha256": "7" * 64,
+                "opening_record_sha256": opening_record_sha256,
                 "operations_complete_through": "2026-09-11T10:00:00.000000001Z",
             },
         ),
@@ -627,7 +708,14 @@ def _central(
     *,
     risk_policy_hash: str = "d" * 64,
     risk_guard_hash: str = "e" * 64,
+    enqueue: bool = True,
+    canonical_time: bool = False,
 ):
+    snapshot_at = (
+        datetime.fromisoformat(T5.replace("Z", "+00:00")).isoformat()
+        if canonical_time
+        else T5
+    )
     state = PortfolioState(
         version=2,
         account=AccountState(
@@ -637,8 +725,8 @@ def _central(
             expected_yield=0.0,
             cash_balances=(CashBalance("rub", 1_000_000.0),),
         ),
-        snapshot_at=T5,
-        generated_at=T5,
+        snapshot_at=snapshot_at,
+        generated_at=snapshot_at,
         freshness=SnapshotFreshness.FRESH,
         source="PORTFOLIO_MANAGER",
         positions=(),
@@ -652,6 +740,8 @@ def _central(
     central = CentralOrderManager(
         CentralOrderStore(root / "central_order_state.json"), account_id=ACCOUNT
     )
+    if not enqueue:
+        return repository, central, None
     lease = PortfolioSnapshotLease.from_state(state, leased_at=T5)
     authorization = ExecutionAuthorization(
         account_id=ACCOUNT,
@@ -691,6 +781,159 @@ def _central(
     return repository, central, intent
 
 
+def _connected_owner_admission(root: Path):
+    """Use the accepted Risk/Portfolio Risk coordinator for the control proposal."""
+
+    configured = _configured(active=True)
+    metadata_path = _metadata(root)
+    repository, central, _ = _central(root, enqueue=False, canonical_time=True)
+    profile_store = RiskProfileStore(root / "risk_profiles.json")
+    profile_store.confirm_portfolio_policy(
+        "SANDBOX_EXECUTION",
+        RiskPolicy(
+            cash_reserve_rub=0.0,
+            daily_loss_limit_rub=None,
+            daily_loss_limit_fraction=None,
+            weekly_loss_limit_rub=None,
+            weekly_loss_limit_fraction=None,
+            max_drawdown_fraction=None,
+            max_daily_turnover_rub=None,
+            max_daily_turnover_fraction=None,
+            max_orders_per_day=None,
+            risk_per_trade_rub=None,
+            risk_per_trade_fraction=None,
+            max_position_share_of_equity=1.0,
+            max_position_value_rub=1_000_000.0,
+            max_order_value_rub=1_000_000.0,
+            commission_buffer_fraction=0.0,
+            portfolio_policy_configured=True,
+            portfolio_policy_mode="ENFORCED",
+            max_snapshot_age_seconds=None,
+            max_price_age_seconds=None,
+        ),
+        confirmation="CONFIRM PORTFOLIO RISK POLICY",
+        account_scope=ACCOUNT,
+    )
+    state_store = RiskStateStore(root / "risk_state.json")
+    risk = RiskRuntimeAdapter(
+        account_id=ACCOUNT,
+        mode="SANDBOX_EXECUTION",
+        profile_store=profile_store,
+        state_store=state_store,
+    )
+    portfolio_risk = PortfolioRiskRuntime(
+        account_id=ACCOUNT,
+        profile_store=profile_store,
+        state_store=state_store,
+        instrument_metadata=load_portfolio_risk_metadata(metadata_path),
+    )
+    target = configured.bindings[0].runtime
+    profile = configured.bindings[0].profile
+    now = datetime.fromisoformat(T6.replace("Z", "+00:00"))
+    decision = StrategyDecision(
+        candle_time=T6,
+        strategy_id="sma",
+        strategy_version="1",
+        role="PRIMARY",
+        config_hash=profile.strategy_profile_hash,
+        signal=1,
+        target_weight=1.0,
+        target_lots=1,
+        reason="synthetic controlled candidate",
+        indicators={"close": 100.0},
+        bars_used=20,
+        required_bars=5,
+    )
+
+    def controlled(runtime, *_args):
+        return StrategyProposal(
+            runtime_key=runtime.runtime_key,
+            instrument_id=runtime.config.instrument_id,
+            ticker=runtime.config.ticker,
+            candle_interval=runtime.config.candle_interval,
+            candle_time=T6,
+            strategy_profile_hash=runtime.config.strategy_config_hash,
+            primary_strategy="sma",
+            primary_target_lots=1,
+            decisions={"sma": decision},
+            comparison={},
+            generated_at=T6,
+        )
+
+    closes = [100.0 + step for step in range(20)]
+    candles = pd.DataFrame(
+        {
+            "open": closes,
+            "high": [value + 1.0 for value in closes],
+            "low": [value - 1.0 for value in closes],
+            "close": closes,
+        },
+        index=pd.date_range(end=now, periods=20, freq="h"),
+    )
+
+    class EconomicHooks(_Hooks):
+        def coordination_request(self, runtime, proposal, *args):
+            return replace(
+                super().coordination_request(runtime, proposal, *args),
+                candles=candles,
+            )
+
+    record = q7a.build_control_record(
+        candidate_commit=VECTORS["candidate_commit"],
+        candidate_tree=VECTORS["candidate_tree"],
+        configured=configured,
+        target_instrument_id=target.config.instrument_id,
+        metadata_path=metadata_path,
+        created_at="2026-09-11T10:00:05.000000Z",
+    )
+    hooks = q7a.Q7AControlledHooks(
+        delegate=EconomicHooks(
+            profile,
+            quote=PortfolioRiskCandidateQuote(
+                unit_price_rub=100.0,
+                price_at=now,
+                source="SYNTHETIC_QUOTE",
+            ),
+            evaluated_at=now,
+        ),
+        configured=configured,
+        record=record,
+        candidate_commit=VECTORS["candidate_commit"],
+        candidate_tree=VECTORS["candidate_tree"],
+        metadata_path=metadata_path,
+        proposal_marker_path=root / "q7a-proposal-marker.json",
+        controlled_proposal=controlled,
+    )
+    proposal = hooks.evaluate_closed_candle(target, now, now)
+    request = hooks.coordination_request(target, proposal, now, now)
+    result = CentralOrderCoordinator(
+        central,
+        repository,
+        risk,
+        portfolio_risk_runtime=portfolio_risk,
+    ).coordinate(
+        request.proposal,
+        target,
+        request.profile,
+        candles=request.candles,
+        lot_size=request.lot_size,
+        now=request.evaluated_at,
+        portfolio_risk_candidate_quote=request.portfolio_risk_candidate_quote,
+    )
+    assert result.status == "QUEUED"
+    intent = central.state().queued[0]
+    assert result.intent_id == intent.intent_id
+    assert intent.candidate.runtime_key == proposal.runtime_key
+    assert intent.candidate.strategy_profile_hash == proposal.strategy_profile_hash
+    assert datetime.fromisoformat(
+        intent.candidate.candle_time
+    ) == datetime.fromisoformat(proposal.candle_time)
+    assert intent.authorization.portfolio_risk is not None
+    assert intent.authorization.portfolio_risk.finalized is True
+    assert hooks.proposal_sha256 is not None
+    return record, hooks, proposal, risk, portfolio_risk, repository, central, intent
+
+
 class _ExactRiskGate:
     account_id = ACCOUNT
     mode = "SANDBOX_EXECUTION"
@@ -707,6 +950,104 @@ class _ExactRiskGate:
         from contextlib import nullcontext
 
         return nullcontext()
+
+
+class _CompleteFakeSandboxTransport(q7a.Q7AFakeSandboxTransport):
+    """One fake broker account with consistent cash, position and CL3 reads."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            scenario="filled",
+            account_id=ACCOUNT,
+            target_instrument_id="uid-sber",
+        )
+        self.fill_visible = False
+        self.operation_reads = 0
+        self.operation_id: str | None = None
+
+    def post_order_once(self, *args, **kwargs):
+        response = super().post_order_once(*args, **kwargs)
+        assert self.request_id is not None
+        self.operation_id = f"synthetic-operation-for-{self.request_id}"
+        self.fill_visible = True
+        return response
+
+    def get_operations_by_cursor_once(self, _payload, _timeout):
+        self.operation_reads += 1
+        items = []
+        if self.fill_visible:
+            assert self.operation_id is not None
+            items.append(
+                {
+                    "brokerAccountId": ACCOUNT,
+                    "childOperations": [],
+                    "commission": {"currency": "RUB", "units": "0", "nano": 0},
+                    "cursor": "synthetic-filled-cursor",
+                    "date": "2026-09-11T10:00:07.000Z",
+                    "id": self.operation_id,
+                    "payment": {"currency": "RUB", "units": "-1000", "nano": 0},
+                    "quantity": "1",
+                    "quantityDone": "1",
+                    "quantityRest": "0",
+                    "state": "OPERATION_STATE_EXECUTED",
+                    "type": "OPERATION_TYPE_BUY",
+                }
+            )
+        return {"items": items, "hasNext": False, "nextCursor": ""}
+
+    def get_portfolio(self, account_id):
+        assert account_id == ACCOUNT
+        cash = "999000" if self.fill_visible else "1000000"
+        shares = "1000" if self.fill_visible else "0"
+        positions = []
+        if self.fill_visible:
+            positions.append(
+                {
+                    "instrumentUid": "uid-sber",
+                    "figi": "synthetic-figi-sber",
+                    "ticker": "SBER",
+                    "classCode": "TQBR",
+                    "instrumentType": "share",
+                    "quantity": {"units": "10", "nano": 0},
+                    "quantityLots": {"units": "1", "nano": 0},
+                    "averagePositionPrice": {
+                        "currency": "rub",
+                        "units": "100",
+                        "nano": 0,
+                    },
+                    "currentPrice": {"currency": "rub", "units": "100", "nano": 0},
+                    "expectedYield": {"units": "0", "nano": 0},
+                }
+            )
+        return {
+            "totalAmountCurrencies": {"currency": "RUB", "units": cash, "nano": 0},
+            "totalAmountPortfolio": {"currency": "rub", "units": "1000000", "nano": 0},
+            "totalAmountShares": {"currency": "rub", "units": shares, "nano": 0},
+            "expectedYield": {"units": "0", "nano": 0},
+            "positions": positions,
+        }
+
+    def get_withdraw_limits(self, account_id):
+        assert account_id == ACCOUNT
+        cash = "999000" if self.fill_visible else "1000000"
+
+        class StaticTransport:
+            @staticmethod
+            def _post(service, method, payload):
+                assert (service, method, payload) == (
+                    "SandboxService",
+                    "GetSandboxWithdrawLimits",
+                    {"accountId": ACCOUNT},
+                )
+                return {
+                    "blocked": [],
+                    "blockedGuarantee": [],
+                    "money": [{"currency": "RUB", "units": cash, "nano": 0}],
+                }
+
+        return tbank_sandbox.TBankSandboxClient.get_withdraw_limits(
+            StaticTransport(), ACCOUNT
+        )
 
 
 def _proof(current, state, queued, **changes):
@@ -755,17 +1096,26 @@ def _dispatch_setup(
     risk_policy_hash: str = "d" * 64,
     risk_guard_hash: str = "e" * 64,
     risk_runtime: RiskRuntimeAdapter | None = None,
+    portfolio_risk_runtime: PortfolioRiskRuntime | None = None,
+    admitted: tuple[PortfolioRepository, CentralOrderManager, object] | None = None,
+    exact_context: bool = False,
+    opening_record_sha256: str = "7" * 64,
 ):
     ledger_snapshot = ledger_store.snapshot()
     authority_manager, _ = _armed_chain(
         tmp_path,
         ledger_revision=ledger_snapshot.ledger_revision,
         ledger_head_sha256=ledger_snapshot.ledger_head_sha256,
+        opening_record_sha256=opening_record_sha256,
     )
-    repository, central, intent = _central(
-        tmp_path,
-        risk_policy_hash=risk_policy_hash,
-        risk_guard_hash=risk_guard_hash,
+    repository, central, intent = (
+        admitted
+        if admitted is not None
+        else _central(
+            tmp_path,
+            risk_policy_hash=risk_policy_hash,
+            risk_guard_hash=risk_guard_hash,
+        )
     )
     if portfolio_drift:
         old = repository.load(expected_account_id=ACCOUNT)
@@ -784,26 +1134,30 @@ def _dispatch_setup(
             )
         )
 
-    transport = q7a.Q7AFakeSandboxTransport(
-        scenario=scenario,
-        account_id=ACCOUNT,
-        target_instrument_id="uid-sber",
-        before_post=observe_attempt_marker,
-    )
-    monkeypatch.setattr(
-        cl7.RuntimeCashAuthorityManager,
-        "synchronize_operations_locked",
-        lambda self, current, **_kwargs: (current, SimpleNamespace()),
-    )
-    monkeypatch.setattr(
-        cl7.RuntimeCashAuthorityManager,
-        "build_runtime_context",
-        lambda *_args, **_kwargs: SimpleNamespace(context=SimpleNamespace()),
-    )
-    monkeypatch.setattr(
-        transport, "get_portfolio", lambda _account: {"synthetic": "portfolio"}
-    )
-    monkeypatch.setattr(transport, "get_withdraw_limits", lambda _account: {})
+    if exact_context:
+        transport = _CompleteFakeSandboxTransport()
+        transport.before_post = observe_attempt_marker
+    else:
+        transport = q7a.Q7AFakeSandboxTransport(
+            scenario=scenario,
+            account_id=ACCOUNT,
+            target_instrument_id="uid-sber",
+            before_post=observe_attempt_marker,
+        )
+        monkeypatch.setattr(
+            cl7.RuntimeCashAuthorityManager,
+            "synchronize_operations_locked",
+            lambda self, current, **_kwargs: (current, SimpleNamespace()),
+        )
+        monkeypatch.setattr(
+            cl7.RuntimeCashAuthorityManager,
+            "build_runtime_context",
+            lambda *_args, **_kwargs: SimpleNamespace(context=SimpleNamespace()),
+        )
+        monkeypatch.setattr(
+            transport, "get_portfolio", lambda _account: {"synthetic": "portfolio"}
+        )
+        monkeypatch.setattr(transport, "get_withdraw_limits", lambda _account: {})
 
     class _DriftRiskGate(_ExactRiskGate):
         def dispatch_authorization_guard(self, **_kwargs):
@@ -820,12 +1174,17 @@ def _dispatch_setup(
             if risk_runtime is not None
             else _ExactRiskGate()
         ),
+        portfolio_risk_runtime=portfolio_risk_runtime,
         cash_authority_manager=authority_manager,
         cl7_identity_key=KEY,
         cl7_identity_key_id=KEY_ID,
         cl7_ledger_store=ledger_store,
-        cl7_proof_builder=lambda current, state, queued: _proof(
-            current, state, queued, **(proof_changes or {})
+        cl7_proof_builder=(
+            None
+            if exact_context
+            else lambda current, state, queued: _proof(
+                current, state, queued, **(proof_changes or {})
+            )
         ),
         cl7_clock=lambda: T6,
         cl7_monotonic_ns=lambda: 1,
@@ -837,9 +1196,11 @@ def _dispatch_setup(
 @pytest.mark.parametrize(
     "case", VECTORS["dispatch_cases"], ids=lambda item: item["scenario"]
 )
-def test_fake_provider_traverses_exact_central_cl7_dispatch_without_replay(
+def test_isolated_provider_outcomes_cannot_fabricate_economic_effects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: dict[str, object]
 ) -> None:
+    # These injected-proofs cases test failure classifications only. The
+    # connected owner-to-owner success and lifecycle is asserted separately.
     ledger, opening, _descriptor = _ledger_with_opening(tmp_path)
     authority_manager, repository, central, intent, transport, adapter, at_post = (
         _dispatch_setup(
@@ -897,17 +1258,7 @@ def _ledger_with_opening(
 ) -> tuple[
     persistence.CashLedgerStore, cl4.OpeningAcceptance, persistence.CodecDescriptor
 ]:
-    raw_vectors = json.loads(
-        (
-            ROOT / "current/tests/fixtures/v3_10_cash_ledger_persistence_vectors.json"
-        ).read_text(encoding="ascii")
-    )
-    descriptor_raw = next(
-        item["canonical_json_ascii"]
-        for item in raw_vectors["vectors"]
-        if item["id"] == "codec-descriptor-synthetic"
-    )
-    descriptor = persistence.CodecDescriptor.from_canonical_bytes(descriptor_raw)
+    descriptor = broker.TBANK_OPERATION_CODEC
     ledger = persistence.CashLedgerStore.create(
         root / "ledger", (cl4.CL4_OPENING_CODEC, descriptor)
     )
@@ -935,134 +1286,109 @@ def _ledger_with_opening(
     return ledger, opening, descriptor
 
 
-def _filled_portfolio(before: PortfolioState, after_order_at: str) -> PortfolioState:
-    snapshot_at = (
-        datetime.fromisoformat(after_order_at) + timedelta(seconds=1)
-    ).isoformat()
-    target = PortfolioTarget(
-        instrument_id="uid-sber",
-        target_lots=1,
-        strategy_id="sma",
-        config_hash="c" * 64,
-        candle_time=T5,
-    )
-    position = PositionState(
-        instrument_id="uid-sber",
-        figi="synthetic-figi-sber",
-        ticker="SBER",
-        class_code="TQBR",
-        asset_type="share",
-        currency="rub",
-        quantity=10.0,
-        actual_lots=1,
-        average_price=100.0,
-        current_price=100.0,
-        market_value=1000.0,
-        expected_yield=0.0,
-        target=target,
-        ownership=PositionOwnership(
-            strategy_id="sma",
-            config_hash="c" * 64,
-            candle_interval="CANDLE_INTERVAL_HOUR",
-        ),
-        ownership_status=OwnershipStatus.ATTRIBUTED,
-        pending_orders=(),
-        reconciliation=ReconciliationResult(
-            instrument_id="uid-sber",
-            status=ReconciliationStatus.MATCHED,
-            blocking=False,
-            reasons=(),
-            actual_lots=1,
-            target_lots=1,
-            checked_at=snapshot_at,
-        ),
-        origin=PositionOrigin.STRATEGY,
-        last_candle_time=T5,
-    )
-    return replace(
-        before,
-        account=AccountState(
-            account_id=ACCOUNT,
-            total_value=1_000_000.0,
-            securities_value=1000.0,
-            expected_yield=0.0,
-            cash_balances=(CashBalance("rub", 999_000.0),),
-        ),
-        positions=(position,),
-        snapshot_at=snapshot_at,
-        generated_at=snapshot_at,
-        revision=before.revision + 1,
-    )
-
-
 def test_filled_fake_provider_closes_exact_owner_lineage_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    profiles = RiskProfileStore(tmp_path / "risk_profiles.json")
-    profiles.save_profile(
-        "SANDBOX_EXECUTION", RiskPolicy(), account_scope=ACCOUNT, source="Q7A_SYNTHETIC"
+    # No success-side authority is fabricated: control -> owner admission ->
+    # Central -> real CL7 pre-POST rebuild -> fake provider -> CL3/CL2/Portfolio/Risk.
+    clock = [T6]
+    monkeypatch.setattr(central_module, "_now", lambda: clock[0])
+    record, hooks, proposal, risk, portfolio_risk, repository, central, intent = (
+        _connected_owner_admission(tmp_path)
     )
-    risk_states = RiskStateStore(tmp_path / "risk_state.json")
-    risk = RiskRuntimeAdapter(
-        account_id=ACCOUNT,
-        mode="SANDBOX_EXECUTION",
-        profile_store=profiles,
-        state_store=risk_states,
+    _reason(
+        "PROPOSAL_MARKER_INVALID",
+        proposal.decisions["sma"].indicators.__setitem__,
+        "changed_after_coordination",
+        1,
     )
-    policy_hash = risk.current_policy_hash()
-    guard_hash = risk_state_guard_hash(risk_states.load_account(ACCOUNT))
+    assert (
+        hooks.proposal_sha256
+        == hashlib.sha256(q7a._canonical(proposal.to_dict())).hexdigest()
+    )
+    assert intent.authorization.portfolio_risk is not None
+    assert intent.authorization.risk_decision_id
+    assert intent.candidate.runtime_key == proposal.runtime_key
+    assert record.fields["target_instrument_id"] == intent.candidate.instrument_id
+    risk_states = risk.state_store
     ledger, opening, descriptor = _ledger_with_opening(tmp_path)
     authority, repository, central, intent, transport, adapter, at_post = (
         _dispatch_setup(
             tmp_path,
             monkeypatch,
             ledger_store=ledger,
-            risk_policy_hash=policy_hash,
-            risk_guard_hash=guard_hash,
             risk_runtime=risk,
+            portfolio_risk_runtime=portfolio_risk,
+            admitted=(repository, central, intent),
+            exact_context=True,
+            opening_record_sha256=opening.record.sha256,
         )
     )
     dispatched = adapter.dispatch_next(repository, expected_intent_id=intent.intent_id)
     assert dispatched.status == "SUBMITTED"
     assert at_post == [("EXACT_CASH_DISPATCH_PENDING", 1, True)]
     assert transport.post_calls == 1
-    # The fake provider supplies an order read-back; neither POST response nor
-    # the Q7A harness is allowed to invent a Portfolio or CashLedger effect.
+    # A fake broker order is read back; broker observations flow through the
+    # accepted CL3 classification and CL2 append owners, never hand-built.
     order = transport.get_order_state(ACCOUNT, intent.intent_id)
     assert order["orderRequestId"] == intent.intent_id
+    assert order["orderId"] == transport.order_id
     assert order["executionReportStatus"] == "EXECUTION_REPORT_STATUS_FILL"
     assert order["lotsExecuted"] == "1"
-    before = repository.load(expected_account_id=ACCOUNT)
-    repository.save(
-        _filled_portfolio(before, central.state().intents[0].updated_at),
-        expected_revision=before.revision,
+    assert transport.request_id == intent.intent_id
+    assert transport.operation_id == f"synthetic-operation-for-{intent.intent_id}"
+    pending_proof_sha256 = authority.status().pending_dispatch_proof_sha256
+    assert pending_proof_sha256 is not None
+    assert (
+        central.state().intents[0].cl7_locked_dispatch_proof_sha256
+        == pending_proof_sha256
     )
-    content = {"operation_kind": "Q7A_FILLED"}
-    content_hash = persistence.sha256_hex(persistence.canonical_json_bytes(content))
-    source = SourceIdentity(
-        account_scope_sha256=VECTORS["account_scope_sha256"],
-        source_kind="SYNTHETIC",
-        source_scope_sha256=hashlib.sha256(intent.intent_id.encode()).hexdigest(),
-        source_content_sha256=content_hash,
+    batch = broker.collect_tbank_operations(
+        broker.BrokerReadRequest(
+            environment=broker.BrokerEnvironment.SANDBOX,
+            raw_account_id=ACCOUNT,
+            identity_key=KEY,
+            identity_key_id=KEY_ID,
+            from_inclusive=T6,
+            to_exclusive=T8,
+            limit=100,
+            max_pages=1,
+            max_items=100,
+            absolute_deadline_ns=10_000_000,
+            retry_policy=broker.RetryPolicy(1, 1_000_000, ()),
+            transport=transport.get_operations_by_cursor_once,
+            monotonic_ns=lambda: 0,
+            wait_ns=lambda _duration: None,
+        )
     )
-    observation = persistence.InboxObservation.create(
-        descriptor=descriptor,
-        content=content,
-        source=source,
-        observed_at=T7,
-        provenance_sha256=hashlib.sha256(
-            persistence.canonical_json_bytes(order)
-        ).hexdigest(),
-    )
-    amount = Money("RUB", -1_000_000_000_000)
-    transaction = LedgerTransaction(
-        classification=LedgerClassification.TRADE_SETTLEMENT,
-        effective_at=T7,
-        source=source,
-        postings=(
-            LedgerPosting(1, LedgerAccount.ASSET_BROKER_CASH, amount),
-            LedgerPosting(2, LedgerAccount.ASSET_TRADE_CLEARING, -amount),
-        ),
+    assert batch.watermark.item_count == 1
+    assert len(batch.decisions) == 1
+    decision = batch.decisions[0]
+    assert decision.kind is broker.BrokerDecisionKind.TRANSACTION_PROPOSED
+    observation = decision.observation
+    transaction = decision.transaction_proposal
+    assert transaction is not None
+    assert transaction.source == observation.source
+    assert observation.source.account_scope_sha256 == VECTORS["account_scope_sha256"]
+    assert observation.source.source_kind == "TBANK_OPERATION"
+    assert (
+        observation.source.source_scope_sha256
+        == hmac.new(
+            KEY,
+            persistence.canonical_json_bytes(
+                {
+                    "account_scope_sha256": VECTORS["account_scope_sha256"],
+                    "component": "PAYMENT",
+                    "domain": "v3.10-cl3-source-scope",
+                    "identity_key_id": KEY_ID,
+                    "operation_id": transport.operation_id,
+                    "operation_state": "OPERATION_STATE_EXECUTED",
+                    "provider": "TBANK",
+                    "version": 1,
+                }
+            ),
+            hashlib.sha256,
+        ).hexdigest()
     )
     pre = ledger.snapshot()
     assert pre.ledger_revision == opening.ledger_revision
@@ -1086,8 +1412,37 @@ def test_filled_fake_provider_closes_exact_owner_lineage_once(
     posted = ledger.snapshot()
     assert posted.ledger_revision == opening.ledger_revision + 1
     assert posted.ledger_head_sha256 != opening.ledger_head_sha256
+    manager = CanonicalPortfolioManager(
+        transport,
+        ACCOUNT,
+        robot_state_file=tmp_path / "robot_state.json",
+        portfolio_state_file=tmp_path / "portfolio_state.json",
+        journal_file=tmp_path / "portfolio_events.db",
+    )
+    manager.stage_confirmed_target(
+        instrument_id=intent.candidate.instrument_id,
+        target_lots=intent.candidate.target_lots,
+        strategy_id=intent.candidate.strategy_id,
+        config_hash=intent.candidate.strategy_profile_hash,
+        candle_interval=intent.candidate.candle_interval,
+        ticker=intent.candidate.ticker,
+        figi="synthetic-figi-sber",
+        class_code="TQBR",
+        candle_time=intent.candidate.candle_time,
+        transaction_id=intent.intent_id,
+    )
+    refreshed = manager.refresh_from_api_portfolio(
+        transport.get_portfolio(ACCOUNT),
+        broker_orders=(),
+        record_event=False,
+        snapshot_at="2026-09-11T10:00:08+00:00",
+    )
+    assert repository.load(expected_account_id=ACCOUNT) == refreshed
+    assert len(refreshed.positions) == 1
+    assert refreshed.positions[0].actual_lots == 1
+    assert refreshed.positions[0].reconciliation.status is ReconciliationStatus.MATCHED
     cash_proof = cl4.build_broker_cash_proof(
-        {"totalAmountCurrencies": {"currency": "RUB", "units": "999000", "nano": 0}},
+        transport.get_portfolio(ACCOUNT),
         account_scope_sha256=VECTORS["account_scope_sha256"],
         environment=broker.BrokerEnvironment.SANDBOX,
         as_of=T8,
@@ -1101,7 +1456,9 @@ def test_filled_fake_provider_closes_exact_owner_lineage_once(
     )
     assert reconciliation.status is cl4.ReconciliationStatus.MATCHED
     assert reconciliation.expected_cash.minor_units == 999_000_000_000_000
-    assert intent.authorization.risk_policy_hash == policy_hash
+    assert reconciliation.projection.opening_record_sha256 == opening.record.sha256
+    assert intent.authorization.risk_policy_hash == risk.current_policy_hash()
+    clock[0] = T9
     terminal = central.mark_reconciled(
         intent.intent_id,
         portfolio_repository=repository,
@@ -1112,6 +1469,7 @@ def test_filled_fake_provider_closes_exact_owner_lineage_once(
         execution_price_source="synthetic_broker_order_state",
     )
     assert terminal.status == "RECONCILED"
+    assert terminal.broker_order_id == order["orderId"]
     assert terminal.risk_execution_status == "RECORDED"
     assert terminal.risk_execution_id == intent.intent_id
     assert central.state().reserved_cash_kopecks == 0
@@ -1128,6 +1486,7 @@ def test_filled_fake_provider_closes_exact_owner_lineage_once(
     assert disposition == "RECOVERY_CLOSED_DISARMED"
     assert recovered.post_attempt_count == 1
     assert recovered.pending_dispatch_proof_sha256 is None
+    assert pending_proof_sha256 != recovered.pending_dispatch_proof_sha256
     assert recovered.state is cl7.RuntimeCashAuthorityState.EXACT_CASH_DISARMED
     assert transport.get_order_state(ACCOUNT, intent.intent_id) == order
     assert transport.post_calls == 1
@@ -1135,6 +1494,73 @@ def test_filled_fake_provider_closes_exact_owner_lineage_once(
     assert ledger.snapshot().ledger_revision == posted.ledger_revision
     assert risk_states.load_account(ACCOUNT).recorded_execution_ids == (
         intent.intent_id,
+    )
+    lineage_inputs = {
+        "record": record,
+        "hooks": hooks,
+        "proposal": proposal,
+        "queued": intent,
+        "terminal": terminal,
+        "provider_order": order,
+        "operation_id": transport.operation_id,
+        "observation": observation,
+        "transaction": transaction,
+        "opening_ledger_revision": opening.ledger_revision,
+        "opening_ledger_head_sha256": opening.ledger_head_sha256,
+        "ledger_snapshot": posted,
+        "reconciliation": reconciliation,
+        "portfolio": refreshed,
+        "risk_execution_ids": risk_states.load_account(ACCOUNT).recorded_execution_ids,
+        "authority": recovered,
+        "locked_proof_sha256": pending_proof_sha256,
+        "identity_key": KEY,
+        "identity_key_id": KEY_ID,
+    }
+    lineage = q7a.build_synthetic_lineage_evidence(**lineage_inputs)
+    with (tmp_path / "q7a-synthetic-lineage.json").open("xb") as stream:
+        stream.write(lineage)
+    assert (tmp_path / "q7a-synthetic-lineage.json").read_bytes() == lineage
+    assert ACCOUNT.encode() not in lineage
+    assert intent.intent_id.encode() not in lineage
+    assert order["orderId"].encode() not in lineage
+    fields = json.loads(lineage)
+    assert fields["control_record_sha256"] == record.record_sha256
+    assert fields["proposal_sha256"] == hooks.proposal_sha256
+    assert (
+        fields["operation_source_scope_sha256"]
+        == observation.source.source_scope_sha256
+    )
+    assert fields["ledger_head_sha256"] == posted.ledger_head_sha256
+    assert fields["reconciliation_sha256"] == reconciliation.sha256
+    assert fields["locked_dispatch_proof_sha256"] == pending_proof_sha256
+    assert fields["authority_record_sha256"] == recovered.sha256
+    _reason(
+        "LINEAGE_MISMATCH",
+        q7a.build_synthetic_lineage_evidence,
+        **{
+            **lineage_inputs,
+            "provider_order": {**order, "orderRequestId": "different-order"},
+        },
+    )
+    _reason(
+        "LINEAGE_MISMATCH",
+        q7a.build_synthetic_lineage_evidence,
+        **{**lineage_inputs, "operation_id": "unrelated-operation"},
+    )
+    _reason(
+        "LINEAGE_MISMATCH",
+        q7a.build_synthetic_lineage_evidence,
+        **{**lineage_inputs, "risk_execution_ids": ()},
+    )
+    _reason(
+        "LINEAGE_MISMATCH",
+        q7a.build_synthetic_lineage_evidence,
+        **{**lineage_inputs, "opening_ledger_head_sha256": "0" * 64},
+    )
+    _reason(
+        "LINEAGE_MISMATCH",
+        q7a.build_synthetic_lineage_evidence,
+        **{**lineage_inputs, "locked_proof_sha256": "0" * 64},
     )
     assert central.enqueue(intent.candidate, intent.authorization).idempotent is True
     with pytest.raises(CentralOrderConflictError):
