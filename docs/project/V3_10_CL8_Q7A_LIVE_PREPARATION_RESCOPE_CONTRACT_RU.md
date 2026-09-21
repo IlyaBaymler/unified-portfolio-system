@@ -2,7 +2,12 @@
 
 Статус:
 
-`CONTRACT FREEZE CANDIDATE / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
+`LIVE CONTRACT ACCEPTED THROUGH 7e1fd586... / CANDLE-PROPOSAL RESCOPE CANDIDATE / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
+
+Этот файл содержит принятый live-preparation contract и новый additive
+contract rescope, описанный в разделе 23. До independent/adversarial review и
+explicit acceptance exact successor раздел 23 не даёт implementation,
+provider, runtime или experiment authority.
 
 Этот additive rescope закрывает только два blocker принятой Q7A lineage:
 
@@ -361,12 +366,15 @@ Gate A:
 - one SandboxService/GetSandboxPortfolio
 - one SandboxService/GetSandboxWithdrawLimits
 - zero or one SandboxService/GetSandboxPositions, fixed by Preparation
+- one logical target-only MarketDataService/GetCandles acquisition session,
+  whose exact bounded HTTP request count is fixed by Preparation
 - one MarketDataService/GetLastPrices for exactly one target
 
 Gate B:
 - one logical CL3 GetOperationsByCursor sync session
 - one SandboxService/GetSandboxPortfolio
 - one SandboxService/GetSandboxWithdrawLimits
+- no GetCandles
 - no GetLastPrices
 ```
 
@@ -395,6 +403,8 @@ accepted CL3 bounded operation sync
 -> accepted CL4 current-cash/reconciliation rebuild
 -> accepted CL5 CashAvailability rebuild
 -> accepted CL6 PortfolioRiskCashContext rebuild
+-> one target-only StrategyCandleLoader acquisition
+-> deterministic controlled-proposal derivation from that exact frame
 -> one GetLastPrices request for the nominated target
 -> existing Q7A proposal/admission bridge preconditions
 ```
@@ -427,6 +437,11 @@ CL7 state/revision/record SHA
 post_attempt_count = 0
 pending_dispatch_proof = absent
 Central intent/reservation/order count = 0
+target candle-acquisition policy SHA-256
+actual candle request-range set SHA-256 and exact request count
+canonical complete-candle frame SHA-256, row count and latest candle time
+base strategy proposal SHA-256
+controlled proposal SHA-256 and deterministic derivation version
 actual quote canonical bytes SHA-256
 exact canonical price/value
 quote source and provider timestamp
@@ -654,7 +669,13 @@ CENTRAL_NOT_QUIESCENT
 RISK_POLICY_NOT_ENFORCED
 RISK_STATE_GUARD_MISMATCH
 QUOTE_OR_METADATA_INVALID
+CANDLE_ACQUISITION_POLICY_MISMATCH
+CANDLE_READ_FAILED
+CANDLE_FRAME_INVALID
+CANDLE_FRAME_INCOMPLETE
+CANDLE_EVIDENCE_STALE
 CONTROL_RECORD_INVALID
+CONTROLLED_PROPOSAL_DERIVATION_INVALID
 PROPOSAL_ADMISSION_BINDING_INVALID
 LOCKED_REVALIDATION_FAILED
 POST_ADMISSION_DRIFT
@@ -718,6 +739,15 @@ Preparation SHA substitution is rejected
 Preparation cannot contain a future quote value/hash/timestamp
 live acquisition policy tamper is rejected
 quote policy method/source/target/age tamper is rejected
+target candle policy/profile/interval/lookback tamper is rejected
+non-target candle acquisition is rejected
+candle HTTP request count, retry or redirect drift is rejected
+candle frame duplicate/out-of-order/incomplete/non-finite rows are rejected
+candle frame substitution after acquisition is rejected
+stale or wrong-last-candle evidence is rejected before Central
+controlled proposal changes only the frozen PRIMARY signal/target fields
+controlled proposal preserves exact base indicators, stop and candle identity
+base/controlled proposal hashes bind the same candle-frame identity
 actual quote evidence binds exact Preparation and proposal/admission lineage
 provider receipt/content substitution is rejected
 partial pagination/incomplete watermark is rejected
@@ -853,3 +883,316 @@ real-account execution = forbidden
 Contract acceptance разрешает только создание bounded implementation branch.
 Implementation acceptance разрешает только последующую qualification и
 Preparation work. Ни один из этих gates не заменяет exact experiment command.
+
+---
+
+## 23. Additive candle/proposal acquisition rescope
+
+### 23.1 Authority, predecessor and one-file surface
+
+Этот material rescope отдельно авторизован после обнаружения невозможности
+реализовать accepted live entrypoint без неучтённого candle input. Он не
+является вторым correction batch для `CL8-Q7A-LIVE-R1-01..03` и не переносит
+acceptance прежнего exact commit/tree на новый successor.
+
+Раздел 23 имеет precedence только над конфликтующими прежними фразами о
+закрытом Gate A read budget и non-goal изменения controlled-proposal
+derivation. Все остальные принятые границы разделов 1–22 сохраняются.
+
+```text
+rescope predecessor commit =
+7e1fd5862c1d5520141af7f22bc94b76876d6b93
+
+rescope predecessor tree =
+a3683d42b82fd9404f4077acad5e13e18041490e
+
+contract branch =
+agent/v3-10-clean-cl8-q7a-live-candle-proposal-rescope-contract
+
+initial HEAD = merge-base = predecessor
+ahead / behind = 0 / 0
+worktree = clean
+changed paths = 0
+
+contract-only allowlist =
+docs/project/V3_10_CL8_Q7A_LIVE_PREPARATION_RESCOPE_CONTRACT_RU.md
+```
+
+Fixed rescope blockers:
+
+```text
+CL8-Q7A-LIVE-RS2-01 = CANDLE_OWNER_READ_BUDGET_MISSING
+CL8-Q7A-LIVE-RS2-02 = CONTROLLED_PROPOSAL_DERIVATION_UNFROZEN
+```
+
+Все остальные repository paths immutable. Contract work не выполняет
+provider call, runtime mutation, backup/restore, GitHub write или experiment.
+
+### 23.2 Successor implementation lineage
+
+Только после independent/adversarial review и explicit acceptance exact
+contract successor разрешено создать новую branch непосредственно от него:
+
+```text
+branch =
+agent/v3-10-clean-cl8-q7a-live-candle-proposal-implementation
+
+required initial state =
+HEAD = merge-base = exact accepted contract successor
+ahead / behind = 0 / 0
+worktree = clean
+changed paths = 0
+```
+
+Implementation allowlist остаётся ровно трёхфайловым:
+
+```text
+current/tools/v3_10_q7a_live_entrypoint.py
+current/tests/test_v3_10_q7a_live_entrypoint.py
+current/tests/fixtures/v3_10_q7a_live_entrypoint_vectors.json
+```
+
+CL1–CL7, accepted Q7A bridge, Strategy, GUI owner, Central, Portfolio, Risk,
+Portfolio Risk, CashLedger, SandboxExecutionAdapter и provider transport не
+меняются. Если описанная ниже цепочка не реализуется через их существующие
+interfaces в этих трёх paths:
+
+```text
+SCOPE_EXPANSION_REQUIRED -> RESCOPE
+```
+
+### 23.3 Exact target candle-acquisition policy
+
+Preparation связывает policy, а не future candle values:
+
+```text
+owner = existing StrategyCandleLoader
+provider service/method = MarketDataService/GetCandles
+target = exact nominated configured-set member only
+instrument identity = exact target identity from Q7AControlRecord
+interval = exact target MultiInstrumentProfile candle_interval
+required_bars = exact strategy-suite required_bars_for_suite()
+requested lookback_days = exact strategy_lookback_days() result
+request mode = date range
+candleSourceType = CANDLE_SOURCE_EXCHANGE
+logical acquisition sessions = 1
+physical HTTP requests = 1
+provider retries per HTTP request = 0
+redirects followed = 0
+automatic reacquisition = 0
+non-target GetCandles = 0
+```
+
+Preparation дополнительно связывает exact profile/runtime/config hashes,
+`required_bars`, `lookback_days`, interval-specific maximum span, deterministic
+chunking-policy identity, exact HTTP request count `1`, per-request timeout and
+absolute session deadline. До acceptance Preparation обязана доказать, что
+target interval присутствует в existing `TBankSandboxClient.CANDLE_MAX_SPAN` и
+frozen lookback range помещается в один interval-specific maximum span. Exact
+count вычисляется повторно до первого request. Любой второй chunk/request,
+retry, redirect, range drift или дополнительный candle request даёт terminal
+pre-admission failure.
+
+Live session использует existing `StrategyCandleLoader.load()` и accepted
+`TBankSandboxClient` с `max_retries = 0`. Provider telemetry callback является
+единственным call-budget receipt collector. Client session имеет redirect
+budget zero; redirect response не может быть followed. Нельзя вызывать
+`get_candles`, `_post` или HTTP session по альтернативному пути.
+
+### 23.4 Canonical candle evidence and freshness
+
+После read существующий loader обязан вернуть только complete candles. Live
+entrypoint проверяет до proposal construction:
+
+```text
+frame type = exact pandas.DataFrame owner output
+row count >= required_bars
+index = unique, strictly increasing, UTC-normalized timestamps
+required columns = open/high/low/close/volume/is_complete
+all selected rows is_complete = true
+OHLC = finite and positive
+volume = finite and non-negative
+low <= min(open, close) <= max(open, close) <= high
+latest candle = exact last complete candle
+latest candle close_at = begin timestamp + exact configured interval
+age from latest candle close_at <= one configured interval + 300 seconds
+future skew <= 5 seconds
+```
+
+Canonical frame bytes содержат только normalized selected columns and exact
+UTC timestamps. OHLC scalar должен иметь exact built-in `float` или exact
+`numpy.float64` type и кодируется как `float.hex(float(value))`; volume имеет
+exact built-in `int` или exact `numpy.int64` type и кодируется как
+`int(value)`; `is_complete` имеет exact built-in `bool` или exact
+`numpy.bool_` type. NaN, infinity, bool-as-number, subclass и alternate
+decimal formatting запрещены. Evidence сохраняет frame SHA-256, row count,
+earliest/latest begin/close time, requested-range set SHA-256, exact physical
+request count and sanitized per-request receipts. Raw target instrument ID не
+попадает в shareable evidence.
+
+Любая мутация frame между hash и proposal/admission check даёт
+`CANDLE_FRAME_INVALID` до Central effect. Restamping, copying под новым
+timestamp или замена frame после read запрещены.
+
+### 23.5 Deterministic controlled-proposal derivation
+
+Live entrypoint не создаёт новый Strategy owner. Он вызывает existing
+`build_strategy_proposal(runtime, profile, complete_frame, now=...)` ровно один
+раз для target и получает `base_proposal`. Затем выполняется единственная
+разрешённая deterministic derivation version:
+
+```text
+derivation = CL8_Q7A_CONTROLLED_PROPOSAL_V1
+
+controlled primary decision = dataclasses.replace(
+    exact base primary decision,
+    signal = 1,
+    target_lots = Q7AControlRecord.requested_target_lots  # exact 1
+)
+
+controlled decisions = exact base decisions with only PRIMARY replaced
+controlled comparison = existing compare_strategy_decisions(
+    controlled decisions,
+    exact base primary_strategy,
+)
+
+controlled proposal = dataclasses.replace(
+    exact base proposal,
+    primary_target_lots = requested_target_lots,
+    decisions = controlled decisions,
+    comparison = controlled comparison,
+)
+```
+
+Все остальные primary decision fields, включая `target_weight`, `reason`,
+`indicators`, `bars_used`, `required_bars` и `stop_level`, сохраняются byte-
+equivalent после canonical serialization. Shadow decisions не меняются.
+Runtime/profile, strategy/config, candle time, generated-at, ticker, interval и
+instrument bindings сохраняются. `execution_authorized` остаётся false.
+
+`CONTROLLED_Q7A_ONLY` остаётся только в accepted control/evidence lineage; в
+production `StrategyProposal` не добавляется поле или authority label.
+
+### 23.6 Quote/request relationship
+
+После derivation accepted `Q7AControlledHooks` создаёт immutable public marker
+и detached private proposal graph. Existing `_ProductionGuiHooks` формирует
+`GuiCoordinationRequest` для exact target и выполняет единственный
+`GetLastPrices` read.
+
+Live module может обернуть accepted provider только прозрачным call-budget /
+evidence adapter. Adapter не строит market value, не выбирает endpoint и не
+меняет request/response; он вызывает existing provider method ровно один раз,
+сохраняет private detached raw read-back для immediate validation и передаёт
+owner byte-equivalent detached result. Для quote adapter проверяет exact
+`units` string, exact `nano` int, provider time and target identity до того,
+как existing owner выполнит float conversion. Shareable quote canonical bytes
+содержат `units`, `nano`, time, source и target identity hash, но не raw target
+ID. Любой adapter modification/retry/reordering даёт
+`PROVIDER_READ_SCOPE_INVALID`.
+
+Request связывает:
+
+```text
+proposal = exact controlled proposal
+profile = exact target profile
+candles = exact hashed complete frame
+lot_size = exact accepted static metadata lot size
+portfolio_risk_candidate_quote = exact live GetLastPrices observation
+evaluated_at = one controlled UTC clock observation after quote read
+```
+
+Legacy Risk price/ATR path сохраняет existing owner semantics: proposal
+PRIMARY `indicators.close` и ATR происходят из exact complete candle frame.
+Portfolio Risk candidate valuation сохраняет existing owner semantics и
+использует exact live last-price quote. Quote запрещено записывать в candle
+frame, подменять им PRIMARY indicators или использовать для restamping candle
+time. Evidence связывает оба operands и их разные роли.
+
+Перед Central entrypoint повторно проверяет frame SHA, base/controlled proposal
+SHA, quote canonical SHA, quote freshness, exact request object identity и
+Q7AControlRecord binding. Затем existing
+`Q7AControlledHooks.coordinate_marked()` выполняет непосредственную
+pre-Central integrity check и передаёт detached private graph existing Central
+owner. Direct Central call, reconstructed request или alternate delegate не
+может породить PASS.
+
+### 23.7 Revised Gate A order and budget
+
+Нормативный Gate A после этого rescope:
+
+```text
+accepted CL3 bounded operation sync
+-> accepted CL2 append/read-back
+-> canonical Portfolio refresh/read-back
+-> accepted CL4 current-cash/reconciliation rebuild
+-> accepted CL5 CashAvailability rebuild
+-> accepted CL6 PortfolioRiskCashContext rebuild
+-> one target-only StrategyCandleLoader logical acquisition
+-> one exact base strategy proposal
+-> one CL8_Q7A_CONTROLLED_PROPOSAL_V1 derivation
+-> one target-only GetLastPrices request
+-> immediate frame/proposal/quote/request freshness and integrity validation
+-> Q7AControlledHooks proposal marker/admission bridge
+-> existing Central durable admission if and only if all checks pass
+```
+
+Gate A budget из раздела 9.3 изменён только добавлением candle session. Ни
+`GetInstrumentBy`, ни `FindInstrument`, ни trading-status, order, account-list,
+GUI loop или non-target market read не разрешены. Lot/currency берутся только
+из accepted checksummed static metadata.
+
+Gate B и весь post-admission same-lineage contract не меняются.
+
+### 23.8 Additional adversarial closure matrix
+
+Implementation acceptance дополнительно требует доказать:
+
+```text
+wrong candle target/interval/profile rejected before request
+request count computed before IO and bounded by Preparation
+range gap/overlap or extra chunk rejected
+transport retry/redirect rejected with zero Central effect
+missing/duplicate/out-of-order/incomplete candle rejected
+non-finite/impossible OHLCV rejected
+stale/future latest candle rejected before marker/Central
+frame mutation after hash rejected before Central
+base proposal built exactly once through existing owner
+only PRIMARY signal and target_lots differ from base decision
+shadow decisions and all preserved PRIMARY fields remain exact
+comparison equals existing compare_strategy_decisions output
+quote cannot replace candle close, ATR input or candle timestamp
+base/frame/controlled/request/marker hashes form one lineage
+direct owner call or reconstructed request cannot produce PASS
+second candle session, proposal derivation or quote read rejected
+```
+
+Каждый negative case проверяет provider request receipts, Central intent and
+reservation counts, CL7 attempt marker/pending proof, Portfolio, ledger and
+Risk state. Exception-only assertion недостаточен.
+
+### 23.9 Review and current authority
+
+Этот rescope candidate требует отдельного independent/adversarial exact-head
+review. Explicit acceptance допустим только при:
+
+```text
+exact predecessor/merge-base = 7e1fd5862c1d5520141af7f22bc94b76876d6b93
+cumulative changed-file surface = exactly the one contract path
+CL8-Q7A-LIVE-RS2-01..02 = CLOSED
+material findings = 0
+exact successor commit/tree and contract blob custody verified
+```
+
+До такого acceptance:
+
+```text
+candle/proposal rescope contract = CANDIDATE
+new implementation branch = BLOCKED
+implementation = BLOCKED
+provider READ / POST = NOT AUTHORIZED
+runtime mutation = NOT AUTHORIZED
+Preparation = NOT AUTHORIZED
+START EXPERIMENT = INELIGIBLE
+Q7A/Q7B/Stable acceptance = unchanged
+```
