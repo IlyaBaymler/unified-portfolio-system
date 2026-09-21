@@ -129,16 +129,28 @@ SCOPE_EXPANSION_REQUIRED -> RESCOPE
 Rescope добавляет только:
 
 1. один exact live Q7A CLI entrypoint;
-2. два взаимно исключающих режима этого entrypoint;
-3. отдельный bounded provider-read freshness stage;
-4. новый economic-smoke Preparation, связанный с принятым terminal packet
-   freshness stage;
-5. lock-held pre-POST revalidation принятого CL1–CL7 proof graph;
-6. immutable privacy-safe evidence для обеих стадий;
+2. один durable/reviewable economic-smoke Preparation, который связывает
+   будущую live-acquisition procedure, но не будущие observation values;
+3. post-START one-shot `LIVE_ACQUISITION_PRE_ADMISSION` gate;
+4. immediate freshness validation до Central admission;
+5. post-admission `LOCKED_REVALIDATION_PRE_POST` gate на той же durable intent
+   lineage;
+6. immutable privacy-safe evidence для обеих live gates;
 7. fail-closed enforcement одного provider POST attempt.
 
 Он не создаёт нового владельца cash, Portfolio, reservation, Risk, order,
 currency, freshness, reconciliation или execution.
+
+Главный temporal invariant:
+
+```text
+no native freshness interval spans a human review/acceptance gate
+```
+
+Human review связывает только durable identities и будущую процедуру. Все
+expiring Portfolio, cash, quote, RiskState, CL6 и provider observations
+получаются после exact `START EXPERIMENT` и используются только внутри одного
+непрерывного live run.
 
 ---
 
@@ -158,7 +170,7 @@ GUI execution path
 legacy bot/diagnostic POST path
 RiskPolicy weakening
 Sandbox balance/account mutation
-automatic Stage 1 or Stage 2 execution
+automatic live acquisition or economic-smoke execution
 automatic START EXPERIMENT
 Q7B
 Stable acceptance, PR Ready, merge, tag или publication
@@ -178,17 +190,20 @@ Repository получает ровно один Q7A live module:
 current/tools/v3_10_q7a_live_entrypoint.py
 ```
 
-У него ровно два mutually exclusive modes:
+У него ровно один live mode:
 
 ```text
-PREFLIGHT_READ
 ECONOMIC_SMOKE
 ```
 
-Любой третий live mode, alias, hidden environment switch, GUI shortcut,
-direct helper invocation или alternate provider mutation path запрещён.
+Допустимы offline-only `--help`, schema validation и Preparation validation,
+но они structurally не имеют provider/runtime path и не являются live mode.
+Отдельный provider-read-only mode не создаёт переносимую freshness authority и
+не может быть prerequisite экономического smoke. Любой второй live mode,
+alias, hidden environment switch, GUI shortcut, direct helper invocation или
+alternate provider mutation path запрещён.
 
-Оба режима обязаны:
+Live mode обязан:
 
 - загрузить exact Preparation bytes и проверить caller-supplied expected
   SHA-256 до private/runtime access;
@@ -208,88 +223,72 @@ provider call и не меняют runtime.
 
 ---
 
-## 7. Stage 1 — bounded provider-read freshness gate
+## 7. Durable reviewed Preparation
 
 ```text
 experiment_id =
-CL8-Q7-E2E-SMOKE-PREFLIGHT-READ-V1
+CL8-Q7-E2E-SMOKE-V1
 
 required operator command =
-START EXPERIMENT — CL8-Q7-E2E-SMOKE-PREFLIGHT-READ-V1 — preparation <accepted_exact_sha256>
+START EXPERIMENT — CL8-Q7-E2E-SMOKE-V1 — preparation <accepted_exact_sha256>
 ```
 
-До этой exact команды Stage 1 не выполняется. Preparation должна быть отдельно
-сформирована, проверена read-only и явно принята для exact SHA-256.
+Preparation формируется offline, проходит отдельный read-only review и explicit
+acceptance exact SHA-256 до live execution. Она связывает stable identities и
+точную процедуру получения будущего live evidence.
 
-Stage 1 разрешает только bounded authenticated provider READ для exact
-Sandbox account и exact configured set через существующих owners. Допустимый
-pipeline:
+Preparation не доказывает freshness и не содержит ещё не наблюдавшиеся:
 
 ```text
-accepted CL3 bounded operation sync
--> accepted CL2 append/read-back
--> canonical Portfolio refresh owner
--> accepted CL4 current-cash/reconciliation rebuild
--> accepted CL5 CashAvailability rebuild
--> accepted CL6 PortfolioRiskCashContext rebuild
--> CL7 authority read-sync without dispatch attempt marker
+current quote/value/hash/as_of
+current Portfolio response/hash/revision
+current broker cash or withdraw-limits values
+current operations response/watermark
+current RiskState guard read-back
+current Central read-back
+current CL4/CL5/CL6 proof values or freshness timestamps
 ```
 
-Если accepted predecessor owner требует `GetOperationsByCursor`,
-`GetSandboxPortfolio`, `GetSandboxPositions` или другой уже контрактно
-обязательный read для этого pipeline, entrypoint может вызвать его только
-через этот owner, только для exact scope и только в пределах его accepted
-deadline/pagination/retry semantics. Rescope не добавляет endpoint и не
-ослабляет bounded-read limits.
-
-Stage 1 категорически запрещает:
-
-```text
-PostSandboxOrder
-любой provider mutation
-Central intent/reservation/order creation
-strategy proposal или economic candidate creation
-CL7 dispatch attempt marker
-pending dispatch proof
-Risk execution registration
-automatic transition в ECONOMIC_SMOKE
-```
-
-`PREFLIGHT_READ` обязан иметь structurally unreachable POST path. Проверка
-только runtime flag после выполнения недостаточна.
+Подмена future observation заранее выбранным значением запрещена. Preparation
+связывает HOW; post-START evidence связывает WHAT.
 
 ---
 
-## 8. Stage 1 Preparation binding
+## 8. Durable Preparation binding
 
-Stage 1 Preparation canonical bytes связывают минимум:
+Canonical Preparation bytes связывают минимум:
 
 ```text
 domain/version
 experiment_id
 candidate commit/tree
-accepted contract commit/tree
+accepted Q7A contract identities
+accepted contract-rescope commit/tree
 accepted implementation commit/tree
+accepted exact-candidate Q1/Q4/Q5 identities where applicable
 runtime manifest SHA-256
 account_scope_sha256
 identity_key_id
 environment = SANDBOX
 configured_set_sha256
-target instrument identity hash
+nominated target instrument identity hash
+immutable Q7AControlRecord SHA
 RiskPolicy hash and mode = ENFORCED
-RiskState guard hash/revision
-CL7 authority record SHA/revision/state
-expected post_attempt_count = 0
-expected pending proof = absent
-Central expected quiescent revision/hash
-ledger expected revision/head
-Portfolio expected revision/checksum
-provider-read absolute deadline
-per-owner accepted retry/deadline limits
+static metadata schema/hash, currency and lot-size evidence identities
+live acquisition policy SHA-256
+quote acquisition policy SHA-256
+native freshness limits and final <=10s CL7 bound
+provider READ budget
+max_provider_post_attempts = 1
+automatic transport/application/redirect retries = 0
+pre-admission stop rules
+post-admission same-lineage rules
+evidence/privacy policy
 evidence root identity
 B0/B1 or later accepted backup binding
 recovery/disarm procedure identity
 stop conditions
+absolute experiment deadline
 created_at_utc
 preparation_sha256
 ```
@@ -297,23 +296,126 @@ preparation_sha256
 Preparation не содержит token, raw Account ID, raw instrument/provider ID,
 raw order/intent ID или private absolute path в shareable части.
 
-Любой drift требует новой Preparation и нового review/acceptance. Начатая
-Preparation single-use независимо от PASS/BLOCKED/FAIL.
+Любой durable binding drift требует новой Preparation и нового
+review/acceptance. Начатая Preparation single-use независимо от
+PASS/BLOCKED/FAIL/INDETERMINATE.
 
 ---
 
-## 9. Stage 1 terminal packet
+## 9. Frozen live-acquisition policies
 
-Stage 1 создаёт immutable terminal packet и manifest. `PASS` допустим только
-если packet связывает:
+Preparation содержит canonical policy records, а не live results.
+
+### 9.1 Account/cash/Portfolio policy
 
 ```text
-exact Preparation SHA-256
-exact candidate/runtime/configured-set identities
-provider read receipt set hash
+exact account/environment and configured-set scope
+existing CL3 GetOperationsByCursor owner and accepted bounded pagination
+SandboxService/GetSandboxPortfolio through existing owner
+SandboxService/GetSandboxWithdrawLimits through existing owner
+canonical Portfolio refresh/read-back through existing owner
+accepted CL2/CL4/CL5/CL6 builders
+per-owner absolute deadlines
+no new endpoint or owner
+```
+
+`GetSandboxPositions` допускается только если existing accepted Portfolio owner
+для exact candidate требует его для canonical refresh/read-back. Preparation
+явно фиксирует это boolean и method identity; implementation не может добавить
+его динамически.
+
+### 9.2 Quote acquisition policy
+
+Preparation связывает:
+
+```text
+service = MarketDataService
+method = GetLastPrices
+target = one nominated configured-set instrument
+lastPriceType = LAST_PRICE_EXCHANGE
+request_count = 1
+retry_count = 0
+redirect_count = 0
+absolute timeout policy
+allowed source = existing GuiRuntimeController/provider owner
+price field and side semantics = accepted owner semantics
+canonicalization = exact non-binary-float price representation
+required currency = accepted target metadata currency
+maximum quote age = accepted RiskPolicy/native owner limit
+timestamp/age evaluation rule
+relationship to Q7A proposal, Risk, Portfolio Risk and Central admission
+privacy-safe evidence schema
+finite failure reasons
+```
+
+Preparation не содержит future `current_quote_sha256`, future price или future
+quote timestamp.
+
+### 9.3 Closed provider-read budget
+
+Preparation фиксирует exact method/count budget для обеих live gates:
+
+```text
+Gate A:
+- one logical CL3 GetOperationsByCursor sync session
+- one SandboxService/GetSandboxPortfolio
+- one SandboxService/GetSandboxWithdrawLimits
+- zero or one SandboxService/GetSandboxPositions, fixed by Preparation
+- one MarketDataService/GetLastPrices for exactly one target
+
+Gate B:
+- one logical CL3 GetOperationsByCursor sync session
+- one SandboxService/GetSandboxPortfolio
+- one SandboxService/GetSandboxWithdrawLimits
+- no GetLastPrices
+```
+
+Каждая logical CL3 sync session использует только accepted CL3 pagination,
+absolute deadline и exact finite per-page retry policy, чья identity и numeric
+limits записаны в Preparation. Остальные reads имеют retry count zero, если
+accepted existing owner не имеет более строгого frozen finite policy; в таком
+случае Preparation обязана назвать exact policy/version/count. Outer retry,
+повтор Gate A/Gate B или automatic reacquisition запрещены. Provider POST
+никогда не входит в read budget.
+
+---
+
+## 10. Post-START Gate A — LIVE_ACQUISITION_PRE_ADMISSION
+
+После exact accepted `START EXPERIMENT` один process выполняет bounded live
+acquisition через существующих owners. Между START, acquisition, freshness
+validation и Central admission нет human review/acceptance gate.
+
+Gate A выполняет один logical acquisition sequence:
+
+```text
+accepted CL3 bounded operation sync
+-> accepted CL2 append/read-back
+-> canonical Portfolio refresh/read-back
+-> accepted CL4 current-cash/reconciliation rebuild
+-> accepted CL5 CashAvailability rebuild
+-> accepted CL6 PortfolioRiskCashContext rebuild
+-> one GetLastPrices request for the nominated target
+-> existing Q7A proposal/admission bridge preconditions
+```
+
+CL3 bounded pagination может содержать несколько page requests только в
+рамках accepted CL3 limit; это один logical operation-sync acquisition.
+Автоматическая reacquisition всего Gate A, quote retry, indefinite refresh loop
+или silent restart запрещены.
+
+Gate A evidence связывает фактически наблюдённые values:
+
+```text
+experiment_id and Preparation SHA-256
+candidate commit/tree and runtime identity
+account_scope_sha256 and configured_set_sha256
+target instrument identity hash
+live acquisition policy SHA-256
+quote acquisition policy SHA-256
 per-read service/method/status/error_class/transient/attempt_count
-privacy-safe tracking_id_sha256 where present
-sanitized response-content hashes
+privacy-safe tracking_id_sha256
+provider read receipt-set and sanitized content hashes
 operations completeness/watermark identity
 CL2 ledger revision/head and append identities
 Portfolio revision/checksum/as_of
@@ -325,131 +427,91 @@ CL7 state/revision/record SHA
 post_attempt_count = 0
 pending_dispatch_proof = absent
 Central intent/reservation/order count = 0
-freshness_deadline_utc
-terminal status/reason
-terminal packet SHA-256
+actual quote canonical bytes SHA-256
+exact canonical price/value
+quote source and provider timestamp
+quote acquired_at_utc
+quote freshness deadline/age rule
+quote request attempt_count = 1
+Gate A overall freshness_deadline_utc
+evidence record SHA-256
 ```
 
-`freshness_deadline_utc` равен minimum всех native accepted dependency
-deadlines. Нельзя продлевать freshness переписыванием timestamp, copying
-packet или повторной локальной сериализацией.
+Цена сохраняется в существующем exact canonical representation; authoritative
+identity не выводится из binary float.
 
-Stage 1 `PASS` не даёт POST authority. `BLOCKED`, `FAIL` или `INDETERMINATE`
-terminal packet нельзя использовать в Stage 2.
+`freshness_deadline_utc` равен minimum всех native dependency deadlines,
+включая 120-second CL4/CL5/CL6 bounds и quote-age rule. Нельзя продлевать
+freshness restamping, copying или local reserialization.
+
+Если live evidence incomplete, mismatched, non-READY или expired до Central
+admission:
+
+```text
+terminal reason = LIVE_EVIDENCE_EXPIRED_BEFORE_ADMISSION
+or another exact pre-admission finite reason
+Central intent/reservation/order creation = 0
+CL7 attempt marker = 0
+provider POST = 0
+```
+
+Это не PASS, provider failure, economic failure или permission to bypass
+freshness. Run заканчивается. Новый attempt требует новой Preparation,
+review/acceptance и новой exact START command; expired evidence не переносится.
 
 ---
 
-## 10. Separate Stage 1 review and acceptance
+## 11. Central admission boundary
 
-Stage 1 terminal packet получает отдельный read-only review. Acceptance
-связывается с exact terminal packet SHA-256 и manifest identities.
-
-Review проверяет минимум:
+До authoritative Central owner durable write run находится в фазе:
 
 ```text
-Preparation exact-match
-provider-read allowlist and call counts
-zero provider mutation
-zero Central intent/reservation/order
-zero CL7 attempt marker
-account/configured-set/target scope
-all native freshness and completeness gates
-canonical JSON and create-once custody
-privacy scan
-source/runtime identity
+PRE_CENTRAL_ADMISSION
+Central intent = absent
+reservation = absent
+provider POST = 0
 ```
 
-Terminal acceptance не переносится на другой packet или более поздний
-freshness interval.
+Drift proposal, quote/live evidence, Portfolio, RiskState, CashLedger, CL7,
+account scope, configured set или другого required proof в этой фазе приводит
+к pre-admission terminal failure с zero Central effect и zero POST.
+
+Irreversible lineage boundary наступает ровно когда existing Central owner
+durably сохраняет exact admitted intent/reservation:
+
+```text
+Central contains exact admitted intent
+intent status = QUEUED
+admission binding = exact Q7A control/proposal/owner binding
+```
+
+С этого durable write начинается:
+
+```text
+POST_CENTRAL_ADMISSION
+proposal lineage = immutable
+intent/reservation lineage = immutable
+```
+
+Никакой новый proposal, marker/control lineage, Central intent или reservation
+не может заменить эту lineage.
 
 ---
 
-## 11. Stage 2 — exact controlled economic smoke
+## 12. Post-START Gate B — LOCKED_REVALIDATION_PRE_POST
+
+После Central admission существующий CL7/SandboxExecutionAdapter owner
+выполняет accepted final lock order, bounded reads/rebuild и lock-held
+revalidation для того же exact queued intent. Между Gate A и Gate B нет human
+review или нового `START EXPERIMENT`.
+
+Gate B проверяет:
 
 ```text
-experiment_id =
-CL8-Q7-E2E-SMOKE-V1
-
-required operator command =
-START EXPERIMENT — CL8-Q7-E2E-SMOKE-V1 — preparation <accepted_exact_sha256>
-```
-
-Stage 2 требует новую, отдельно reviewed и accepted exact Preparation. Stage 1
-команда не разрешает Stage 2, а Stage 2 не запускается автоматически после
-Stage 1.
-
-Stage 2 сохраняет принятые Q7A bounds:
-
-```text
-exact account-wide economic target count <= 1
-requested lots <= 1 and bounded by accepted metadata/Risk
-physical PostSandboxOrder attempts <= 1
-automatic transport retries = 0
-automatic application retries = 0
-redirects = 0
-legacy/GUI/diagnostic POST paths = 0
-```
-
----
-
-## 12. Stage 2 Preparation binding
-
-Stage 2 Preparation включает все применимые Stage 1 bindings и дополнительно:
-
-```text
-accepted Stage 1 terminal packet SHA-256
-accepted Stage 1 review/acceptance identity
-Stage 1 provider read receipt set hash
-Stage 1 CL6 context SHA
-Stage 1 freshness_deadline_utc
-immutable Q7AControlRecord SHA
-proposal marker/admission binding contract version
-target runtime identity
-target metadata SHA and lot-size evidence SHA
-current quote source/as_of hash
-max_provider_post_attempts = 1
-automatic retries = 0
-expected CL7 post_attempt_count = 0
-expected pending proof = absent
-Central quiescence identity
-evidence root identity
-backup/recovery binding
-absolute experiment deadline
-created_at_utc
-preparation_sha256
-```
-
-Preparation generation обязана fail closed, если Stage 1 terminal не принят,
-уже expired, относится к другому account/configured set/runtime/head или не
-доказывает zero mutation/quiescence.
-
----
-
-## 13. Two-stage freshness rule
-
-Stage 2 не может оживить stale Stage 1 evidence.
-
-Перед economic proposal entrypoint проверяет:
-
-```text
-now <= Stage 1 freshness_deadline_utc
-all Stage 1 revision/hash bindings still equal live read-back
-CL7 = EXACT_CASH_ARMED
-post_attempt_count = 0
-pending proof = absent
-Central remains quiescent
-```
-
-Затем existing CL7 dispatch owner выполняет свой accepted final pre-POST
-rebuild и lock order. Разрешённые в этом rebuild provider reads являются
-частью отдельно авторизованного Stage 2 experiment, а не самостоятельным
-diagnostic path. Они используют только accepted CL3/CL4 owners и те же exact
-account/configured-set bounds.
-
-Внутри final lock-held gate должны быть заново подтверждены:
-
-```text
-CL3/CL2 operation completeness and ledger head
+same accepted Preparation and run identity
+same Q7AControlRecord/proposal/admission binding
+same durable Central intent/reservation lineage
+accepted CL3/CL2 operation completeness and ledger head
 canonical Portfolio revision/checksum
 CL4 coherent reconciliation
 CL5 READY availability
@@ -457,31 +519,60 @@ CL6 READY_FOR_LOCKED_REVALIDATION context
 RiskPolicy/RiskState guard
 Portfolio Risk authorization
 Central revision and one-intent budget
-Q7A control/proposal/admission identity
 CL7 authority revision and attempt budget
-all accepted CL7 temporal bounds, including final <=10s gate
+all native temporal bounds
+final accepted CL7 <=10s freshness/skew gate
 ```
 
-Если Stage 1 evidence или любой final dependency expired/drifted:
+Provider reads required by accepted CL7 final rebuild are authorized only as
+part of this exact live run, only for the same account/intent lineage and only
+through existing owners. Они не создают отдельный diagnostic/read authority.
+
+---
+
+## 13. Post-admission drift and same-lineage rule
+
+Если Gate B выявляет drift/expiry после Central durable admission и до attempt
+marker:
 
 ```text
-STOP
-zero attempt marker
-zero provider POST
-new Stage 1 Preparation
-new Stage 1 review/acceptance
-new Stage 1 START EXPERIMENT
-new Stage 2 Preparation/review/acceptance
-new Stage 2 START EXPERIMENT
+terminal status = POST_ADMISSION_DRIFT
+terminal reason = EXISTING_INTENT_REQUIRES_RECOVERY
+provider POST = 0 unless an earlier durable attempt marker proves otherwise
+existing Central intent/reservation preserved
+new proposal/intent/reservation = forbidden
 ```
 
-Никакого refresh-in-place под старой Preparation нет.
+Допустимо только existing same-lineage read-only status/recovery/revalidation,
+если оно уже авторизовано accepted architecture. Этот contract не добавляет
+automatic resume, cleanup или mutation authority.
+
+После boundary категорически запрещено:
+
+```text
+создавать другую Q7A proposal/control/marker lineage
+создавать другой Central intent или reservation
+автоматически перезапускать live acquisition как новый economic attempt
+silent clear/cancel/delete durable intent или reservation
+restore старого state поверх durable Central state
+automatic intent cleanup или repair
+second order или replacement intent
+```
+
+Если same-lineage continuation не разрешено existing owners, run остаётся
+blocked. Cleanup/mutation требует отдельно принятого и явно авторизованного
+recovery/rescope path.
+
+Post-admission terminal evidence связывает original Q7AControlRecord SHA,
+proposal hash, admission binding, privacy-safe Central intent identity,
+Central revision, reservation state, drift reason, CL7 state, attempt count и
+blocking status. Это не Q7A PASS.
 
 ---
 
 ## 14. Proposal-to-owner and dispatch binding
 
-Stage 2 использует accepted Q7A control/proposal bridge. Exact live entrypoint
+Live run использует accepted Q7A control/proposal bridge. Exact live entrypoint
 не создаёт альтернативный Central/Risk path.
 
 Обязательная цепочка:
@@ -514,7 +605,8 @@ Durable CL7 attempt marker записывается до физического 
 - `post_attempt_count` никогда не уменьшается;
 - timeout, lost response или unknown outcome сохраняют pending proof;
 - automatic retry/resubmit запрещён;
-- новый Stage 1/Stage 2 запуск запрещён до принятого recovery disposition;
+- новый live acquisition/economic run запрещён до принятого recovery
+  disposition;
 - local validation error не может отменить факт возможного POST.
 
 Q7A PASS требует accepted Q7A contract evidence: definitive provider fill,
@@ -547,16 +639,14 @@ SINGLE_INSTANCE_LOCK_UNAVAILABLE
 PROVIDER_READ_FAILED
 PROVIDER_READ_SCOPE_INVALID
 PROVIDER_READ_INCOMPLETE
-STAGE1_POST_PATH_REACHABLE
-STAGE1_MUTATION_OBSERVED
+LIVE_ACQUISITION_POLICY_MISMATCH
+LIVE_ACQUISITION_BUDGET_EXHAUSTED
+LIVE_EVIDENCE_EXPIRED_BEFORE_ADMISSION
 CL3_SYNC_BLOCKED
 PORTFOLIO_REFRESH_BLOCKED
 CL4_RECONCILIATION_BLOCKED
 CL5_AVAILABILITY_NOT_READY
 CL6_CONTEXT_NOT_READY
-STAGE1_TERMINAL_NOT_ACCEPTED
-STAGE1_TERMINAL_SUBSTITUTED
-STAGE1_FRESHNESS_EXPIRED
 AUTHORITY_NOT_EXACT_CASH_ARMED
 ATTEMPT_BUDGET_EXHAUSTED
 PENDING_DISPATCH_PRESENT
@@ -567,6 +657,8 @@ QUOTE_OR_METADATA_INVALID
 CONTROL_RECORD_INVALID
 PROPOSAL_ADMISSION_BINDING_INVALID
 LOCKED_REVALIDATION_FAILED
+POST_ADMISSION_DRIFT
+EXISTING_INTENT_REQUIRES_RECOVERY
 ATTEMPT_MARKER_FAILED
 PROVIDER_SAFE_REJECTED
 PROVIDER_OUTCOME_AMBIGUOUS
@@ -621,20 +713,24 @@ Evidence files:
 Future implementation acceptance требует минимум:
 
 ```text
-PREFLIGHT_READ cannot reach POST transport
-PREFLIGHT_READ leaves Central intent/reservation/order count zero
-PREFLIGHT_READ cannot create proposal/candidate/attempt marker
 wrong account/configured set/target is rejected before provider call
 Preparation SHA substitution is rejected
+Preparation cannot contain a future quote value/hash/timestamp
+live acquisition policy tamper is rejected
+quote policy method/source/target/age tamper is rejected
+actual quote evidence binds exact Preparation and proposal/admission lineage
 provider receipt/content substitution is rejected
 partial pagination/incomplete watermark is rejected
-Stage 1 terminal overwrite/reuse is rejected
-Stage 1 freshness timestamp restamping is rejected
-Stage 2 without accepted Stage 1 terminal is rejected
-Stage 2 with BLOCKED/FAIL/INDETERMINATE Stage 1 is rejected
-expired Stage 1 deadline is rejected before proposal
+second Gate A acquisition or quote request is rejected
+live evidence overwrite/reuse is rejected
+live freshness timestamp restamping is rejected
+expired live evidence before Central yields zero intent/reservation/POST
 live revision/hash drift is rejected before proposal
-final lock-held staleness/drift is rejected before attempt marker
+post-admission drift preserves the exact queued intent/reservation
+post-admission drift cannot create a second proposal/intent
+post-admission drift cannot auto-cancel/clear/restore Central state
+final lock-held staleness/drift is rejected before attempt marker and remains
+attached to the same Central lineage
 CL7 non-armed/pending/attempt-count mismatch is rejected
 Central non-quiescence is rejected
 non-target proposal/intent is rejected
@@ -652,8 +748,9 @@ Central state, CL7 marker/pending proof, Portfolio, ledger и Risk state, а н�
 только exception reason.
 
 Fixture содержит normative valid vectors и adversarial tamper vectors для
-обеих Preparation schemas, Stage 1 terminal binding, expiry, account/set
-substitution, retry budget и one-POST budget.
+durable Preparation schema, live-acquisition/quote policy, post-START evidence,
+pre/post-Central expiry, account/set substitution, retry budget и one-POST
+budget.
 
 ---
 
@@ -689,24 +786,24 @@ Green tests, Q4/Q5 или native smoke не дают provider authority.
 После принятой implementation/qualification lineage порядок закрыт:
 
 ```text
-freeze Stage 1 runtime and Preparation
+freeze exact runtime and durable Preparation
 -> read-only review
 -> explicit acceptance exact Preparation SHA
--> exact Stage 1 START EXPERIMENT
--> immutable terminal packet
--> read-only review
--> explicit acceptance exact terminal SHA
--> freeze Stage 2 Preparation bound to that terminal
--> read-only review
--> explicit acceptance exact Stage 2 Preparation SHA
--> exact Stage 2 START EXPERIMENT
+-> exact single-use START EXPERIMENT
+-> one-shot LIVE_ACQUISITION_PRE_ADMISSION
+-> immediate native freshness validation
+-> Central durable admission if and only if fresh
+-> irreversible same-lineage boundary
+-> LOCKED_REVALIDATION_PRE_POST on the same intent
+-> at most one durable attempt marker and provider POST
 -> terminal audit/recovery
 -> independent terminal review
 -> separate Q7A acceptance decision
 ```
 
-Любой provider call вне соответствующей exact `START EXPERIMENT` запрещён.
-Каждая команда single-use и разрешает только указанный experiment/preparation.
+Любой provider call вне этой exact `START EXPERIMENT` запрещён. Команда
+single-use и разрешает только указанный experiment/preparation. Ни один native
+freshness interval не проходит через human review gate.
 
 ---
 
@@ -723,10 +820,10 @@ predecessor merge-base exact
 worktree clean
 ```
 
-Если review фиксирует finite material finding set, возможен ровно один
-отдельно авторизованный bounded contract-only correction batch в том же
-однофайловом allowlist. После него проводится только finding-scoped closure
-review. Второй correction batch не подразумевается:
+Этот successor является единственным отдельно авторизованным bounded
+contract-only correction batch для fixed finding set
+`CL8-Q7A-LIVE-R1-01..03`. После него проводится только finding-scoped closure
+review. Contract correction budget исчерпан:
 
 ```text
 surviving material blocker -> RESCOPE / ABORT / DEFER
@@ -740,14 +837,13 @@ surviving material blocker -> RESCOPE / ABORT / DEFER
 
 ```text
 contract review = authorized
-contract correction = not yet authorized
+contract correction batch = used / exhausted
 implementation branch = blocked
 implementation = blocked
 provider READ = not authorized
 provider POST = not authorized
 runtime mutation = not authorized
-Stage 1 START EXPERIMENT = ineligible
-Stage 2 START EXPERIMENT = ineligible
+CL8-Q7-E2E-SMOKE-V1 START EXPERIMENT = ineligible
 Q7A acceptance = unchanged
 Q7B = not authorized
 PR Ready / merge / Stable acceptance / publication = not authorized
