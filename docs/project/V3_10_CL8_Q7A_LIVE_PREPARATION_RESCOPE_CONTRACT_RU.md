@@ -2,7 +2,7 @@
 
 Статус:
 
-`LIVE CONTRACT ACCEPTED THROUGH 7e1fd586... / CANDLE-PROPOSAL RESCOPE CANDIDATE / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
+`LIVE CONTRACT ACCEPTED THROUGH 7e1fd586... / RS2-R1 CORRECTION CANDIDATE / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
 
 Этот файл содержит принятый live-preparation contract и новый additive
 contract rescope, описанный в разделе 23. До independent/adversarial review и
@@ -374,6 +374,8 @@ Gate B:
 - one logical CL3 GetOperationsByCursor sync session
 - one SandboxService/GetSandboxPortfolio
 - one SandboxService/GetSandboxWithdrawLimits
+- one target-only MarketDataService/GetTradingStatus through the existing
+  SandboxExecutionAdapter market precheck
 - no GetCandles
 - no GetLastPrices
 ```
@@ -1081,15 +1083,18 @@ production `StrategyProposal` не добавляется поле или author
 `GetLastPrices` read.
 
 Live module может обернуть accepted provider только прозрачным call-budget /
-evidence adapter. Adapter не строит market value, не выбирает endpoint и не
-меняет request/response; он вызывает existing provider method ровно один раз,
-сохраняет private detached raw read-back для immediate validation и передаёт
-owner byte-equivalent detached result. Для quote adapter проверяет exact
-`units` string, exact `nano` int, provider time and target identity до того,
-как existing owner выполнит float conversion. Shareable quote canonical bytes
-содержат `units`, `nano`, time, source и target identity hash, но не raw target
-ID. Любой adapter modification/retry/reordering даёт
-`PROVIDER_READ_SCOPE_INVALID`.
+evidence adapter. Existing `_ProductionGuiHooks` остаётся единственным caller:
+именно hook вызывает обёрнутый existing provider method, проверяет response,
+выполняет accepted quotation conversion, создаёт
+`PortfolioRiskCandidateQuote` и строит итоговый `GuiCoordinationRequest`.
+Evidence adapter сам не выполняет второй `GetLastPrices`, не строит market
+value, не выбирает endpoint и не меняет request/response. Он наблюдает ровно
+один вызов, проверяет exact `units` string, exact `nano` int, provider time and
+target identity, сохраняет private detached raw read-back для immediate
+validation и передаёт hook byte-equivalent detached result. Shareable quote
+canonical bytes содержат `units`, `nano`, time, source и target identity hash,
+но не raw target ID. Любой второй call, adapter modification/retry/reordering
+или alternate quote construction даёт `PROVIDER_READ_SCOPE_INVALID`.
 
 Request связывает:
 
@@ -1128,13 +1133,17 @@ accepted CL3 bounded operation sync
 -> accepted CL4 current-cash/reconciliation rebuild
 -> accepted CL5 CashAvailability rebuild
 -> accepted CL6 PortfolioRiskCashContext rebuild
+-> canonical target flat-position proof: current_lots = 0
 -> one target-only StrategyCandleLoader logical acquisition
 -> one exact base strategy proposal
 -> one CL8_Q7A_CONTROLLED_PROPOSAL_V1 derivation
--> one target-only GetLastPrices request
+-> existing _ProductionGuiHooks performs one target-only GetLastPrices request,
+   accepted validation/conversion and GuiCoordinationRequest construction
+-> evidence wrapper validates captured quote/request evidence without a second read
+-> immediate canonical Portfolio revision/flat-position revalidation
 -> immediate frame/proposal/quote/request freshness and integrity validation
 -> Q7AControlledHooks proposal marker/admission bridge
--> existing Central durable admission if and only if all checks pass
+-> existing Central durable QUEUED BUY 0 -> 1 if and only if all checks pass
 ```
 
 Gate A budget из раздела 9.3 изменён только добавлением candle session. Ни
@@ -1142,7 +1151,21 @@ Gate A budget из раздела 9.3 изменён только добавле
 GUI loop или non-target market read не разрешены. Lot/currency берутся только
 из accepted checksummed static metadata.
 
-Gate B и весь post-admission same-lineage contract не меняются.
+Gate B сохраняет post-admission same-lineage contract и дополнительно явно
+учитывает mandatory existing `SandboxExecutionAdapter._market_precheck()`:
+
+```text
+same durable Central intent
+-> existing SandboxExecutionAdapter
+-> existing market precheck
+-> exactly one target-only GetTradingStatus
+-> accepted locked CL7 rebuild/revalidation
+-> durable attempt marker
+-> at most one physical PostSandboxOrder
+```
+
+Entrypoint-side duplicate trading-status read, Gate A reacquisition, new
+proposal и new intent запрещены.
 
 ### 23.8 Additional adversarial closure matrix
 
@@ -1165,6 +1188,12 @@ quote cannot replace candle close, ATR input or candle timestamp
 base/frame/controlled/request/marker hashes form one lineage
 direct owner call or reconstructed request cannot produce PASS
 second candle session, proposal derivation or quote read rejected
+current_lots = 1 rejected before Central with zero intent and zero POST
+current_lots = 2 rejected before Central with no SELL, zero intent and zero POST
+Portfolio revision/position drift before Central rejected with zero intent
+successful admission proves current_lots=0, target_lots=1, requested_lots=1,
+direction=BUY, one new intent, no replacement and no cancellation
+Gate B proves exactly one owner GetTradingStatus and zero duplicate status reads
 ```
 
 Каждый negative case проверяет provider request receipts, Central intent and
@@ -1195,4 +1224,209 @@ runtime mutation = NOT AUTHORIZED
 Preparation = NOT AUTHORIZED
 START EXPERIMENT = INELIGIBLE
 Q7A/Q7B/Stable acceptance = unchanged
+```
+
+---
+
+## 24. RS2-R1 governance correction and exact BUY binding
+
+Этот раздел имеет precedence над конфликтующими фразами разделов 9.3,
+11–12 и 23.6–23.8. Он является одним bounded contract-only correction для
+review disposition `CL8-Q7A-LIVE-RS2-R1-01..03` и не открывает implementation,
+provider, runtime, Preparation или experiment authority.
+
+### 24.1 `CL8-Q7A-LIVE-RS2-R1-01` — withdrawn review premise
+
+Previous review premise о том, что existing `_ProductionGuiHooks` не выполняет
+`GetLastPrices`, противоречит exact production source:
+
+```text
+source path = current/trading_robot/gui_runtime_controller.py
+source git blob = 062eeef9a0918a9dfdf9527c96967870325e5b07
+```
+
+Нормативный disposition:
+
+```text
+finding = CL8-Q7A-LIVE-RS2-R1-01
+status = MATERIAL_FINDING_WITHDRAWN
+reason = REVIEW_PREMISE_INVALID_ON_EXACT_SOURCE
+material = false
+contract correction required for ownership = no
+production correction required = no
+```
+
+Это не `CLOSED_BY_CORRECTION`. Frozen correct lineage:
+
+```text
+Q7A transparent evidence wrapper observes one existing provider call
+-> existing _ProductionGuiHooks performs target-only GetLastPrices
+-> existing hook validates target/units/nano/provider time
+-> existing hook performs accepted quotation conversion
+-> existing hook constructs PortfolioRiskCandidateQuote
+-> existing hook constructs GuiCoordinationRequest
+-> Q7A bridge validates proposal/request/quote binding
+-> existing Central / Risk / Portfolio Risk remain authoritative owners
+```
+
+Wrapper связывает, где exact existing telemetry/interception point это
+предоставляет, service/method, target identity hash, raw units/nano/provider
+time/source, tracking ID hash, attempt count, request/result timestamps,
+canonical raw quote SHA, canonical `PortfolioRiskCandidateQuote` binding,
+final request SHA and proposal/admission binding. Wrapper не выполняет второй
+read, не создаёт alternate quote и не обходит hook ради дополнительных
+evidence fields. Недоступное через existing boundary поле не является поводом
+менять production owner.
+
+### 24.2 `CL8-Q7A-LIVE-RS2-R1-02` — Gate B trading-status budget
+
+Existing `SandboxExecutionAdapter` остаётся единственным owner market precheck.
+Gate B budget включает ровно один target-only:
+
+```text
+service = MarketDataService
+method = GetTradingStatus
+target = nominated Q7A target only
+logical calls = 1
+physical request budget = 1
+automatic application retries = 0
+redirect replay = 0
+reacquisition = 0
+```
+
+Preparation связывает existing transport configuration, которая доказывает
+этот bound без изменения `SandboxExecutionAdapter` или provider transport.
+Если existing configuration/interface этого не гарантирует:
+
+```text
+SCOPE_EXPANSION_REQUIRED -> RESCOPE
+```
+
+Evidence связывает privacy-safe target identity hash, service/method,
+status code or finite error, attempt/retry count, tracking ID hash,
+request/result timestamps, safe response-content hash и exact market/API
+availability outcome, использованный existing owner. Full provider payload не
+экспортируется.
+
+Если market precheck блокирует execution:
+
+```text
+same durable Central intent = preserved
+new proposal / new intent = 0 / 0
+provider order POST = 0
+Gate A restart = forbidden
+```
+
+Existing post-admission recovery semantics применяются к той же lineage.
+
+### 24.3 `CL8-Q7A-LIVE-RS2-R1-03` — canonical flat `0 -> 1 BUY`
+
+Q7A live smoke допускает Central admission только при fresh canonical proof:
+
+```text
+account scope = exact accepted scope
+configured set = exact accepted set
+target = exact nominated target
+canonical target current_lots = 0
+requested_target_lots = 1
+expected economic delta = +1 lot
+expected direction = BUY
+```
+
+Gate A evidence связывает Portfolio revision/checksum, target identity,
+`current_lots = 0`, account/configured-set identity, Gate A evidence SHA and
+Preparation SHA. Под existing single-instance/account-scoped live lock, после
+initial flat proof и до Central запрещён local canonical Portfolio refresh/write,
+кроме действий exact accepted owner path.
+
+Immediately before `Q7AControlledHooks.coordinate_marked()` entrypoint повторно
+читает canonical Portfolio identity и требует одновременно:
+
+```text
+Portfolio revision/checksum = exact initially bound identity
+target current_lots = 0
+```
+
+Любой drift даёт finite `PORTFOLIO_FLAT_POSITION_DRIFT` до Central:
+
+```text
+Central intent / reservation = 0 / 0
+CL7 attempt marker = 0
+provider POST = 0
+```
+
+Controlled proposal до Central обязан доказать:
+
+```text
+primary signal = 1
+primary target_lots = 1
+proposal primary_target_lots = 1
+expected delta = +1
+expected direction = BUY
+```
+
+Successful admission требует exact existing owner fields:
+
+```text
+Central result current_lots = 0
+Central result proposed_target_lots = 1
+Central result approved_target_lots = 1
+queued candidate current_lots = 0
+queued candidate target_lots = 1
+queued candidate requested_lots = 1
+queued candidate direction = BUY
+new intent count = 1
+reservation lineage count = 1
+replaced intent = absent
+cancelled intent = absent
+```
+
+`NO_POSITION_CHANGE`, `CANCELLED_NO_POSITION_CHANGE`, `REAUTHORIZED`,
+`REPLACED`, `SELL`, risk-reducing target, approved target other than one or
+non-zero current lots не являются Q7A admission PASS. До durable admission они
+дают pre-Central fail с zero effect. Если unexpected durable intent уже создан,
+run становится `POST_ADMISSION_DRIFT / EXISTING_INTENT_REQUIRES_RECOVERY` без
+replacement proposal/intent и следует existing same-lineage rules.
+
+Mandatory adversarial cases:
+
+```text
+current_lots = 0 -> controlled BUY path may proceed
+current_lots = 1 -> reject before Central; intent/reservation/POST = 0
+current_lots = 2 -> reject before Central; SELL/intent/reservation/POST = 0
+Portfolio revision or target position drift before Central
+  -> PORTFOLIO_FLAT_POSITION_DRIFT; intent/reservation/POST = 0
+```
+
+### 24.4 Corrected authority and future implementation surface
+
+Future implementation allowlist не расширяется:
+
+```text
+current/tools/v3_10_q7a_live_entrypoint.py
+current/tests/test_v3_10_q7a_live_entrypoint.py
+current/tests/fixtures/v3_10_q7a_live_entrypoint_vectors.json
+```
+
+Production `_ProductionGuiHooks`, `CentralOrderCoordinator`,
+`SandboxExecutionAdapter`, Risk, Portfolio Risk, CL7 и `TBankSandboxClient`
+остаются immutable. Если exact quote observation, one-call trading-status bound
+или flat `0 -> 1 BUY` нельзя доказать в этих трёх paths через existing owners:
+
+```text
+IMPLEMENTATION_SURFACE_INSUFFICIENT / RESCOPE REQUIRED
+```
+
+До finding-scoped independent closure и explicit acceptance exact successor:
+
+```text
+CL8-Q7A-LIVE-RS2-R1-01 = MATERIAL_FINDING_WITHDRAWN / PROPOSED DISPOSITION
+CL8-Q7A-LIVE-RS2-R1-02 = PROPOSED_CLOSURE
+CL8-Q7A-LIVE-RS2-R1-03 = PROPOSED_CLOSURE
+contract = CORRECTION CANDIDATE
+implementation = BLOCKED
+provider READ / POST = NOT AUTHORIZED
+runtime mutation = NOT AUTHORIZED
+Preparation = NOT AUTHORIZED
+START EXPERIMENT = INELIGIBLE
 ```
