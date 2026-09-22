@@ -2,7 +2,7 @@
 
 Статус:
 
-`LIVE CONTRACT ACCEPTED THROUGH 0f317b6e... / PR224-R1-02 AND PR224-R1-03 R2 CONTRACT RESCOPE CANDIDATE / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
+`LIVE CONTRACT ACCEPTED THROUGH 0f317b6e... / PR224 R2 CONTRACT CORRECTION CANDIDATE FOR PR224-R2-C-R1-01..02 / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
 
 Этот файл содержит принятый live-preparation contract и additive contract
 rescope records. Раздел 26 является новым bounded contract-only candidate.
@@ -1883,10 +1883,15 @@ retarget / merge / publication = BLOCKED
 
 Этот раздел является отдельно авторизованным bounded contract-only rescope
 для reopened findings `PR224-R1-02` и `PR224-R1-03`. Он имеет precedence только
-над конфликтующими требованиями разделов 23–25 о raw order receipt validation,
-future implementation surface и candle-grid completeness. Все остальные
-принятые ownership, call-budget, freshness, privacy, zero-effect и same-lineage
-границы сохраняются.
+над конфликтующими требованиями раздела 3 и разделов 23–25 о raw order receipt
+validation, future implementation surface и candle-grid completeness. Все
+остальные принятые ownership, call-budget, freshness, privacy, zero-effect и
+same-lineage границы сохраняются.
+
+Precedence над разделом 3 является узким exact exception: прежний глобальный
+three-path freeze и запрет изменения provider transport superseded только
+закрытым five-path allowlist раздела 26.10. Никакой иной production/provider
+path не становится mutable.
 
 ```text
 accepted authority parent / merge-base =
@@ -1965,7 +1970,22 @@ raw response must be Mapping/dict
 "orders" key must be present
 orders value must be list
 every orders item must be Mapping/dict
+
+selected instrument identity uses exact accepted precedence:
+instrumentUid | instrumentId | figi
+selected value must have exact built-in str type and strip() must be non-empty
+
+selected order/request identity uses exact accepted precedence:
+orderRequestId | orderId
+selected value must have exact built-in str type and strip() must be non-empty
 ```
+
+`selected` означает результат существующей left-to-right truthy-selection до
+`str(...).strip()` в immutable `BrokerPortfolioAdapter`. Поэтому whitespace-only
+ранний alias, который маскирует более поздний valid alias, не может быть принят:
+production validation обязана fail closed на таком item. Число, bool, string
+subclass, custom scalar или значение, превращаемое в непустую строку только
+через `str(...)`, также не является accepted identity.
 
 Only the following shape is a legitimate empty broker-order result:
 
@@ -1983,6 +2003,15 @@ At minimum all following shapes fail closed at
 {"orders": "[]"}
 {"orders": [null]}
 {"orders": [1]}
+{"orders": [{}]}
+
+order item missing instrumentUid, instrumentId and figi
+order item whose selected instrument identity is empty or whitespace-only
+order item whose selected instrument identity is not exact built-in str
+
+order item missing orderRequestId and orderId
+order item whose selected order/request identity is empty or whitespace-only
+order item whose selected order/request identity is not exact built-in str
 ```
 
 The validation MUST occur against the raw `_post` result before `.get`, default
@@ -2079,6 +2108,26 @@ orders = null / mapping / scalar
 
 orders contains any non-object member
 -> fail before normalization
+
+orders contains {}
+-> fail before owner return
+
+order item has no supported instrument identity
+-> fail before owner return
+
+selected instrumentUid | instrumentId | figi is empty, whitespace-only or
+not exact built-in str
+-> fail before owner return
+
+order item has no supported order/request identity
+-> fail before owner return
+
+selected orderRequestId | orderId is empty, whitespace-only or
+not exact built-in str
+-> fail before owner return
+
+earlier whitespace-only identity masks a later valid alias
+-> fail before owner return
 ```
 
 It MUST additionally prove through the Q7A integration:
@@ -2241,6 +2290,24 @@ current/tests/fixtures/v3_10_q7a_live_entrypoint_vectors.json
 
 Total: `5 paths`.
 
+For this exact PR224 R2 lineage, this five-path list explicitly supersedes the
+three-path future implementation freeze and provider-transport immutability
+clause in section 3. The exception is path- and purpose-bounded:
+
+```text
+current/trading_robot/tbank_sandbox.py
+= mutable only for strict raw GetSandboxOrders response/item identity validation
+
+current/tests/test_tbank_sandbox.py
+= mutable only for direct production-boundary validation tests
+
+the remaining three paths
+= mutable only for the already frozen PR224-R1-01..03 live-entrypoint correction
+```
+
+No `_post` policy, retry policy, endpoint set, credential handling, provider
+mutation surface or other `TBankSandboxClient` method receives authority.
+
 The three-file cumulative delta from rejected `489ab414...` may be used only as
 implementation evidence/input. New implementation authority starts from the
 newly accepted contract successor. `CanonicalPortfolioManager`,
@@ -2335,4 +2402,43 @@ Preparation = NOT AUTHORIZED
 START EXPERIMENT = INELIGIBLE
 PR #224 mutation = NOT AUTHORIZED
 retarget / merge / release / Stable publication = BLOCKED
+```
+
+### 26.13 Bounded correction record for `PR224-R2-C-R1-01..02`
+
+Independent review of exact `6429ddea... / e93e1794...` established the fixed
+contract finding set:
+
+```text
+PR224-R2-C-R1-01 = FUTURE_IMPLEMENTATION_ALLOWLIST_PRECEDENCE_INCOMPLETE
+PR224-R2-C-R1-02 = ORDER_ITEM_IDENTITY_VALIDATION_INCOMPLETE
+```
+
+This single bounded correction batch changes only this contract path and closes
+no finding by assertion. Proposed closure semantics are:
+
+```text
+PR224-R2-C-R1-01
+-> section 26 explicitly supersedes only the conflicting section-3 surface
+-> exact future surface = five named paths
+-> tbank_sandbox.py authority = strict GetSandboxOrders validation only
+
+PR224-R2-C-R1-02
+-> each order item binds the exact selected instrument and request identities
+-> both selected values are exact built-in non-empty strings after strip()
+-> malformed or adapter-invisible item fails before get_orders returns
+```
+
+Only a finding-scoped read-only review of these two IDs may close them. Until
+that review returns `material findings = 0` and a separate exact-successor
+acceptance is granted:
+
+```text
+PR224-R2-C-R1-01 = PROPOSED_CLOSURE
+PR224-R2-C-R1-02 = PROPOSED_CLOSURE
+contract acceptance = BLOCKED
+implementation = BLOCKED
+provider READ / POST = NOT AUTHORIZED
+Preparation = NOT AUTHORIZED
+START EXPERIMENT = INELIGIBLE
 ```
