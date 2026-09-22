@@ -2,12 +2,12 @@
 
 Статус:
 
-`LIVE CONTRACT ACCEPTED THROUGH 0ebc2e90... / PR224-R1-02 BROKER-ORDER VISIBILITY RESCOPE CANDIDATE / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
+`LIVE CONTRACT ACCEPTED THROUGH 0f317b6e... / PR224-R1-02 AND PR224-R1-03 R2 CONTRACT RESCOPE CANDIDATE / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
 
-Этот файл содержит принятый live-preparation contract и новый additive
-contract rescope, описанный в разделе 23. До independent/adversarial review и
-explicit acceptance exact successor раздел 23 не даёт implementation,
-provider, runtime или experiment authority.
+Этот файл содержит принятый live-preparation contract и additive contract
+rescope records. Раздел 26 является новым bounded contract-only candidate.
+До independent/adversarial review и explicit acceptance его exact successor
+раздел 26 не даёт implementation, provider, runtime или experiment authority.
 
 Этот additive rescope закрывает только два blocker принятой Q7A lineage:
 
@@ -1873,4 +1873,466 @@ Preparation = NOT AUTHORIZED
 START EXPERIMENT = INELIGIBLE
 PR #224 mutation = NOT AUTHORIZED
 retarget / merge / publication = BLOCKED
+```
+
+---
+
+## 26. PR224 R2 — raw broker-order validation and owner-exact sparse candles
+
+### 26.1 Authority, history and one-file surface
+
+Этот раздел является отдельно авторизованным bounded contract-only rescope
+для reopened findings `PR224-R1-02` и `PR224-R1-03`. Он имеет precedence только
+над конфликтующими требованиями разделов 23–25 о raw order receipt validation,
+future implementation surface и candle-grid completeness. Все остальные
+принятые ownership, call-budget, freshness, privacy, zero-effect и same-lineage
+границы сохраняются.
+
+```text
+accepted authority parent / merge-base =
+0f317b6ee18d5bb18ed1dd979731047e1933efaf
+
+accepted authority parent tree =
+2f12c27beb07310dd595d1b0c897c43c7d67f271
+
+rejected implementation evidence only =
+489ab4148352b2de4922609d5851dbc71a764dcd
+
+contract branch =
+agent/v3-10-clean-cl8-q7a-live-orders-candles-r2-contract
+
+initial HEAD = merge-base = accepted authority parent
+ahead / behind = 0 / 0
+worktree = clean
+changed paths = 0
+
+contract-only changed path =
+docs/project/V3_10_CL8_Q7A_LIVE_PREPARATION_RESCOPE_CONTRACT_RU.md
+
+all other repository paths = IMMUTABLE
+```
+
+Historical dispositions are append-only and remain visible:
+
+```text
+PR224-R1-01 = CLOSED
+
+PR224-R1-02 = REOPENED
+previous contract closure = accepted at 0f317b6e...
+new evidence = production get_orders normalization hides malformed wire response
+
+PR224-R1-03 = REOPENED
+new evidence = arbitrary monotonic candle gaps were accepted without a defined
+               completeness authority after removal of the over-strict grid check
+```
+
+The previous `0f317b6e... / 2f12c27b...` contract acceptance remains historical
+authority evidence. This section does not erase, rewrite or retroactively widen
+that acceptance. The rejected `489ab414...` implementation may be consulted as
+evidence but is not ancestry or implementation authority.
+
+Contract work performs no production implementation, provider call, runtime
+mutation, backup/restore, Preparation, experiment, GitHub write or remote-ref
+change.
+
+### 26.2 `PR224-R1-02` defect and validation owner
+
+The existing production boundary currently collapses a malformed response and
+a legitimate empty response:
+
+```text
+TBankSandboxClient.get_orders()
+-> _post("SandboxService", "GetSandboxOrders", ...)
+-> list(response.get("orders", []))
+
+{"orders": []} -> []
+{}             -> []
+```
+
+After that normalization the Q7A wrapper cannot reconstruct whether the raw
+provider response contained the required `orders` member. The wrapper therefore
+MUST NOT be required to prove raw information already discarded by production.
+
+Exact raw response-shape validation belongs to the existing provider trust
+boundary:
+
+```text
+owner = TBankSandboxClient.get_orders
+service = SandboxService
+method = GetSandboxOrders
+
+raw response must be Mapping/dict
+"orders" key must be present
+orders value must be list
+every orders item must be Mapping/dict
+```
+
+Only the following shape is a legitimate empty broker-order result:
+
+```json
+{"orders": []}
+```
+
+At minimum all following shapes fail closed at
+`TBankSandboxClient.get_orders()` and MUST NOT normalize to `[]`:
+
+```text
+{}
+{"orders": null}
+{"orders": {}}
+{"orders": "[]"}
+{"orders": [null]}
+{"orders": [1]}
+```
+
+The validation MUST occur against the raw `_post` result before `.get`, default
+substitution, iteration, `list(...)`, filtering or any other normalization.
+Malformed response raises through the existing provider/trust boundary. No
+parallel provider client, order owner or economic classification is introduced.
+
+### 26.3 Validated owner value and fail-closed chain
+
+After successful raw validation, existing `get_orders()` may return `list[dict]`
+to the accepted Portfolio owner. The normative chain is:
+
+```text
+TBankSandboxClient.get_orders
+-> strict raw provider-response validation
+-> validated detached/list result
+-> CanonicalPortfolioManager.refresh
+-> BrokerPortfolioAdapter
+-> canonical Portfolio reconciliation
+-> PortfolioRepository publication/read-back
+-> PortfolioPreflight
+```
+
+`CanonicalPortfolioManager`, `BrokerPortfolioAdapter` and PortfolioPreflight
+remain unchanged. Account-wide provider order membership remains unfiltered
+before the accepted owner. Active or uncertain target and non-target broker
+orders retain the accepted canonical blocking semantics.
+
+Any raw-shape failure, provider failure, wrong receipt identity or custody
+mismatch gives:
+
+```text
+Gate A = BLOCKED
+canonical publication for the failed refresh = 0
+Central intent = 0
+reservation = 0
+CL7 attempt marker = 0
+provider order POST = 0
+```
+
+After an attempted provider read there is no fallback to:
+
+```text
+broker_orders = ()
+broker_orders = []
+```
+
+unless raw validation has proven the exact legitimate empty shape
+`{"orders": []}`.
+
+### 26.4 Post-validation evidence and privacy
+
+The Q7A wrapper collects evidence only after successful production validation.
+It may bind:
+
+```text
+service = SandboxService
+method = GetSandboxOrders
+account_scope_sha256
+attempt_count = 1
+retry_count = 0
+tracking_id_sha256
+validated_order_count
+validated_orders_canonical_sha256
+```
+
+The wrapper does not reconstruct or claim custody over discarded raw response
+shape. Raw Account ID, request ID, order ID, broker order ID and raw payload do
+not enter shareable evidence. The validated collection passed to the owner must
+remain byte/semantic-equivalent under the frozen canonicalization; mutation,
+reordering, filtering or hash/input mismatch blocks Gate A.
+
+The accepted Gate A and Gate B budgets remain:
+
+```text
+Gate A GetSandboxOrders logical / physical = 1 / 1
+Gate B GetSandboxOrders logical / physical = 0 / 0
+retry / redirect / automatic reacquisition = 0 / 0 / 0
+```
+
+### 26.5 Mandatory raw-orders closure matrix
+
+Future implementation acceptance MUST prove at the production API boundary:
+
+```text
+{"orders": []}
+-> accepted empty list result
+
+missing orders key
+-> fail before normalization
+
+orders = null / mapping / scalar
+-> fail before normalization
+
+orders contains any non-object member
+-> fail before normalization
+```
+
+It MUST additionally prove through the Q7A integration:
+
+```text
+valid empty orders
+-> accepted Portfolio refresh may proceed
+
+active broker order
+-> canonical blocking
+-> Central intent / reservation / POST = 0 / 0 / 0
+
+uncertain broker order
+-> canonical blocking
+-> Central intent / reservation / POST = 0 / 0 / 0
+
+malformed raw order response
+-> no canonical publication from failed refresh
+-> no Central effect
+```
+
+Exception-only assertions and wrapper-local synthetic status do not constitute
+PASS. Tests must bind the physical transport response to production validation,
+the validated owner input and the zero-effect boundary.
+
+### 26.6 `PR224-R1-03` owner-exact sparse candle semantics
+
+Q7A introduces no exchange-calendar or session-schedule owner. This bounded
+rescope explicitly forbids adding:
+
+```text
+GetTradingSchedules
+another provider endpoint
+hard-coded MOEX session hours
+weekend or holiday tables
+external calendar package
+synthetic reindex or fill logic
+```
+
+For this Q7A smoke, completeness means completeness of the accepted
+`StrategyCandleLoader`/provider output, not uninterrupted wall-clock
+continuity. A valid canonical frame requires:
+
+```text
+index type = DatetimeIndex
+timestamps = UTC-normalizable, unique and strictly increasing
+required columns = open/high/low/close/volume/is_complete
+every returned row is_complete = true
+OHLC values = finite, positive and structurally valid
+volume = finite and non-negative
+complete row count >= exact strategy-suite required_bars
+every returned row belongs to the exact authorized request range
+latest returned complete candle satisfies the frozen freshness/future-skew rule
+```
+
+There is no whole-frame invariant:
+
+```text
+timestamp[n+1] - timestamp[n] == configured candle interval
+```
+
+Accordingly, a strictly increasing frame may contain overnight, weekend,
+holiday or session-break gaps and still be valid. Acceptance of sparse returned
+timestamps does not assert that every otherwise expected exchange candle was
+present.
+
+### 26.7 Finite missing-candle claims
+
+The ambiguous phrase `missing candle rejection` is superseded for Q7A by only
+the following finite and implementable conditions:
+
+```text
+MISSING_REQUIRED_HISTORY
+complete row count < strategy-suite required_bars
+
+MISSING_OR_INVALID_LATEST_EVIDENCE
+latest returned complete candle violates frozen freshness or future-skew rules
+
+CAPTURED_OWNER_RESULT_CHANGED
+canonical frame SHA-256 changes after exact owner output was captured/bound
+
+REQUEST_BOUNDARY_MISMATCH
+any returned row escapes the exact authorized request interval, or captured
+request identity differs from accepted policy
+```
+
+Without a frozen market-calendar authority, Q7A MUST NOT claim to distinguish,
+from elapsed wall-clock time alone:
+
+```text
+legitimate market closure or no-candle interval
+from
+provider-side omission of one otherwise expected intraday candle
+```
+
+If future Stable qualification requires that distinction, it requires a
+separate `MARKET_CALENDAR / SESSION_AUTHORITY RESCOPE`. It cannot be inferred or
+implemented here.
+
+### 26.8 Candle closure matrix and request-gap terminology
+
+Future tests MUST prove:
+
+```text
+strictly increasing frame with overnight gap -> accepted
+strictly increasing frame with weekend-like gap -> accepted
+duplicate timestamp -> rejected
+decreasing or out-of-order timestamp -> rejected
+incomplete returned row -> rejected
+insufficient complete bar count -> rejected
+stale latest candle -> rejected
+frame mutation after canonical binding -> rejected
+row outside authorized request range -> rejected
+captured request identity mismatch -> rejected
+```
+
+A synthetic `arbitrary timestamp gap = corruption` assertion is forbidden
+without separately accepted calendar authority.
+
+Existing phrases `range gap / overlap rejected` and equivalent wording refer
+only to:
+
+```text
+authorized request-range mismatch
+chunk/range construction defect if chunking is ever separately enabled
+```
+
+For the current one-physical-request candle policy they do not require returned
+candle timestamps to form an uninterrupted wall-clock grid.
+
+### 26.9 `PR224-R1-01` remains closed
+
+This rescope does not reopen or modify `PR224-R1-01`:
+
+```text
+PR224-R1-01 = CLOSED_UNCHANGED
+physical CL3 telemetry service = SandboxService
+physical CL3 telemetry method = GetSandboxOperationsByCursor
+```
+
+Future implementation must preserve that correction exactly. If closing
+`PR224-R1-02` or `PR224-R1-03` requires reopening it, this bounded rescope is
+`BLOCKED`.
+
+### 26.10 Frozen five-path future implementation surface
+
+Only after independent/adversarial exact-head review, closure of all material
+contract findings and explicit acceptance of the exact contract successor may
+a new implementation branch be created directly from that successor.
+
+The future unified implementation allowlist is exactly:
+
+```text
+current/trading_robot/tbank_sandbox.py
+current/tests/test_tbank_sandbox.py
+current/tools/v3_10_q7a_live_entrypoint.py
+current/tests/test_v3_10_q7a_live_entrypoint.py
+current/tests/fixtures/v3_10_q7a_live_entrypoint_vectors.json
+```
+
+Total: `5 paths`.
+
+The three-file cumulative delta from rejected `489ab414...` may be used only as
+implementation evidence/input. New implementation authority starts from the
+newly accepted contract successor. `CanonicalPortfolioManager`,
+`BrokerPortfolioAdapter`, PortfolioPreflight, Central, Risk, CL7,
+SandboxExecutionAdapter and all other paths remain immutable.
+
+The future successor must prove:
+
+```text
+PR224-R1-01 = CLOSED / regression preserved
+PR224-R1-02 = raw malformed GetSandboxOrders cannot normalize to legitimate empty
+PR224-R1-03 = valid sparse/session-separated frames are accepted while defined
+               structural corruption remains blocked
+```
+
+If strict raw validation cannot be placed in
+`TBankSandboxClient.get_orders()` without modifying another production owner,
+if `CanonicalPortfolioManager` must change, if a calendar/new endpoint becomes
+necessary, or if more than these five paths are required:
+
+```text
+BLOCKED -> separate rescope
+```
+
+### 26.11 Qualification non-transfer
+
+No Q1, Q4, Q5, CLI smoke or standalone smoke result from any predecessor or
+rejected successor transfers to the future implementation. Only after its
+finding-scoped review returns `material findings = 0` must the following be
+executed against that exact new implementation head:
+
+```text
+Q1 = rerun
+Q4 = rerun
+Q5 = rerun
+native CLI smoke = rerun
+native standalone smoke = rerun
+```
+
+No qualification runs before implementation material findings return to zero.
+
+### 26.12 Finding map and review oracle
+
+The contract custody packet MUST contain
+`PR224_R1_02_R1_03_R2_CONTRACT_RESCOPE_MAP.json` with at least:
+
+```text
+PR224-R1-01
+status = CLOSED_UNCHANGED
+
+PR224-R1-02
+status = REOPENED / PROPOSED_CLOSURE
+reason = RAW_GETSANDBOXORDERS_VALIDATION_BOUNDARY
+
+PR224-R1-03
+status = REOPENED / PROPOSED_CLOSURE
+reason = CANDLE_COMPLETENESS_SEMANTICS
+```
+
+The map preserves links to the previous `0f317b6e... / 2f12c27b...`
+acceptance and must not rewrite that historical record.
+
+This contract successor is ready for independent review only when all are
+true:
+
+```text
+parent / merge-base = 0f317b6ee18d5bb18ed1dd979731047e1933efaf
+cumulative changed repository surface = exactly one contract path
+PR224-R1-01 remains CLOSED_UNCHANGED
+raw GetSandboxOrders validation owner = TBankSandboxClient.get_orders
+CanonicalPortfolioManager change = 0
+new calendar or provider endpoint = 0
+future implementation surface = exactly five frozen paths
+git diff --check = PASS
+worktree = clean
+raw Git custody objects and exact file identity are exported
+```
+
+Until independent/adversarial review and separate explicit acceptance of the
+exact successor:
+
+```text
+PR224-R1-01 = CLOSED_UNCHANGED
+PR224-R1-02 = REOPENED / PROPOSED_CLOSURE
+PR224-R1-03 = REOPENED / PROPOSED_CLOSURE
+
+contract rescope = CANDIDATE
+implementation = BLOCKED
+provider READ / POST = NOT AUTHORIZED
+runtime mutation = NOT AUTHORIZED
+Preparation = NOT AUTHORIZED
+START EXPERIMENT = INELIGIBLE
+PR #224 mutation = NOT AUTHORIZED
+retarget / merge / release / Stable publication = BLOCKED
 ```
