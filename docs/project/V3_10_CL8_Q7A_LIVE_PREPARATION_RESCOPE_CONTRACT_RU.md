@@ -2,7 +2,7 @@
 
 Статус:
 
-`LIVE CONTRACT ACCEPTED THROUGH 7e1fd586... / RS2-R1 CORRECTION CANDIDATE / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
+`LIVE CONTRACT ACCEPTED THROUGH 0ebc2e90... / PR224-R1-02 BROKER-ORDER VISIBILITY RESCOPE CANDIDATE / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
 
 Этот файл содержит принятый live-preparation contract и новый additive
 contract rescope, описанный в разделе 23. До independent/adversarial review и
@@ -1429,4 +1429,448 @@ provider READ / POST = NOT AUTHORIZED
 runtime mutation = NOT AUTHORIZED
 Preparation = NOT AUTHORIZED
 START EXPERIMENT = INELIGIBLE
+```
+
+---
+
+## 25. PR224-R1-02 — accepted Portfolio owner broker-order visibility rescope
+
+Этот раздел является отдельно авторизованным bounded contract-only rescope для
+одного finding:
+
+```text
+PR224-R1-02 = ACCEPTED_PORTFOLIO_OWNER_ORDER_READ_SUPPRESSED
+```
+
+Он имеет precedence над конфликтующими запретами order-read в разделах 9.3,
+23.7 и 24 только в отношении одного account-scoped Gate A read
+`SandboxService/GetSandboxOrders` через existing
+`CanonicalPortfolioManager.refresh()`. Он не расходует заново исчерпанный
+correction batch раздела 22, не принимает contract successor и не открывает
+implementation, provider, runtime, Preparation или experiment authority.
+
+### 25.1 Exact predecessor, surface и source fact
+
+```text
+exact predecessor / merge-base =
+0ebc2e90e8763d1d46e1d013911557ec8a83bae6
+
+exact predecessor tree =
+223fb0bce58f91caf4e14e9ddc74878225c412ac
+
+contract-only changed path =
+docs/project/V3_10_CL8_Q7A_LIVE_PREPARATION_RESCOPE_CONTRACT_RU.md
+
+all other repository paths = IMMUTABLE
+```
+
+Exact predecessor source фиксирует существующую authoritative chain:
+
+```text
+CanonicalPortfolioManager.refresh()
+-> api.get_portfolio(exact account)
+-> if api exposes get_orders:
+     api.get_orders(exact account)
+-> BrokerPortfolioAdapter.from_api_portfolio(..., broker_orders=...)
+-> canonical Portfolio reconciliation
+-> PortfolioRepository publication/read-back
+-> PortfolioPreflight
+```
+
+Source custody:
+
+```text
+current/trading_robot/portfolio_manager.py
+git blob = a484cea153f3796dc9db096288375ab0f2e1e440
+
+current/trading_robot/tbank_sandbox.py
+git blob = 74f4ab60897a28db43a768f95ae4c90230845ad6
+```
+
+`TBankSandboxClient.get_orders()` выполняет exact account-scoped
+`SandboxService/GetSandboxOrders`. Его broker orders входят в existing
+`PendingOrderState`, `ReconciliationStatus.PENDING_ORDER` и
+`ReconciliationStatus.PENDING_ORDER_UNCERTAIN`; это accepted Portfolio owner
+semantics, а не новая Q7A economic classification.
+
+Root cause:
+
+```text
+accepted owner requires get_orders visibility
++ Q7A evidence wrapper hides get_orders
++ frozen Gate A budget forbids GetSandboxOrders
+= canonical pending-order evidence can be silently suppressed
+```
+
+### 25.2 One owner-controlled Gate A broker-order read
+
+Gate A authorizes ровно один read:
+
+```text
+service = SandboxService
+method = GetSandboxOrders
+account scope = exact accepted Sandbox account
+owner = CanonicalPortfolioManager.refresh
+
+logical calls Gate A = 1
+physical requests Gate A = 1
+automatic application retries = 0
+redirect replay = 0
+automatic reacquisition = 0
+
+logical calls Gate B = 0
+physical requests Gate B = 0
+```
+
+Read остаётся account-wide. Q7A wrapper не фильтрует response по nominated
+target, configured-set membership или ожидаемому economic outcome до передачи
+existing Portfolio owner. Order другого configured или unexpected instrument
+остаётся доступен accepted reconciliation и не может быть отброшен как
+non-target.
+
+Normative chain:
+
+```text
+existing CanonicalPortfolioManager.refresh
+-> existing provider GetSandboxPortfolio
+-> existing provider GetSandboxOrders
+-> existing BrokerPortfolioAdapter
+-> existing canonical reconciliation
+-> existing PortfolioRepository publication/read-back
+-> existing PortfolioPreflight
+```
+
+Q7A evidence wrapper может только:
+
+```text
+observe exact call
+enforce call/method/account/gate budget
+retain a detached private response for immediate custody validation
+capture privacy-safe receipt/evidence
+pass the unfiltered detached owner input through the accepted interface
+```
+
+Он не может:
+
+```text
+classify broker order economically
+choose an order to ignore
+cancel, adopt, repair or replace an order
+create order ownership
+clear pending/uncertain state
+publish parallel Portfolio state
+replace reconciliation or PortfolioPreflight
+```
+
+### 25.3 Durable Preparation policy
+
+Preparation обязана раздельно связывать Gate A и Gate B authority. Schema
+содержит exact equivalent следующего набора; имена полей могут следовать
+existing canonical style, но асимметрия `1 / 0` не может быть неоднозначной:
+
+```text
+orders_service = SandboxService
+orders_method = GetSandboxOrders
+orders_owner = CanonicalPortfolioManager.refresh
+orders_account_scope_sha256 = exact accepted scope hash
+
+orders_requests_gate_a = 1
+orders_requests_gate_b = 0
+orders_retries = 0
+orders_redirect_replays = 0
+orders_automatic_reacquisition = 0
+```
+
+Preparation не содержит future response, future order identity или future
+Portfolio result. Она фиксирует только durable policy/owner/budget identities.
+
+### 25.4 Corrected Gate A read budget and order
+
+Normative Gate A read budget становится:
+
+```text
+one logical accepted CL3 operations-sync session
+
+one physical SandboxService/GetSandboxPortfolio
+through the accepted canonical Portfolio owner graph
+
+one physical account-scoped SandboxService/GetSandboxOrders
+inside the same CanonicalPortfolioManager.refresh owner invocation
+
+one SandboxService/GetSandboxWithdrawLimits
+
+zero or one SandboxService/GetSandboxPositions
+only if already fixed by accepted owner policy and Preparation
+
+one target-only MarketDataService/GetCandles logical session
+with the accepted bounded physical request count
+
+one target-only MarketDataService/GetLastPrices
+
+no GetTradingStatus
+no account-list read
+no instrument lookup
+no diagnostic/second GetSandboxOrders
+no GetSandboxOrderState
+no cancel/replace/post order endpoint
+```
+
+Gate A order относительно accepted owner graph:
+
+```text
+accepted CL3 bounded operation sync
+-> accepted CL2 append/read-back
+-> CanonicalPortfolioManager.refresh:
+     GetSandboxPortfolio
+     GetSandboxOrders
+     accepted adapter/reconciliation/publication
+-> canonical Portfolio read-back and PortfolioPreflight
+-> accepted CL4/CL5/CL6 rebuild
+-> accepted target candle/proposal/quote path
+-> immediate pre-Central validation
+-> Central admission only if all evidence is valid and nonblocking
+```
+
+`GetSandboxOrders` не является отдельным diagnostic phase и не может быть
+повторён после Portfolio publication, перед Central или при ошибке.
+
+### 25.5 Gate B remains order-read closed
+
+Gate B сохраняет accepted same-lineage post-admission semantics и budget:
+
+```text
+accepted CL3 sync session
+GetSandboxPortfolio
+GetSandboxWithdrawLimits
+exactly one target GetTradingStatus through existing owner
+
+GetSandboxOrders = 0
+GetCandles = 0
+GetLastPrices = 0
+```
+
+Любая попытка Gate B вызвать `GetSandboxOrders` блокируется до provider IO и не
+может создавать replacement proposal, replacement intent или новый Portfolio
+owner. Gate A order-read authority не переносится в Gate B.
+
+### 25.6 Fail-closed acquisition and canonical pending-order semantics
+
+Gate A order receipt является обязательным evidence. Любое из условий:
+
+```text
+provider failure or timeout
+malformed response
+wrong service or method
+wrong/unbound account scope
+physical request count != 1
+attempt_count != 1
+retry_count != 0
+redirect/replay count != 0
+automatic reacquisition
+response custody mismatch
+wrapper-hidden get_orders on the exact provider
+```
+
+даёт:
+
+```text
+Gate A = BLOCKED
+Central intent = 0
+reservation = 0
+CL7 attempt marker = 0
+provider order POST = 0
+```
+
+После provider failure запрещён fallback к `broker_orders = ()`. Различие
+нормативно:
+
+```text
+method genuinely unavailable in an accepted owner configuration
+!= method deliberately hidden by the Q7A wrapper
+```
+
+Для exact predecessor provider exposes `get_orders`; wrapper обязан сохранить
+его видимость и exact owner invocation.
+
+Accepted result semantics сохраняются без переопределения:
+
+```text
+active broker order
+-> canonical pending-order state
+-> reconciliation / PortfolioPreflight blocking
+-> Central admission = 0
+-> POST = 0
+
+unknown or uncertain broker order
+-> canonical uncertain pending state
+-> blocking
+-> Central admission = 0
+-> POST = 0
+```
+
+Эти правила действуют и при `target current_lots = 0`. Flat target proof не
+компенсирует существующую external/manual broker order activity.
+
+### 25.7 Response custody, privacy and evidence
+
+Если wrapper удерживает detached private response, обязательна цепочка:
+
+```text
+provider response
+-> detached private byte-equivalent order collection
+-> exact canonical response SHA-256
+-> unfiltered existing Portfolio owner input
+-> canonical Portfolio result identity
+```
+
+Wrapper не изменяет order, lot, direction, status, instrument, ordering или
+membership и не строит собственный economic model. Любая mutation,
+reordering, filtering или hash/input mismatch блокирует Gate A до Central.
+
+Shareable evidence связывает:
+
+```text
+service = SandboxService
+method = GetSandboxOrders
+owner = CanonicalPortfolioManager.refresh
+gate = A
+account_scope_sha256
+attempt_count
+retry_count
+redirect_replay_count
+status_code or finite error category
+tracking_id_sha256
+request_started_at
+request_completed_at
+orders_response_canonical_sha256
+canonical Portfolio revision/checksum
+accepted aggregate pending/reconciliation identities
+```
+
+Raw Account ID, request ID, order ID, broker order ID и full provider payload
+не входят в shareable evidence. Existing privacy-safe canonical Portfolio
+identities используются вместо parallel order summary/model.
+
+### 25.8 Mandatory adversarial implementation matrix
+
+Future implementation acceptance дополнительно требует доказать:
+
+```text
+empty GetSandboxOrders
+-> normal accepted owner path may continue
+
+one active target BUY order
+-> canonical PENDING_ORDER block
+-> Central intent/reservation/POST = 0/0/0
+
+one uncertain target order
+-> canonical PENDING_ORDER_UNCERTAIN block
+-> Central intent/reservation/POST = 0/0/0
+
+one order for non-target or unexpected instrument
+-> unfiltered accepted Portfolio reconciliation semantics preserved
+-> never silently discarded merely because non-target
+
+GetSandboxOrders provider failure or malformed response
+-> no empty-orders fallback
+-> Gate A blocked with zero Central effect
+
+second GetSandboxOrders logical or physical call
+-> budget failure before any additional provider IO/effect
+
+retry_count > 0 or redirect/replay > 0
+-> acquisition budget failure
+
+Gate B GetSandboxOrders attempt
+-> forbidden before provider IO
+
+wrong service/method/account receipt
+-> Gate A blocked
+
+response changed, reordered or filtered before owner
+-> custody mismatch and zero Central effect
+
+restored get_orders visibility
+-> no cancel/get-state/replace/post surfaces opened
+```
+
+Tests должны доказывать exact owner call count, response-to-owner binding,
+canonical Portfolio blocking result и zero-effect boundary; wrapper-local
+synthetic status без canonical owner publication не является PASS.
+
+### 25.9 Ownership boundary and implementation surface
+
+Ownership остаётся:
+
+```text
+PortfolioRepository / CanonicalPortfolioManager = canonical Portfolio owner
+CentralOrderManager = intent/reservation owner
+SandboxExecutionAdapter = provider order-mutation boundary
+```
+
+Этот rescope не создаёт нового order, Portfolio, reconciliation, recovery или
+execution owner.
+
+Future implementation allowlist не расширяется:
+
+```text
+current/tools/v3_10_q7a_live_entrypoint.py
+current/tests/test_v3_10_q7a_live_entrypoint.py
+current/tests/fixtures/v3_10_q7a_live_entrypoint_vectors.json
+```
+
+Production Portfolio owner, provider transport, Central, Risk, CL7 и execution
+adapter остаются immutable. Если accepted owner semantics нельзя восстановить в
+этих трёх paths:
+
+```text
+IMPLEMENTATION_SURFACE_INSUFFICIENT -> separate rescope
+```
+
+Этот раздел предлагает closure только `PR224-R1-02`. Он не исправляет и не
+закрывает:
+
+```text
+PR224-R1-01 = CL3_TELEMETRY_IDENTITY_MISMATCH
+PR224-R1-03 = CANDLE_SESSION_GAPS_REJECTED
+```
+
+Они остаются implementation findings для отдельного unified correction после
+independent acceptance exact contract successor.
+
+### 25.10 Independent review oracle and current authority
+
+Contract successor готов к independent review только при одновременном PASS:
+
+```text
+exact predecessor / merge-base = 0ebc2e90e8763d1d46e1d013911557ec8a83bae6
+changed repository surface = exactly one contract path
+
+GetSandboxOrders Gate A logical/physical count = 1/1
+GetSandboxOrders Gate B count = 0
+retry / redirect / reacquisition = 0/0/0
+
+existing CanonicalPortfolioManager semantics preserved
+account-wide response unfiltered before owner
+active/uncertain order remains canonical blocking evidence
+provider/read/custody failure is fail closed
+no empty-orders fallback after provider failure
+no new economic or mutation owner
+
+future implementation allowlist unchanged
+PR224-R1-01 and PR224-R1-03 remain open
+```
+
+До finding-scoped independent review и explicit acceptance exact successor:
+
+```text
+PR224-R1-02 = PROPOSED_CLOSURE
+contract rescope = CANDIDATE
+implementation correction = BLOCKED
+provider READ / POST = NOT AUTHORIZED
+runtime mutation = NOT AUTHORIZED
+Preparation = NOT AUTHORIZED
+START EXPERIMENT = INELIGIBLE
+PR #224 mutation = NOT AUTHORIZED
+retarget / merge / publication = BLOCKED
 ```
