@@ -61,6 +61,180 @@ def test_client_uses_official_sandbox_host():
     )
 
 
+def test_get_orders_accepts_only_explicit_validated_orders_member(monkeypatch):
+    raw = {
+        "orders": [
+            {
+                "instrumentUid": "uid-1",
+                "orderRequestId": "request-1",
+                "orderId": "order-1",
+            },
+            {"instrumentId": "instrument-2", "orderId": "order-2"},
+            {"figi": "figi-3", "orderRequestId": "request-3"},
+            {
+                "instrumentUid": "",
+                "instrumentId": "instrument-4",
+                "orderRequestId": "",
+                "orderId": "order-4",
+            },
+        ]
+    }
+    calls = []
+
+    def fake_post(self, service, method, payload=None, *, retry_safe=True):
+        calls.append((service, method, dict(payload or {})))
+        return raw
+
+    monkeypatch.setattr(TBankSandboxClient, "_post", fake_post)
+    client = TBankSandboxClient("dummy-token", max_retries=0)
+    try:
+        result = client.get_orders("account")
+    finally:
+        client.close()
+
+    assert result == raw["orders"]
+    assert result is not raw["orders"]
+    assert all(
+        left is not right for left, right in zip(result, raw["orders"], strict=True)
+    )
+    assert calls == [
+        (
+            "SandboxService",
+            "GetSandboxOrders",
+            {"accountId": "account"},
+        )
+    ]
+
+
+def test_get_orders_accepts_only_exact_empty_orders_shape(monkeypatch):
+    monkeypatch.setattr(
+        TBankSandboxClient,
+        "_post",
+        lambda *args, **kwargs: {"orders": []},
+    )
+    client = TBankSandboxClient("dummy-token", max_retries=0)
+    try:
+        assert client.get_orders("account") == []
+    finally:
+        client.close()
+
+
+class _OrderIdentityStringSubclass(str):
+    pass
+
+
+class _OrderIdentityStringConvertible:
+    def __str__(self) -> str:
+        return "looks-valid-only-after-conversion"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        [],
+        {},
+        {"orders": None},
+        {"orders": {}},
+        {"orders": "[]"},
+        {"orders": [None]},
+        {"orders": [1]},
+        {"orders": [{}]},
+        {"orders": [{"orderId": "order-1"}]},
+        {"orders": [{"instrumentUid": "uid-1"}]},
+        {
+            "orders": [
+                {
+                    "instrumentUid": " ",
+                    "instrumentId": "valid-but-masked",
+                    "orderId": "order-1",
+                }
+            ]
+        },
+        {
+            "orders": [
+                {
+                    "instrumentUid": 1,
+                    "instrumentId": "valid-but-masked",
+                    "orderId": "order-1",
+                }
+            ]
+        },
+        {
+            "orders": [
+                {
+                    "instrumentUid": _OrderIdentityStringSubclass("uid-1"),
+                    "orderId": "order-1",
+                }
+            ]
+        },
+        {
+            "orders": [
+                {
+                    "instrumentUid": _OrderIdentityStringConvertible(),
+                    "orderId": "order-1",
+                }
+            ]
+        },
+        {
+            "orders": [
+                {
+                    "instrumentUid": "uid-1",
+                    "orderRequestId": " ",
+                    "orderId": "valid-but-masked",
+                }
+            ]
+        },
+        {
+            "orders": [
+                {
+                    "instrumentUid": "uid-1",
+                    "orderRequestId": True,
+                    "orderId": "valid-but-masked",
+                }
+            ]
+        },
+        {
+            "orders": [
+                {
+                    "instrumentUid": "uid-1",
+                    "orderId": _OrderIdentityStringSubclass("order-1"),
+                }
+            ]
+        },
+        {
+            "orders": [
+                {
+                    "instrumentUid": "uid-1",
+                    "orderId": _OrderIdentityStringConvertible(),
+                }
+            ]
+        },
+    ],
+    ids=lambda value: type(value).__name__,
+)
+def test_get_orders_rejects_malformed_raw_response_before_normalization(
+    monkeypatch,
+    response,
+):
+    monkeypatch.setattr(
+        TBankSandboxClient,
+        "_post",
+        lambda *args, **kwargs: response,
+    )
+    client = TBankSandboxClient("dummy-token", max_retries=0)
+    try:
+        with pytest.raises(TBankAPIError) as captured:
+            client.get_orders("account")
+    finally:
+        client.close()
+
+    assert captured.value.service == "SandboxService"
+    assert captured.value.method == "GetSandboxOrders"
+    assert captured.value.error_class == "ProviderResponseValidationError"
+    assert captured.value.transient is False
+
+
 def test_client_accepts_explicit_ca_bundle(tmp_path: Path):
     bundle = tmp_path / "root.pem"
     bundle.write_text("dummy", encoding="utf-8")

@@ -4,11 +4,12 @@ import logging
 import random
 import re
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_DOWN, Decimal
 from http.client import IncompleteRead
-from typing import Any, Callable, ClassVar
+from typing import Any, ClassVar
 
 from .tls_support import enable_system_trust_store, resolve_ca_bundle
 
@@ -732,7 +733,55 @@ class TBankSandboxClient:
             "GetSandboxOrders",
             {"accountId": account_id},
         )
-        return list(response.get("orders", []))
+        if not isinstance(response, Mapping) or "orders" not in response:
+            raise TBankAPIError(
+                "T-Invest returned malformed GetSandboxOrders response.",
+                transient=False,
+                service="SandboxService",
+                method="GetSandboxOrders",
+                error_class="ProviderResponseValidationError",
+            )
+        orders = response["orders"]
+        if type(orders) is not list:
+            raise TBankAPIError(
+                "T-Invest returned malformed GetSandboxOrders response.",
+                transient=False,
+                service="SandboxService",
+                method="GetSandboxOrders",
+                error_class="ProviderResponseValidationError",
+            )
+
+        validated: list[dict[str, Any]] = []
+        for item in orders:
+            if not isinstance(item, Mapping):
+                raise TBankAPIError(
+                    "T-Invest returned malformed GetSandboxOrders response.",
+                    transient=False,
+                    service="SandboxService",
+                    method="GetSandboxOrders",
+                    error_class="ProviderResponseValidationError",
+                )
+            instrument_identity = (
+                item.get("instrumentUid")
+                or item.get("instrumentId")
+                or item.get("figi")
+            )
+            request_identity = item.get("orderRequestId") or item.get("orderId")
+            if (
+                type(instrument_identity) is not str
+                or not instrument_identity.strip()
+                or type(request_identity) is not str
+                or not request_identity.strip()
+            ):
+                raise TBankAPIError(
+                    "T-Invest returned malformed GetSandboxOrders response.",
+                    transient=False,
+                    service="SandboxService",
+                    method="GetSandboxOrders",
+                    error_class="ProviderResponseValidationError",
+                )
+            validated.append(dict(item))
+        return validated
 
     def find_instrument(
         self,
