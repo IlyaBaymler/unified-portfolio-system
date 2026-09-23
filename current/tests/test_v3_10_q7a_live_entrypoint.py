@@ -1024,7 +1024,15 @@ def test_quote_evidence_binds_exact_wire_value_without_raw_target() -> None:
 
 
 @pytest.mark.parametrize(
-    "scenario", ["stable", "ledger-drift", "quote-blocked", "synthetic-invalid"]
+    "scenario",
+    [
+        "stable",
+        "ledger-drift",
+        "quote-blocked",
+        "synthetic-invalid",
+        "quote-evidence-exception",
+        "central-exception",
+    ],
 )
 def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
     monkeypatch: pytest.MonkeyPatch,
@@ -1149,6 +1157,8 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
             )
 
         def coordinate_marked(self, **kwargs: Any) -> SimpleResult:
+            if scenario == "central-exception":
+                raise RuntimeError("PRIVATE_CENTRAL_CANARY")
             manager.active = after
             self.admission_binding_raw = b"admission-binding"
             return SimpleResult()
@@ -1260,8 +1270,15 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         clock=lambda: now,
         controlled_proposal_box=proposal_box,
     )
+    if scenario == "quote-evidence-exception":
+
+        def fail_quote(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("PRIVATE_QUOTE_CANARY")
+
+        monkeypatch.setattr(live, "quote_evidence", fail_quote)
     if scenario == "ledger-drift":
         reason("CL6_CONTEXT_NOT_READY", live.execute_economic_smoke, owners)
+        assert owners.pre_admission_checkpoint == "LEDGER_READBACK"
         assert manager.active is before
         assert provider.post_calls == 0
         return
@@ -1270,6 +1287,7 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
             live.execute_economic_smoke(owners)
         assert caught.value.reason == "PROVIDER_READ_FAILED"
         assert caught.value.dependency_reason == "CANDIDATE_QUOTE_READ_FAILED"
+        assert owners.pre_admission_checkpoint == "COORDINATION_REQUEST"
         assert manager.active is before
         assert provider.post_calls == 0
         return
@@ -1277,6 +1295,21 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         with pytest.raises(live.Q7ASyntheticError) as caught:
             live.execute_economic_smoke(owners)
         assert caught.value.reason == "COORDINATION_REQUEST_INVALID"
+        assert owners.pre_admission_checkpoint == "COORDINATION_REQUEST"
+        assert manager.active is before
+        assert provider.post_calls == 0
+        return
+    if scenario == "quote-evidence-exception":
+        with pytest.raises(RuntimeError, match="PRIVATE_QUOTE_CANARY"):
+            live.execute_economic_smoke(owners)
+        assert owners.pre_admission_checkpoint == "QUOTE_EVIDENCE"
+        assert manager.active is before
+        assert provider.post_calls == 0
+        return
+    if scenario == "central-exception":
+        with pytest.raises(RuntimeError, match="PRIVATE_CENTRAL_CANARY"):
+            live.execute_economic_smoke(owners)
+        assert owners.pre_admission_checkpoint == "CENTRAL_ADMISSION"
         assert manager.active is before
         assert provider.post_calls == 0
         return
@@ -1441,9 +1474,18 @@ def test_main_terminalizes_unexpected_exception_without_raw_details(
     )
     prep_path = tmp_path / "preparation.json"
     prep_path.write_bytes(raw)
-    monkeypatch.setattr(live, "_compose_live_owners", lambda *_: object())
+    central = SimpleNamespace(intents=())
+    owners = SimpleNamespace(
+        pre_admission_checkpoint="BEFORE_PROPOSAL_MARKER",
+        coordinator=SimpleNamespace(manager=SimpleNamespace(state=lambda: central)),
+        execution_adapter=SimpleNamespace(
+            cash_authority_manager=SimpleNamespace(status=lambda: object())
+        ),
+    )
+    monkeypatch.setattr(live, "_compose_live_owners", lambda *_: owners)
 
     def fail_unexpected(_owners: object) -> dict[str, Any]:
+        owners.pre_admission_checkpoint = "QUOTE_EVIDENCE"
         raise RuntimeError("PRIVATE_PROVIDER_CANARY")
 
     monkeypatch.setattr(live, "execute_economic_smoke", fail_unexpected)
@@ -1473,7 +1515,42 @@ def test_main_terminalizes_unexpected_exception_without_raw_details(
     }
     terminal = json.loads((evidence / "terminal-blocked.json").read_bytes())
     assert terminal["reason"] == "POSTCONDITION_FAILED"
+    assert terminal["pre_admission_checkpoint"] == "QUOTE_EVIDENCE"
     assert "PRIVATE_PROVIDER_CANARY" not in json.dumps(terminal)
+
+
+@pytest.mark.parametrize(
+    ("checkpoint", "expected"),
+    [
+        ("COORDINATION_REQUEST", "COORDINATION_REQUEST"),
+        ("CENTRAL_ADMISSION", "CENTRAL_ADMISSION"),
+        ("PRIVATE_ACCOUNT_ID_CANARY", None),
+        (None, None),
+    ],
+)
+def test_terminal_checkpoint_is_closed_and_pre_admission_only(
+    tmp_path: Path, checkpoint: object, expected: str | None
+) -> None:
+    selected = valid_preparation()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    central = SimpleNamespace(intents=())
+    owners = SimpleNamespace(
+        pre_admission_checkpoint=checkpoint,
+        coordinator=SimpleNamespace(manager=SimpleNamespace(state=lambda: central)),
+        execution_adapter=SimpleNamespace(
+            cash_authority_manager=SimpleNamespace(status=lambda: object())
+        ),
+    )
+    live._write_terminal_blocked(
+        args=SimpleNamespace(evidence_dir=evidence),
+        prep=selected,
+        reason="POSTCONDITION_FAILED",
+        owners=owners,
+    )
+    terminal = json.loads((evidence / "terminal-blocked.json").read_bytes())
+    assert terminal.get("pre_admission_checkpoint") == expected
+    assert "PRIVATE_ACCOUNT_ID_CANARY" not in json.dumps(terminal)
 
 
 @pytest.mark.parametrize(
@@ -1567,6 +1644,7 @@ def test_post_admission_terminal_preserves_hashed_existing_lineage(
         pending_dispatch_proof_sha256=None,
     )
     owners = SimpleNamespace(
+        pre_admission_checkpoint="CENTRAL_ADMISSION",
         coordinator=SimpleNamespace(manager=SimpleNamespace(state=lambda: central)),
         execution_adapter=SimpleNamespace(
             cash_authority_manager=SimpleNamespace(status=lambda: authority)
@@ -1584,6 +1662,7 @@ def test_post_admission_terminal_preserves_hashed_existing_lineage(
     assert terminal["status"] == "RECOVERY_REQUIRED"
     assert terminal["central_intent_count"] == 1
     assert terminal["pending_dispatch_proof"] is False
+    assert "pre_admission_checkpoint" not in terminal
     assert "PRIVATE-INTENT" not in json.dumps(terminal)
 
 

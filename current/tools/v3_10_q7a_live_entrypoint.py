@@ -161,6 +161,19 @@ _POST_MARKER_GUI_REASONS = {
     "CYCLE_CLOCK_INVALID": "QUOTE_OR_METADATA_INVALID",
     "DECISION_AUDIT_UNAVAILABLE": "PROPOSAL_ADMISSION_BINDING_INVALID",
 }
+_PRE_ADMISSION_CHECKPOINTS = frozenset(
+    {
+        "BEFORE_PROPOSAL_MARKER",
+        "PROPOSAL_VERIFICATION",
+        "COORDINATION_REQUEST",
+        "REQUEST_BINDING",
+        "QUOTE_EVIDENCE",
+        "LOCAL_CUSTODY_READBACK",
+        "LEDGER_READBACK",
+        "GATE_A_RECEIPTS",
+        "CENTRAL_ADMISSION",
+    }
+)
 _PREPARATION_FIELDS = frozenset(
     {
         "version",
@@ -1697,6 +1710,7 @@ class LiveOwners:
     sync_gate_a: Callable[[], Any]
     clock: Callable[[], datetime]
     controlled_proposal_box: dict[str, StrategyProposal]
+    pre_admission_checkpoint: str = "BEFORE_PROPOSAL_MARKER"
 
 
 def execute_economic_smoke(owners: LiveOwners) -> dict[str, Any]:
@@ -1825,8 +1839,10 @@ def execute_economic_smoke(owners: LiveOwners) -> dict[str, Any]:
         datetime.fromisoformat(proposal_evidence.controlled.candle_time),
         acquire_at,
     )
+    owners.pre_admission_checkpoint = "PROPOSAL_VERIFICATION"
     if _proposal_canonical(issued) != _proposal_canonical(proposal_evidence.controlled):
         _fail("CONTROLLED_PROPOSAL_DERIVATION_INVALID")
+    owners.pre_admission_checkpoint = "COORDINATION_REQUEST"
     try:
         request = owners.q7a_hooks.coordination_request(
             owners.runtime,
@@ -1839,6 +1855,7 @@ def execute_economic_smoke(owners: LiveOwners) -> dict[str, Any]:
         raise Q7ALiveError(
             _map_gui_blocker(exc), dependency_reason=dependency_reason
         ) from None
+    owners.pre_admission_checkpoint = "REQUEST_BINDING"
     request_evaluated_at = getattr(request, "evaluated_at", None)
     expected_lot_size = getattr(owners.gui_hooks, "lot_sizes", {}).get(
         owners.runtime.config.instrument_id
@@ -1856,6 +1873,7 @@ def execute_economic_smoke(owners: LiveOwners) -> dict[str, Any]:
         or request_evaluated_at.tzinfo is None
     ):
         _fail("PROPOSAL_ADMISSION_BINDING_INVALID")
+    owners.pre_admission_checkpoint = "QUOTE_EVIDENCE"
     quote = quote_evidence(owners.provider, request, now=owners.clock())
     request_binding = {
         "account_scope_sha256": prep.fields["account_scope_sha256"],
@@ -1888,6 +1906,7 @@ def execute_economic_smoke(owners: LiveOwners) -> dict[str, Any]:
         _fail("CANDLE_FRAME_INVALID")
     if _sha256(_proposal_canonical(issued)) != proposal_evidence.controlled_sha256:
         _fail("CONTROLLED_PROPOSAL_DERIVATION_INVALID")
+    owners.pre_admission_checkpoint = "LOCAL_CUSTODY_READBACK"
     recheck_flat_position(
         owners.portfolio_repository,
         account_id=owners.runtime.config.account_id,
@@ -1912,13 +1931,16 @@ def execute_economic_smoke(owners: LiveOwners) -> dict[str, Any]:
         or central_recheck.reserved_cash_kopecks != before.reserved_cash_kopecks
     ):
         _fail("CENTRAL_NOT_QUIESCENT")
+    owners.pre_admission_checkpoint = "LEDGER_READBACK"
     ledger_readback = verify_pre_admission_ledger(
         owners.execution_adapter,
         expected=owner_evidence,
     )
+    owners.pre_admission_checkpoint = "GATE_A_RECEIPTS"
     owners.provider.verify_gate_a_receipts()
     if owners.clock() > gate_a_deadline:
         _fail("LIVE_EVIDENCE_EXPIRED_BEFORE_ADMISSION")
+    owners.pre_admission_checkpoint = "CENTRAL_ADMISSION"
     result = owners.q7a_hooks.coordinate_marked(
         coordinator=owners.coordinator,
         runtime=owners.runtime,
@@ -2345,9 +2367,16 @@ def _write_terminal_blocked(
     ):
         terminal["dependency_reason"] = dependency_reason
     if owners is not None:
+        checkpoint = getattr(owners, "pre_admission_checkpoint", None)
         try:
             central = owners.coordinator.manager.state()
             intents = tuple(central.intents)
+            if (
+                not intents
+                and type(checkpoint) is str
+                and checkpoint in _PRE_ADMISSION_CHECKPOINTS
+            ):
+                terminal["pre_admission_checkpoint"] = checkpoint
             authority_manager = getattr(
                 owners.execution_adapter, "cash_authority_manager", None
             )
