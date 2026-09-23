@@ -2442,3 +2442,107 @@ provider READ / POST = NOT AUTHORIZED
 Preparation = NOT AUTHORIZED
 START EXPERIMENT = INELIGIBLE
 ```
+
+---
+
+## 27. Q7A-ADM-R1-01 — configured runtime ACTIVE binding before Central
+
+This bounded amendment starts from the accepted implementation
+`cae2d2a2206371a915b205f150ae780d2a66f43a` / tree
+`8079ae79f5cbe09f938d36745c09b47741f3f150`. The consumed
+`7852d2df55a107d521699d3b17358d7e032e573d8ec6a6ef7e54550fc7dc35d4`
+Preparation ended at `CENTRAL_ADMISSION / POSTCONDITION_FAILED` with zero
+Central intents, reservations and provider POST attempts. Both configured
+`InstrumentRuntime` records were `STOPPED`, revision 0, in verified B0 and
+remained byte-identical after the attempt. Existing
+`CentralOrderCoordinator._validate_inputs()` requires `ACTIVE` before it may
+create an intent. This establishes a necessary admission blocker, without
+claiming that the suppressed exception's unique origin has been proven.
+
+### 27.1 Preparation prerequisite and custody
+
+For a **new** isolated runtime only, a separately authorized offline/no-provider
+materialization gate may use the existing account-level
+`GuiRuntimeController.start_configured_set()` owner to transition the complete
+configured set to `ACTIVE`. It must apply its existing Portfolio, Central, Risk
+and CL7 prevalidation, and must not run a scheduler tick, issue a strategy
+signal or perform provider IO. If this exact owner cannot be composed offline,
+materialization remains blocked pending a separate rescope. Direct JSON
+editing, fabricated `ACTIVE` objects, a target-only start and an
+entrypoint-side auto-start are forbidden. A failed Start remains a blocked
+Preparation, not an override.
+
+Only after exact read-back proves every configured runtime `ACTIVE` may a new
+verified B0, runtime manifest and Preparation be frozen. The runtime manifest
+must include:
+
+```text
+instrument_runtimes_sha256 = lowercase SHA-256 of exact persisted file bytes
+configured_runtime_count = exact integer 2 or 3, matching ConfiguredExecutionSet
+configured_runtime_statuses = exact JSON array of built-in strings in
+                              ConfiguredExecutionSet.bindings order:
+                              ["ACTIVE","ACTIVE"] or
+                              ["ACTIVE","ACTIVE","ACTIVE"]
+configured_set_sha256 = identity recomputed after the accepted Start
+```
+
+The existing `runtime_manifest_sha256` in Preparation binds these new manifest
+fields. B0 must contain the same exact `instrument_runtimes.json` bytes and
+must be verified after Start. The reviewer checks the actual B0 member and
+persisted file, not only the status claims in the manifest. Any subsequent
+status, revision, file-byte or configured-set drift invalidates Preparation;
+the consumed predecessor Preparation and B0 cannot be reused.
+
+### 27.2 Live fail-closed gate
+
+The one-shot `ECONOMIC_SMOKE` entrypoint must verify the manifest's exact
+runtime-file hash, count, statuses and configured-set identity against the
+persisted store before **any** provider IO. It must repeat that exact read-back
+immediately before `Q7AControlledHooks.coordinate_marked()` after Gate A. If
+any configured runtime is not `ACTIVE`, report the new finite privacy-safe
+primary reason `CONFIGURED_SET_NOT_ACTIVE`. If exact file/identity binding
+drifts while all statuses remain `ACTIVE`, report
+`CONFIGURED_SET_MISMATCH`. In either case:
+
+```text
+new Central intent = 0
+new reservation = 0
+provider POST = 0
+automatic Start / retry / replacement proposal = 0
+```
+
+The terminal evidence may expose only finite status/reason, hashes, revisions
+and counts. It must not export raw Account ID, instrument ID, order/intent ID,
+credentials, private path or exception text. Existing Central, Risk, CL7,
+Portfolio and provider owners remain unchanged. A successful status preflight
+does not authorize Central or execution; all later accepted gates still apply.
+
+### 27.3 Frozen correction surface and tests
+
+This amendment changes **only** this contract path. After separate
+independent/adversarial review with `material findings = 0` and explicit exact
+commit/tree acceptance, the implementation correction is limited to:
+
+```text
+current/tools/v3_10_q7a_live_entrypoint.py
+current/tests/test_v3_10_q7a_live_entrypoint.py
+```
+
+For `Q7A-ADM-R1-01` only, this two-path surface and purpose expressly
+supersede the earlier three-path section 3 and the five-path, PR224-specific
+purpose restriction in section 26.10. The previous provider-transport
+exception is not reopened for this correction. Earlier gate-state summaries
+remain historical records, not authority to skip the new review gates.
+
+The dedicated tests must cover all-configured `ACTIVE` success, initially
+`STOPPED` target and non-target with zero provider IO, missing or tampered
+runtime-file hash, and status/revision drift after Gate A but before Central
+with zero intent, reservation and POST. No fixture, preparation tool, owner,
+transport, GUI, workflow or other repository path is opened by this amendment.
+Q1/Q4/Q5/native standalone evidence must be recreated for the exact accepted
+implementation successor before new isolated runtime/B0 materialization.
+
+Contract acceptance, implementation acceptance, qualification, Preparation
+review/acceptance and `START EXPERIMENT` remain separate gates. This amendment
+does not authorize a provider call, runtime mutation, new Preparation, retry,
+remote write, merge, burn-in or Stable acceptance.
