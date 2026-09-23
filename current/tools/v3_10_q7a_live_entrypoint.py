@@ -139,6 +139,28 @@ _PRIMARY_REASONS = frozenset(
         "EVIDENCE_WRITE_FAILED",
     }
 )
+# These are secondary, finite dependency codes. They never become new primary
+# terminal reasons and no exception text is copied into shareable evidence.
+_POST_MARKER_SYNTHETIC_REASONS = {
+    "NON_TARGET_COORDINATION_FORBIDDEN": "TARGET_NOT_MEMBER",
+    "SECOND_LIFECYCLE_FORBIDDEN": "PROPOSAL_ADMISSION_BINDING_INVALID",
+    "CONTROLLED_PROPOSAL_INVALID": "CONTROLLED_PROPOSAL_DERIVATION_INVALID",
+    "PROPOSAL_MARKER_INVALID": "PROPOSAL_ADMISSION_BINDING_INVALID",
+    "COORDINATION_REQUEST_INVALID": "PROPOSAL_ADMISSION_BINDING_INVALID",
+    "COORDINATION_REQUEST_STALE": "QUOTE_OR_METADATA_INVALID",
+    "QUOTE_NOT_FRESH": "QUOTE_OR_METADATA_INVALID",
+    "Q7A_ADMISSION_REQUEST_INVALID": "PROPOSAL_ADMISSION_BINDING_INVALID",
+    "Q7A_PROPOSAL_DRIFT": "PROPOSAL_ADMISSION_BINDING_INVALID",
+    "Q7A_PRIVATE_PROPOSAL_DRIFT": "PROPOSAL_ADMISSION_BINDING_INVALID",
+    "Q7A_ADMISSION_BINDING_INVALID": "PROPOSAL_ADMISSION_BINDING_INVALID",
+}
+_POST_MARKER_GUI_REASONS = {
+    "CANDIDATE_QUOTE_READ_FAILED": "PROVIDER_READ_FAILED",
+    "CANDIDATE_QUOTE_INVALID": "QUOTE_OR_METADATA_INVALID",
+    "CANDIDATE_QUOTE_NOT_FRESH": "QUOTE_OR_METADATA_INVALID",
+    "CYCLE_CLOCK_INVALID": "QUOTE_OR_METADATA_INVALID",
+    "DECISION_AUDIT_UNAVAILABLE": "PROPOSAL_ADMISSION_BINDING_INVALID",
+}
 _PREPARATION_FIELDS = frozenset(
     {
         "version",
@@ -291,10 +313,19 @@ _FORBIDDEN_FUTURE_KEYS = frozenset(
 class Q7ALiveError(RuntimeError):
     """Finite, privacy-safe live-entrypoint failure."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, dependency_reason: str | None = None) -> None:
         normalized = str(reason or "").strip().upper()
         self.reason = (
             normalized if normalized in _PRIMARY_REASONS else "POSTCONDITION_FAILED"
+        )
+        self.dependency_reason = (
+            dependency_reason
+            if type(dependency_reason) is str
+            and (
+                _POST_MARKER_SYNTHETIC_REASONS.get(dependency_reason) == self.reason
+                or _POST_MARKER_GUI_REASONS.get(dependency_reason) == self.reason
+            )
+            else None
         )
         super().__init__(self.reason)
 
@@ -304,13 +335,12 @@ def _fail(reason: str) -> None:
 
 
 def _map_gui_blocker(exc: GuiRuntimeBlockedError) -> str:
-    reason = str(getattr(exc, "reason", "")).strip().upper()
-    return {
-        "CANDIDATE_QUOTE_READ_FAILED": "PROVIDER_READ_FAILED",
-        "CANDIDATE_QUOTE_INVALID": "QUOTE_OR_METADATA_INVALID",
-        "CANDIDATE_QUOTE_NOT_FRESH": "QUOTE_OR_METADATA_INVALID",
-        "DECISION_AUDIT_UNAVAILABLE": "PROPOSAL_ADMISSION_BINDING_INVALID",
-    }.get(reason, "POSTCONDITION_FAILED")
+    reason = getattr(exc, "reason", None)
+    return (
+        _POST_MARKER_GUI_REASONS.get(reason, "POSTCONDITION_FAILED")
+        if type(reason) is str
+        else "POSTCONDITION_FAILED"
+    )
 
 
 def _canonical(value: object) -> bytes:
@@ -1805,7 +1835,10 @@ def execute_economic_smoke(owners: LiveOwners) -> dict[str, Any]:
             owners.clock(),
         )
     except GuiRuntimeBlockedError as exc:
-        _fail(_map_gui_blocker(exc))
+        dependency_reason = getattr(exc, "reason", None)
+        raise Q7ALiveError(
+            _map_gui_blocker(exc), dependency_reason=dependency_reason
+        ) from None
     request_evaluated_at = getattr(request, "evaluated_at", None)
     expected_lot_size = getattr(owners.gui_hooks, "lot_sizes", {}).get(
         owners.runtime.config.instrument_id
@@ -2290,6 +2323,7 @@ def _write_terminal_blocked(
     prep: LivePreparation,
     reason: str,
     owners: LiveOwners | None,
+    dependency_reason: str | None = None,
 ) -> str:
     normalized = reason if reason in _PRIMARY_REASONS else "POSTCONDITION_FAILED"
     terminal: dict[str, Any] = {
@@ -2305,6 +2339,11 @@ def _write_terminal_blocked(
             "%Y-%m-%dT%H:%M:%S.%fZ"
         ),
     }
+    if type(dependency_reason) is str and (
+        _POST_MARKER_SYNTHETIC_REASONS.get(dependency_reason) == normalized
+        or _POST_MARKER_GUI_REASONS.get(dependency_reason) == normalized
+    ):
+        terminal["dependency_reason"] = dependency_reason
     if owners is not None:
         try:
             central = owners.coordinator.manager.state()
@@ -2394,13 +2433,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     except (Q7ALiveError, Q7ASyntheticError) as exc:
-        reason = getattr(exc, "reason", "POSTCONDITION_FAILED")
+        if type(exc) is Q7ASyntheticError:
+            dependency_reason = getattr(exc, "reason", None)
+            reason = (
+                _POST_MARKER_SYNTHETIC_REASONS.get(
+                    dependency_reason, "POSTCONDITION_FAILED"
+                )
+                if type(dependency_reason) is str
+                else "POSTCONDITION_FAILED"
+            )
+        else:
+            reason = exc.reason
+            dependency_reason = exc.dependency_reason
         if consumed and prep is not None and args.evidence_dir is not None:
             reason = _write_terminal_blocked(
                 args=args,
                 prep=prep,
                 reason=reason,
                 owners=owners,
+                dependency_reason=dependency_reason,
             )
         print(_canonical({"status": "BLOCKED", "reason": reason}).decode("utf-8"))
         return 2

@@ -1023,7 +1023,9 @@ def test_quote_evidence_binds_exact_wire_value_without_raw_target() -> None:
     assert ':"target"' not in canonical(result).decode()
 
 
-@pytest.mark.parametrize("scenario", ["stable", "ledger-drift", "quote-blocked"])
+@pytest.mark.parametrize(
+    "scenario", ["stable", "ledger-drift", "quote-blocked", "synthetic-invalid"]
+)
 def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
     monkeypatch: pytest.MonkeyPatch,
     scenario: str,
@@ -1126,6 +1128,8 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         ) -> Any:
             if scenario == "quote-blocked":
                 raise live.GuiRuntimeBlockedError("CANDIDATE_QUOTE_READ_FAILED")
+            if scenario == "synthetic-invalid":
+                raise live.Q7ASyntheticError("COORDINATION_REQUEST_INVALID")
             provider.get_last_prices(["target"])
             if scenario == "ledger-drift":
                 ledger.mutate()
@@ -1262,7 +1266,17 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         assert provider.post_calls == 0
         return
     if scenario == "quote-blocked":
-        reason("PROVIDER_READ_FAILED", live.execute_economic_smoke, owners)
+        with pytest.raises(live.Q7ALiveError) as caught:
+            live.execute_economic_smoke(owners)
+        assert caught.value.reason == "PROVIDER_READ_FAILED"
+        assert caught.value.dependency_reason == "CANDIDATE_QUOTE_READ_FAILED"
+        assert manager.active is before
+        assert provider.post_calls == 0
+        return
+    if scenario == "synthetic-invalid":
+        with pytest.raises(live.Q7ASyntheticError) as caught:
+            live.execute_economic_smoke(owners)
+        assert caught.value.reason == "COORDINATION_REQUEST_INVALID"
         assert manager.active is before
         assert provider.post_calls == 0
         return
@@ -1400,6 +1414,7 @@ def test_validate_preparation_cli_is_offline(
         ("CANDIDATE_QUOTE_READ_FAILED", "PROVIDER_READ_FAILED"),
         ("CANDIDATE_QUOTE_INVALID", "QUOTE_OR_METADATA_INVALID"),
         ("CANDIDATE_QUOTE_NOT_FRESH", "QUOTE_OR_METADATA_INVALID"),
+        ("CYCLE_CLOCK_INVALID", "QUOTE_OR_METADATA_INVALID"),
         ("DECISION_AUDIT_UNAVAILABLE", "PROPOSAL_ADMISSION_BINDING_INVALID"),
         ("PRIVATE_PROVIDER_CANARY", "POSTCONDITION_FAILED"),
     ],
@@ -1459,6 +1474,72 @@ def test_main_terminalizes_unexpected_exception_without_raw_details(
     terminal = json.loads((evidence / "terminal-blocked.json").read_bytes())
     assert terminal["reason"] == "POSTCONDITION_FAILED"
     assert "PRIVATE_PROVIDER_CANARY" not in json.dumps(terminal)
+
+
+@pytest.mark.parametrize(
+    ("dependency_reason", "primary_reason"),
+    [
+        ("COORDINATION_REQUEST_INVALID", "PROPOSAL_ADMISSION_BINDING_INVALID"),
+        ("COORDINATION_REQUEST_STALE", "QUOTE_OR_METADATA_INVALID"),
+        ("QUOTE_NOT_FRESH", "QUOTE_OR_METADATA_INVALID"),
+        ("PROPOSAL_MARKER_INVALID", "PROPOSAL_ADMISSION_BINDING_INVALID"),
+        ("PRIVATE_ACCOUNT_ID_CANARY", "POSTCONDITION_FAILED"),
+    ],
+)
+def test_post_marker_synthetic_failure_records_only_finite_dependency_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    dependency_reason: str,
+    primary_reason: str,
+) -> None:
+    runtime = (tmp_path / "runtime").resolve()
+    evidence = (tmp_path / "evidence").resolve()
+    runtime.mkdir()
+    evidence.mkdir()
+    (evidence / "proposal-marker.json").write_bytes(b"offline-marker")
+    raw, digest = preparation(
+        evidence_root_sha256=live.evidence_root_identity(evidence)
+    )
+    prep_path = tmp_path / "preparation.json"
+    prep_path.write_bytes(raw)
+    monkeypatch.setattr(live, "_compose_live_owners", lambda *_: object())
+
+    def fail_after_marker(_owners: object) -> dict[str, Any]:
+        raise live.Q7ASyntheticError(dependency_reason)
+
+    monkeypatch.setattr(live, "execute_economic_smoke", fail_after_marker)
+    result = live.main(
+        [
+            live.LIVE_MODE,
+            "--preparation",
+            str(prep_path),
+            "--expected-preparation-sha256",
+            digest,
+            "--candidate-commit",
+            VECTORS["candidate_commit"],
+            "--candidate-tree",
+            VECTORS["candidate_tree"],
+            "--runtime-dir",
+            str(runtime),
+            "--evidence-dir",
+            str(evidence),
+        ]
+    )
+    assert result == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "reason": primary_reason,
+        "status": "BLOCKED",
+    }
+    terminal = json.loads((evidence / "terminal-blocked.json").read_bytes())
+    assert terminal["reason"] == primary_reason
+    assert terminal.get("dependency_reason") == (
+        dependency_reason
+        if dependency_reason in live._POST_MARKER_SYNTHETIC_REASONS
+        else None
+    )
+    assert "PRIVATE_ACCOUNT_ID_CANARY" not in json.dumps(terminal)
+    assert not (evidence / "live-result.json").exists()
 
 
 def test_post_admission_terminal_preserves_hashed_existing_lineage(
