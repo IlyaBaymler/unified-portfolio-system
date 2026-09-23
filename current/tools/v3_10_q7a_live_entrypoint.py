@@ -2433,7 +2433,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     except (Q7ALiveError, Q7ASyntheticError) as exc:
-        if type(exc) is Q7ASyntheticError:
+        if isinstance(exc, Q7ASyntheticError):
             dependency_reason = getattr(exc, "reason", None)
             reason = (
                 _POST_MARKER_SYNTHETIC_REASONS.get(

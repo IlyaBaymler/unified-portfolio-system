@@ -1477,13 +1477,15 @@ def test_main_terminalizes_unexpected_exception_without_raw_details(
 
 
 @pytest.mark.parametrize(
-    ("dependency_reason", "primary_reason"),
+    ("dependency_reason", "primary_reason", "subclass"),
     [
-        ("COORDINATION_REQUEST_INVALID", "PROPOSAL_ADMISSION_BINDING_INVALID"),
-        ("COORDINATION_REQUEST_STALE", "QUOTE_OR_METADATA_INVALID"),
-        ("QUOTE_NOT_FRESH", "QUOTE_OR_METADATA_INVALID"),
-        ("PROPOSAL_MARKER_INVALID", "PROPOSAL_ADMISSION_BINDING_INVALID"),
-        ("PRIVATE_ACCOUNT_ID_CANARY", "POSTCONDITION_FAILED"),
+        ("COORDINATION_REQUEST_INVALID", "PROPOSAL_ADMISSION_BINDING_INVALID", False),
+        ("COORDINATION_REQUEST_STALE", "QUOTE_OR_METADATA_INVALID", False),
+        ("QUOTE_NOT_FRESH", "QUOTE_OR_METADATA_INVALID", False),
+        ("PROPOSAL_MARKER_INVALID", "PROPOSAL_ADMISSION_BINDING_INVALID", False),
+        ("PRIVATE_ACCOUNT_ID_CANARY", "POSTCONDITION_FAILED", False),
+        ("COORDINATION_REQUEST_INVALID", "PROPOSAL_ADMISSION_BINDING_INVALID", True),
+        ("PRIVATE_ACCOUNT_ID_CANARY", "POSTCONDITION_FAILED", True),
     ],
 )
 def test_post_marker_synthetic_failure_records_only_finite_dependency_reason(
@@ -1492,6 +1494,7 @@ def test_post_marker_synthetic_failure_records_only_finite_dependency_reason(
     capsys: pytest.CaptureFixture[str],
     dependency_reason: str,
     primary_reason: str,
+    subclass: bool,
 ) -> None:
     runtime = (tmp_path / "runtime").resolve()
     evidence = (tmp_path / "evidence").resolve()
@@ -1505,8 +1508,12 @@ def test_post_marker_synthetic_failure_records_only_finite_dependency_reason(
     prep_path.write_bytes(raw)
     monkeypatch.setattr(live, "_compose_live_owners", lambda *_: object())
 
+    class SyntheticSubclass(live.Q7ASyntheticError):
+        pass
+
     def fail_after_marker(_owners: object) -> dict[str, Any]:
-        raise live.Q7ASyntheticError(dependency_reason)
+        error_type = SyntheticSubclass if subclass else live.Q7ASyntheticError
+        raise error_type(dependency_reason)
 
     monkeypatch.setattr(live, "execute_economic_smoke", fail_after_marker)
     result = live.main(
@@ -1527,10 +1534,13 @@ def test_post_marker_synthetic_failure_records_only_finite_dependency_reason(
         ]
     )
     assert result == 2
-    assert json.loads(capsys.readouterr().out) == {
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
         "reason": primary_reason,
         "status": "BLOCKED",
     }
+    assert captured.err == ""
+    assert "PRIVATE_ACCOUNT_ID_CANARY" not in captured.out
     terminal = json.loads((evidence / "terminal-blocked.json").read_bytes())
     assert terminal["reason"] == primary_reason
     assert terminal.get("dependency_reason") == (
