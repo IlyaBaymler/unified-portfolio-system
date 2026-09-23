@@ -11,7 +11,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
-
 from tools import v3_10_q7a_live_entrypoint as live
 from trading_robot.multi_instrument_strategy import StrategyProposal
 from trading_robot.portfolio_adapters import BrokerPortfolioAdapter
@@ -25,9 +24,9 @@ VECTORS = json.loads(
 )
 
 
-def test_live_contract_identity_is_exact_r2_acceptance() -> None:
-    assert live.LIVE_CONTRACT_COMMIT == ("61c7d32c119dd46488ac764ed887b339f7a1f53a")
-    assert live.LIVE_CONTRACT_TREE == "3d1fb3e433f62da4629a47e57821d2949fa05afb"
+def test_live_contract_identity_is_exact_active_admission_acceptance() -> None:
+    assert live.LIVE_CONTRACT_COMMIT == "67ce7bb77e506b67326c0e4f3265b3525fa30472"
+    assert live.LIVE_CONTRACT_TREE == "4e52d0298d2cac3b75783da7da11e3c759c56e2f"
 
 
 def canonical(value: object) -> bytes:
@@ -187,6 +186,101 @@ def reason(expected_reason: str, fn: Any, *args: object, **kwargs: object) -> No
     with pytest.raises(live.Q7ALiveError) as captured:
         fn(*args, **kwargs)
     assert captured.value.reason == expected_reason
+
+
+@pytest.mark.parametrize("count", [2, 3])
+def test_configured_active_runtime_binds_all_members_and_exact_file(
+    tmp_path: Path,
+    count: int,
+) -> None:
+    runtime_file = tmp_path / "instrument_runtimes.json"
+    members = ["target", "other", "third"][:count]
+    original = canonical({"revision": 4, "runtimes": members})
+    runtime_file.write_bytes(original)
+    identity = "a" * 64
+    statuses = ["ACTIVE"] * count
+    manifest = {
+        "instrument_runtimes_sha256": hashlib.sha256(original).hexdigest(),
+        "configured_runtime_count": count,
+        "configured_runtime_statuses": ["ACTIVE"] * count,
+        "configured_set_sha256": identity,
+    }
+
+    def configured() -> SimpleNamespace:
+        return SimpleNamespace(
+            identity_sha256=identity,
+            bindings=tuple(
+                SimpleNamespace(runtime=SimpleNamespace(status=status))
+                for status in statuses
+            ),
+        )
+
+    def check() -> SimpleNamespace:
+        return live.verify_configured_active_runtime(
+            runtime_file,
+            manifest=manifest,
+            configured_loader=configured,
+            expected_configured_set_sha256=identity,
+        )
+
+    assert check().identity_sha256 == identity
+    statuses[0] = "STOPPED"
+    reason("CONFIGURED_SET_NOT_ACTIVE", check)
+    statuses[0] = "ACTIVE"
+    statuses[1] = "STOPPED"
+    reason("CONFIGURED_SET_NOT_ACTIVE", check)
+    statuses[1] = "ACTIVE"
+
+    manifest["instrument_runtimes_sha256"] = None
+    reason("RUNTIME_MANIFEST_MISMATCH", check)
+    manifest["instrument_runtimes_sha256"] = hashlib.sha256(original).hexdigest()
+    runtime_file.write_bytes(canonical({"revision": 5, "runtimes": members}))
+    reason("CONFIGURED_SET_MISMATCH", check)
+    runtime_file.unlink()
+    reason("CONFIGURED_SET_MISMATCH", check)
+
+
+def test_configured_active_runtime_rejects_revision_or_identity_drift(
+    tmp_path: Path,
+) -> None:
+    runtime_file = tmp_path / "instrument_runtimes.json"
+    original = canonical({"revision": 4, "runtimes": ["target", "other"]})
+    runtime_file.write_bytes(original)
+    identity = "a" * 64
+    manifest = {
+        "instrument_runtimes_sha256": hashlib.sha256(original).hexdigest(),
+        "configured_runtime_count": 2,
+        "configured_runtime_statuses": ["ACTIVE", "ACTIVE"],
+        "configured_set_sha256": identity,
+    }
+
+    def loaded(observed_identity: str, *, mutate_file: bool = False) -> SimpleNamespace:
+        if mutate_file:
+            runtime_file.write_bytes(
+                canonical({"revision": 5, "runtimes": ["target", "other"]})
+            )
+        return SimpleNamespace(
+            identity_sha256=observed_identity,
+            bindings=tuple(
+                SimpleNamespace(runtime=SimpleNamespace(status="ACTIVE"))
+                for _ in range(2)
+            ),
+        )
+
+    def check(loader: Any) -> None:
+        live.verify_configured_active_runtime(
+            runtime_file,
+            manifest=manifest,
+            configured_loader=loader,
+            expected_configured_set_sha256=identity,
+        )
+
+    reason("CONFIGURED_SET_MISMATCH", check, lambda: loaded("b" * 64))
+    reason(
+        "CONFIGURED_SET_MISMATCH",
+        check,
+        lambda: loaded(identity, mutate_file=True),
+    )
 
 
 def valid_preparation() -> live.LivePreparation:
@@ -1032,6 +1126,9 @@ def test_quote_evidence_binds_exact_wire_value_without_raw_target() -> None:
         "synthetic-invalid",
         "quote-evidence-exception",
         "central-exception",
+        "inactive-initial",
+        "inactive-after-gate-a",
+        "revision-after-gate-a",
     ],
 )
 def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
@@ -1255,6 +1352,19 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         ),
         context=context,
     )
+    active_checks = 0
+
+    def verify_active_runtime() -> SimpleNamespace:
+        nonlocal active_checks
+        active_checks += 1
+        if scenario == "inactive-initial" or (
+            scenario == "inactive-after-gate-a" and active_checks == 2
+        ):
+            raise live.Q7ALiveError("CONFIGURED_SET_NOT_ACTIVE")
+        if scenario == "revision-after-gate-a" and active_checks == 2:
+            raise live.Q7ALiveError("CONFIGURED_SET_MISMATCH")
+        return SimpleNamespace(identity_sha256=VECTORS["configured_set_sha256"])
+
     owners = live.LiveOwners(
         preparation=selected,
         configured=SimpleNamespace(identity_sha256=VECTORS["configured_set_sha256"]),
@@ -1269,7 +1379,30 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         sync_gate_a=lambda: (authority, sync_evidence),
         clock=lambda: now,
         controlled_proposal_box=proposal_box,
+        verify_active_runtime=verify_active_runtime,
     )
+    if scenario == "inactive-initial":
+        reason("CONFIGURED_SET_NOT_ACTIVE", live.execute_economic_smoke, owners)
+        assert active_checks == 1
+        assert provider.candle_calls == 0
+        assert provider.quote_calls == 0
+        assert provider.operation_calls == {"A": 0, "B": 0}
+        assert provider.post_calls == 0
+        assert manager.active is before
+        return
+    if scenario in {"inactive-after-gate-a", "revision-after-gate-a"}:
+        expected = (
+            "CONFIGURED_SET_NOT_ACTIVE"
+            if scenario == "inactive-after-gate-a"
+            else "CONFIGURED_SET_MISMATCH"
+        )
+        reason(expected, live.execute_economic_smoke, owners)
+        assert active_checks == 2
+        assert owners.pre_admission_checkpoint == "CENTRAL_ADMISSION"
+        assert manager.active is before
+        assert manager.active.reserved_cash_kopecks == 0
+        assert provider.post_calls == 0
+        return
     if scenario == "quote-evidence-exception":
 
         def fail_quote(*_args: Any, **_kwargs: Any) -> None:

@@ -31,12 +31,6 @@ CURRENT = Path(__file__).resolve().parents[1]
 if str(CURRENT) not in sys.path:
     sys.path.insert(0, str(CURRENT))
 
-from tools.v3_10_q7a_e2e_smoke import (
-    Q7AControlledHooks,
-    Q7AControlRecord,
-    Q7ASyntheticError,
-    _proposal_canonical,
-)
 from trading_robot.candle_policy import strategy_lookback_days
 from trading_robot.central_order_coordinator import (
     CentralOrderCoordinationResult,
@@ -64,8 +58,15 @@ from trading_robot.strategy_runtime import (
 )
 from trading_robot.tbank_sandbox import TBankSandboxClient
 
-LIVE_CONTRACT_COMMIT = "61c7d32c119dd46488ac764ed887b339f7a1f53a"
-LIVE_CONTRACT_TREE = "3d1fb3e433f62da4629a47e57821d2949fa05afb"
+from tools.v3_10_q7a_e2e_smoke import (
+    Q7AControlledHooks,
+    Q7AControlRecord,
+    Q7ASyntheticError,
+    _proposal_canonical,
+)
+
+LIVE_CONTRACT_COMMIT = "67ce7bb77e506b67326c0e4f3265b3525fa30472"
+LIVE_CONTRACT_TREE = "4e52d0298d2cac3b75783da7da11e3c759c56e2f"
 Q7A_CONTRACT_COMMIT = "13cf47dbff0b1b1cb4310ee7a49641b580d559e3"
 Q7A_CONTRACT_TREE = "44384da47d41cf873bdd7d947804960bb403bb6e"
 Q7A_SYNTHETIC_IMPLEMENTATION_COMMIT = "141416eefefcba2c3d90fc721e52282ea0a1ea42"
@@ -99,6 +100,7 @@ _PRIMARY_REASONS = frozenset(
         "ENVIRONMENT_NOT_SANDBOX",
         "ACCOUNT_SCOPE_MISMATCH",
         "CONFIGURED_SET_MISMATCH",
+        "CONFIGURED_SET_NOT_ACTIVE",
         "TARGET_NOT_MEMBER",
         "CREDENTIAL_CUSTODY_INVALID",
         "SINGLE_INSTANCE_LOCK_UNAVAILABLE",
@@ -1695,6 +1697,56 @@ def verify_pre_admission_ledger(
     }
 
 
+def verify_configured_active_runtime(
+    runtime_file: Path,
+    *,
+    manifest: Mapping[str, Any],
+    configured_loader: Callable[[], ConfiguredExecutionSet],
+    expected_configured_set_sha256: str,
+) -> ConfiguredExecutionSet:
+    """Read back the exact prepared account-wide ACTIVE set without starting it."""
+
+    expected_file_sha256 = _hash(
+        manifest.get("instrument_runtimes_sha256"), "RUNTIME_MANIFEST_MISMATCH"
+    )
+    count = manifest.get("configured_runtime_count")
+    statuses = manifest.get("configured_runtime_statuses")
+    if (
+        type(count) is not int
+        or count not in {2, 3}
+        or type(statuses) is not list
+        or statuses != ["ACTIVE"] * count
+        or any(type(item) is not str for item in statuses)
+        or manifest.get("configured_set_sha256") != expected_configured_set_sha256
+    ):
+        _fail("RUNTIME_MANIFEST_MISMATCH")
+    before = _read_exact(runtime_file, "CONFIGURED_SET_MISMATCH")
+    try:
+        configured = configured_loader()
+    except Q7ALiveError:
+        raise
+    except Exception:  # noqa: BLE001 - finite persisted-owner read-back boundary
+        _fail("CONFIGURED_SET_MISMATCH")
+    after = _read_exact(runtime_file, "CONFIGURED_SET_MISMATCH")
+    try:
+        bindings = configured.bindings
+        observed = [item.runtime.status for item in bindings]
+        identity = configured.identity_sha256
+    except (AttributeError, TypeError):
+        _fail("CONFIGURED_SET_MISMATCH")
+    if len(bindings) != count:
+        _fail("CONFIGURED_SET_MISMATCH")
+    if any(type(status) is not str or status != "ACTIVE" for status in observed):
+        _fail("CONFIGURED_SET_NOT_ACTIVE")
+    if (
+        before != after
+        or _sha256(before) != expected_file_sha256
+        or identity != expected_configured_set_sha256
+    ):
+        _fail("CONFIGURED_SET_MISMATCH")
+    return configured
+
+
 @dataclass(slots=True)
 class LiveOwners:
     preparation: LivePreparation
@@ -1710,6 +1762,7 @@ class LiveOwners:
     sync_gate_a: Callable[[], Any]
     clock: Callable[[], datetime]
     controlled_proposal_box: dict[str, StrategyProposal]
+    verify_active_runtime: Callable[[], ConfiguredExecutionSet]
     pre_admission_checkpoint: str = "BEFORE_PROPOSAL_MARKER"
 
 
@@ -1724,6 +1777,7 @@ def execute_economic_smoke(owners: LiveOwners) -> dict[str, Any]:
         _fail("LIVE_EVIDENCE_EXPIRED_BEFORE_ADMISSION")
     if owners.configured.identity_sha256 != prep.fields["configured_set_sha256"]:
         _fail("CONFIGURED_SET_MISMATCH")
+    owners.verify_active_runtime()
     if owners.provider.target_sha256 != prep.fields["target_instrument_sha256"]:
         _fail("TARGET_NOT_MEMBER")
     risk_runtime = getattr(owners.execution_adapter, "risk_runtime", None)
@@ -1941,6 +1995,7 @@ def execute_economic_smoke(owners: LiveOwners) -> dict[str, Any]:
     if owners.clock() > gate_a_deadline:
         _fail("LIVE_EVIDENCE_EXPIRED_BEFORE_ADMISSION")
     owners.pre_admission_checkpoint = "CENTRAL_ADMISSION"
+    owners.verify_active_runtime()
     result = owners.q7a_hooks.coordinate_marked(
         coordinator=owners.coordinator,
         runtime=owners.runtime,
@@ -2237,10 +2292,11 @@ def _compose_live_owners(args: argparse.Namespace, prep: LivePreparation) -> Liv
     if control_fields.get("metadata_sha256") != prep.fields["static_metadata_sha256"]:
         _fail("CONTROL_RECORD_INVALID")
 
-    from tools.v3_10_q7_prepare_runtime import _configured_set
-    from tools.v3_10_runtime_cash_cutover import _open_runtime
     from trading_robot.central_order_coordinator import CentralOrderCoordinator
     from trading_robot.runtime_cash_authority import derive_account_scope
+
+    from tools.v3_10_q7_prepare_runtime import _configured_set
+    from tools.v3_10_runtime_cash_cutover import _open_runtime
 
     live = _open_runtime(
         args.runtime_dir,
@@ -2265,6 +2321,22 @@ def _compose_live_owners(args: argparse.Namespace, prep: LivePreparation) -> Liv
     )
     if configured.identity_sha256 != prep.fields["configured_set_sha256"]:
         _fail("CONFIGURED_SET_MISMATCH")
+    runtime_file = args.runtime_dir / "instrument_runtimes.json"
+
+    def verify_active_runtime() -> ConfiguredExecutionSet:
+        return verify_configured_active_runtime(
+            runtime_file,
+            manifest=manifest,
+            configured_loader=lambda: _configured_set(
+                args.runtime_dir,
+                account_id=live.raw_account,
+                account_scope_sha256=account_scope,
+                bootstrap_missing=False,
+            ),
+            expected_configured_set_sha256=prep.fields["configured_set_sha256"],
+        )
+
+    verify_active_runtime()
     target = control.fields.get("target_instrument_id")
     if (
         type(target) is not str
@@ -2335,6 +2407,7 @@ def _compose_live_owners(args: argparse.Namespace, prep: LivePreparation) -> Liv
         sync_gate_a=lambda: live.authority.sync_runtime(**live.inputs()),
         clock=clock,
         controlled_proposal_box=proposal_box,
+        verify_active_runtime=verify_active_runtime,
     )
     return owners
 
