@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
+
 from tools import v3_10_q7a_live_entrypoint as live
 from trading_robot.multi_instrument_strategy import StrategyProposal
 from trading_robot.portfolio_adapters import BrokerPortfolioAdapter
@@ -281,6 +282,103 @@ def test_configured_active_runtime_rejects_revision_or_identity_drift(
         check,
         lambda: loaded(identity, mutate_file=True),
     )
+
+
+@pytest.mark.parametrize("stopped_index", [0, 1])
+def test_production_composition_prioritizes_inactive_runtime_before_identity_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stopped_index: int,
+) -> None:
+    from tools import v3_10_q7_prepare_runtime as prepare_runtime
+    from tools import v3_10_runtime_cash_cutover as cash_cutover
+    from trading_robot import runtime_cash_authority
+
+    fields = dict(valid_preparation().fields)
+    metadata = b"offline-metadata"
+    control = b"offline-control"
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    active = canonical({"revision": 4, "statuses": ["ACTIVE", "ACTIVE"]})
+    stopped = ["ACTIVE", "ACTIVE"]
+    stopped[stopped_index] = "STOPPED"
+    (runtime_dir / "instrument_runtimes.json").write_bytes(
+        canonical({"revision": 5, "statuses": stopped})
+    )
+    manifest = {
+        "candidate_commit": fields["candidate_commit"],
+        "candidate_tree": fields["candidate_tree"],
+        "environment": "SANDBOX",
+        "account_scope_sha256": fields["account_scope_sha256"],
+        "configured_set_sha256": fields["configured_set_sha256"],
+        "identity_key_id": fields["identity_key_id"],
+        "backup_binding_sha256": fields["backup_binding_sha256"],
+        "instrument_runtimes_sha256": hashlib.sha256(active).hexdigest(),
+        "configured_runtime_count": 2,
+        "configured_runtime_statuses": ["ACTIVE", "ACTIVE"],
+    }
+    manifest_raw = canonical(manifest)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_bytes(manifest_raw)
+    metadata_path = tmp_path / "metadata.json"
+    metadata_path.write_bytes(metadata)
+    control_path = tmp_path / "control.json"
+    control_path.write_bytes(control)
+    fields["runtime_manifest_sha256"] = hashlib.sha256(manifest_raw).hexdigest()
+    fields["static_metadata_sha256"] = hashlib.sha256(metadata).hexdigest()
+    fields["control_record_sha256"] = hashlib.sha256(control).hexdigest()
+    prepared = live.LivePreparation(raw=b"offline-only", fields=fields)
+
+    class NoProviderIO:
+        def __getattr__(self, name: str) -> None:
+            raise AssertionError(f"unexpected provider access: {name}")
+
+    monkeypatch.setattr(live, "_verify_evidence_root", lambda *_: None)
+    monkeypatch.setattr(
+        live,
+        "Q7AControlRecord",
+        lambda *_: SimpleNamespace(
+            fields={"metadata_sha256": fields["static_metadata_sha256"]}
+        ),
+    )
+    monkeypatch.setattr(
+        cash_cutover,
+        "_open_runtime",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            raw_account="synthetic-account",
+            identity_key=b"synthetic-key",
+            identity_key_id=fields["identity_key_id"],
+            provider=NoProviderIO(),
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_cash_authority,
+        "derive_account_scope",
+        lambda *_args, **_kwargs: fields["account_scope_sha256"],
+    )
+    loader_calls = 0
+
+    def load_configured(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        nonlocal loader_calls
+        loader_calls += 1
+        return SimpleNamespace(
+            identity_sha256="b" * 64,
+            bindings=tuple(
+                SimpleNamespace(runtime=SimpleNamespace(status=status))
+                for status in stopped
+            ),
+        )
+
+    monkeypatch.setattr(prepare_runtime, "_configured_set", load_configured)
+    args = SimpleNamespace(
+        runtime_dir=runtime_dir,
+        runtime_manifest=manifest_path,
+        control_record=control_path,
+        metadata=metadata_path,
+        evidence_dir=tmp_path / "evidence",
+    )
+    reason("CONFIGURED_SET_NOT_ACTIVE", live._compose_live_owners, args, prepared)
+    assert loader_calls == 1
 
 
 def valid_preparation() -> live.LivePreparation:

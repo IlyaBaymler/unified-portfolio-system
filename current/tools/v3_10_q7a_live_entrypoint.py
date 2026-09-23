@@ -31,6 +31,12 @@ CURRENT = Path(__file__).resolve().parents[1]
 if str(CURRENT) not in sys.path:
     sys.path.insert(0, str(CURRENT))
 
+from tools.v3_10_q7a_e2e_smoke import (
+    Q7AControlledHooks,
+    Q7AControlRecord,
+    Q7ASyntheticError,
+    _proposal_canonical,
+)
 from trading_robot.candle_policy import strategy_lookback_days
 from trading_robot.central_order_coordinator import (
     CentralOrderCoordinationResult,
@@ -57,13 +63,6 @@ from trading_robot.strategy_runtime import (
     strategy_suite_from_bot_config,
 )
 from trading_robot.tbank_sandbox import TBankSandboxClient
-
-from tools.v3_10_q7a_e2e_smoke import (
-    Q7AControlledHooks,
-    Q7AControlRecord,
-    Q7ASyntheticError,
-    _proposal_canonical,
-)
 
 LIVE_CONTRACT_COMMIT = "67ce7bb77e506b67326c0e4f3265b3525fa30472"
 LIVE_CONTRACT_TREE = "4e52d0298d2cac3b75783da7da11e3c759c56e2f"
@@ -2292,11 +2291,10 @@ def _compose_live_owners(args: argparse.Namespace, prep: LivePreparation) -> Liv
     if control_fields.get("metadata_sha256") != prep.fields["static_metadata_sha256"]:
         _fail("CONTROL_RECORD_INVALID")
 
-    from trading_robot.central_order_coordinator import CentralOrderCoordinator
-    from trading_robot.runtime_cash_authority import derive_account_scope
-
     from tools.v3_10_q7_prepare_runtime import _configured_set
     from tools.v3_10_runtime_cash_cutover import _open_runtime
+    from trading_robot.central_order_coordinator import CentralOrderCoordinator
+    from trading_robot.runtime_cash_authority import derive_account_scope
 
     live = _open_runtime(
         args.runtime_dir,
@@ -2313,14 +2311,6 @@ def _compose_live_owners(args: argparse.Namespace, prep: LivePreparation) -> Liv
         _fail("ACCOUNT_SCOPE_MISMATCH")
     if live.identity_key_id != prep.fields["identity_key_id"]:
         _fail("CREDENTIAL_CUSTODY_INVALID")
-    configured = _configured_set(
-        args.runtime_dir,
-        account_id=live.raw_account,
-        account_scope_sha256=account_scope,
-        bootstrap_missing=False,
-    )
-    if configured.identity_sha256 != prep.fields["configured_set_sha256"]:
-        _fail("CONFIGURED_SET_MISMATCH")
     runtime_file = args.runtime_dir / "instrument_runtimes.json"
 
     def verify_active_runtime() -> ConfiguredExecutionSet:
@@ -2336,7 +2326,7 @@ def _compose_live_owners(args: argparse.Namespace, prep: LivePreparation) -> Liv
             expected_configured_set_sha256=prep.fields["configured_set_sha256"],
         )
 
-    verify_active_runtime()
+    configured = verify_active_runtime()
     target = control.fields.get("target_instrument_id")
     if (
         type(target) is not str
