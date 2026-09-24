@@ -1017,7 +1017,37 @@ def verify_candle_request_binding(
     if start >= stop:
         _fail_candle("REQUEST_BINDING", "REQUEST_RANGE_ORDER")
     if earliest < start:
-        _fail_candle("REQUEST_BINDING", "FIRST_BEGIN_BEFORE_FROM")
+        seconds = _INTERVAL_SECONDS.get(expected_interval)
+        if (
+            expected_interval != "CANDLE_INTERVAL_HOUR"
+            or seconds is None
+            or earliest + timedelta(seconds=seconds) <= start
+        ):
+            _fail_candle("REQUEST_BINDING", "FIRST_BEGIN_BEFORE_FROM")
+        try:
+            if (
+                type(evidence.canonical) is not bytes
+                or _sha256(evidence.canonical) != evidence.sha256
+            ):
+                raise ValueError
+            captured = json.loads(evidence.canonical)
+            rows = captured["rows"]
+            if (
+                type(captured) is not dict
+                or captured.get("interval") != expected_interval
+                or type(rows) is not list
+                or len(rows) != evidence.row_count
+                or not rows
+                or rows[0]["begin"] != evidence.earliest_begin_utc
+            ):
+                raise ValueError
+            later_begins = tuple(
+                _timestamp(row["begin"], "CANDLE_FRAME_INVALID") for row in rows[1:]
+            )
+        except (KeyError, TypeError, ValueError, Q7ALiveError):
+            _fail_candle("REQUEST_BINDING", "REQUEST_IDENTITY")
+        if any(begin < start for begin in later_begins):
+            _fail_candle("REQUEST_BINDING", "FIRST_BEGIN_BEFORE_FROM")
     if latest_close > stop:
         _fail_candle("REQUEST_BINDING", "LAST_CLOSE_AFTER_TO")
 

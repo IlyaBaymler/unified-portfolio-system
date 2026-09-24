@@ -613,6 +613,113 @@ def test_candle_frame_is_bound_to_exact_authorized_request_range() -> None:
 
 
 @pytest.mark.parametrize(
+    ("from_utc", "second_begin", "to_utc", "expected_reason"),
+    [
+        ("2026-09-22T09:00:00.000000Z", None, None, None),
+        ("2026-09-22T09:30:00.000000Z", None, None, None),
+        (
+            "2026-09-22T10:00:00.000000Z",
+            None,
+            None,
+            "FIRST_BEGIN_BEFORE_FROM",
+        ),
+        (
+            "2026-09-22T10:30:00.000000Z",
+            None,
+            None,
+            "FIRST_BEGIN_BEFORE_FROM",
+        ),
+        (
+            "2026-09-22T11:01:00.000000Z",
+            None,
+            None,
+            "FIRST_BEGIN_BEFORE_FROM",
+        ),
+        (
+            "2026-09-22T09:30:00.000000Z",
+            "2026-09-22T09:20:00Z",
+            None,
+            "FIRST_BEGIN_BEFORE_FROM",
+        ),
+        (
+            "2026-09-22T09:30:00.000000Z",
+            None,
+            "2026-09-22T11:59:59.000000Z",
+            "LAST_CLOSE_AFTER_TO",
+        ),
+    ],
+)
+def test_first_candle_request_overlap_is_exactly_one_half_open_interval(
+    from_utc: str,
+    second_begin: str | None,
+    to_utc: str | None,
+    expected_reason: str | None,
+) -> None:
+    selected = valid_preparation()
+    value = frame()
+    if second_begin is not None:
+        value.index = pd.DatetimeIndex([value.index[0], second_begin, value.index[2]])
+    evidence = live.canonical_candle_evidence(
+        value,
+        policy=selected.candle_policy,
+        now=datetime.fromisoformat(VECTORS["now"].replace("Z", "+00:00")),
+    )
+    request = {
+        "target_instrument_sha256": VECTORS["target_instrument_sha256"],
+        "from_utc": from_utc,
+        "to_utc": to_utc or "2026-09-22T12:00:00.000000Z",
+        "interval": "CANDLE_INTERVAL_HOUR",
+        "limit": None,
+        "candle_source_type": "CANDLE_SOURCE_EXCHANGE",
+    }
+    if expected_reason is None:
+        live.verify_candle_request_binding(
+            evidence,
+            request,
+            expected_interval="CANDLE_INTERVAL_HOUR",
+            expected_target_sha256=VECTORS["target_instrument_sha256"],
+        )
+        return
+    with pytest.raises(live.Q7ALiveError) as captured:
+        live.verify_candle_request_binding(
+            evidence,
+            request,
+            expected_interval="CANDLE_INTERVAL_HOUR",
+            expected_target_sha256=VECTORS["target_instrument_sha256"],
+        )
+    assert captured.value.reason == "CANDLE_FRAME_INVALID"
+    assert captured.value.candle_validation_stage == "REQUEST_BINDING"
+    assert captured.value.candle_validation_reason == expected_reason
+
+
+def test_first_candle_overlap_rejects_unbound_canonical_bytes() -> None:
+    selected = valid_preparation()
+    evidence = live.canonical_candle_evidence(
+        frame(),
+        policy=selected.candle_policy,
+        now=datetime.fromisoformat(VECTORS["now"].replace("Z", "+00:00")),
+    )
+    request = {
+        "target_instrument_sha256": VECTORS["target_instrument_sha256"],
+        "from_utc": "2026-09-22T09:30:00.000000Z",
+        "to_utc": "2026-09-22T12:00:00.000000Z",
+        "interval": "CANDLE_INTERVAL_HOUR",
+        "limit": None,
+        "candle_source_type": "CANDLE_SOURCE_EXCHANGE",
+    }
+    with pytest.raises(live.Q7ALiveError) as captured:
+        live.verify_candle_request_binding(
+            replace(evidence, canonical=evidence.canonical + b" "),
+            request,
+            expected_interval="CANDLE_INTERVAL_HOUR",
+            expected_target_sha256=VECTORS["target_instrument_sha256"],
+        )
+    assert captured.value.reason == "CANDLE_FRAME_INVALID"
+    assert captured.value.candle_validation_stage == "REQUEST_BINDING"
+    assert captured.value.candle_validation_reason == "REQUEST_IDENTITY"
+
+
+@pytest.mark.parametrize(
     ("mutation", "expected"),
     [
         ("frame_type", "FRAME_TYPE"),
@@ -715,7 +822,13 @@ def test_candle_request_invalid_has_exact_finite_diagnostic(
     assert "PRIVATE_" not in str(captured.value)
 
 
-def test_provider_shaped_complete_candles_keep_existing_positive_path() -> None:
+@pytest.mark.parametrize(
+    "from_utc",
+    ["2026-09-22T09:00:00.000000Z", "2026-09-22T09:30:00.000000Z"],
+)
+def test_provider_shaped_complete_candles_keep_existing_positive_path(
+    from_utc: str,
+) -> None:
     selected = valid_preparation()
     candles = []
     for offset, timestamp in enumerate(frame().index):
@@ -748,7 +861,7 @@ def test_provider_shaped_complete_candles_keep_existing_positive_path() -> None:
         evidence,
         {
             "target_instrument_sha256": VECTORS["target_instrument_sha256"],
-            "from_utc": "2026-09-22T09:00:00.000000Z",
+            "from_utc": from_utc,
             "to_utc": "2026-09-22T12:00:00.000000Z",
             "interval": "CANDLE_INTERVAL_HOUR",
             "limit": None,
@@ -944,6 +1057,45 @@ class TelemetryProvider(FakeProvider):
     def post_order_once(self, *args: object, **kwargs: object) -> dict[str, object]:
         self.emit("SandboxService", "PostSandboxOrder")
         return super().post_order_once(*args, **kwargs)
+
+
+def test_unaligned_first_candle_binds_one_captured_provider_request() -> None:
+    selected = valid_preparation()
+    provider = FakeProvider()
+    adapter = live.ProviderEvidenceAdapter(
+        provider,
+        target_instrument_id="target",
+        candle_interval="CANDLE_INTERVAL_HOUR",
+    )
+    from_time = datetime(2026, 9, 22, 9, 30, tzinfo=timezone.utc)
+    to_time = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
+    acquired = adapter.get_candles(
+        "target", from_time, to_time, interval="CANDLE_INTERVAL_HOUR", limit=None
+    )
+    evidence = live.canonical_candle_evidence(
+        acquired,
+        policy=selected.candle_policy,
+        now=datetime.fromisoformat(VECTORS["now"].replace("Z", "+00:00")),
+    )
+    live.verify_candle_request_binding(
+        evidence,
+        adapter.candle_request,
+        expected_interval="CANDLE_INTERVAL_HOUR",
+        expected_target_sha256=adapter.target_sha256,
+    )
+    assert adapter.candle_calls == 1
+    assert adapter.candle_request is not None
+    assert adapter.candle_request["from_utc"] == "2026-09-22T09:30:00.000000Z"
+    assert provider.posts == 0
+    reason(
+        "PROVIDER_READ_SCOPE_INVALID",
+        adapter.get_candles,
+        "target",
+        from_time,
+        to_time,
+        interval="CANDLE_INTERVAL_HOUR",
+        limit=None,
+    )
 
 
 def test_provider_adapter_enforces_target_phase_and_one_call_budgets() -> None:
