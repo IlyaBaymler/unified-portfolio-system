@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
+
 from tools import v3_10_q7a_live_entrypoint as live
 from trading_robot.multi_instrument_strategy import StrategyProposal
 from trading_robot.portfolio_adapters import BrokerPortfolioAdapter
