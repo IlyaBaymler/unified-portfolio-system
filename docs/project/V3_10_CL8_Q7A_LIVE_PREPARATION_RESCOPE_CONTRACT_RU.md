@@ -2546,3 +2546,88 @@ Contract acceptance, implementation acceptance, qualification, Preparation
 review/acceptance and `START EXPERIMENT` remain separate gates. This amendment
 does not authorize a provider call, runtime mutation, new Preparation, retry,
 remote write, merge, burn-in or Stable acceptance.
+
+---
+
+## 28. Q7A-CANDLE-OBS-01 — finite diagnostic for rejected candle evidence
+
+The one-shot Preparation `76097e33c3d37a4fee9331567b4e358fa8d7545399ff412730c31e2460a40c14`
+was consumed on implementation `36849fad44d8afbff46e5866be9bdfe4e79d56b6`
+with terminal `BLOCKED / CANDLE_FRAME_INVALID` at `BEFORE_PROPOSAL_MARKER`.
+The terminal record proves zero Central intent, reservation and provider POST,
+but does not distinguish frame validation from request-range binding. The
+offline diagnostic does not establish which predicate rejected the response.
+This amendment adds observability only; it does not infer that broker data is
+correct, relax a validator, or permit reacquisition.
+
+### 28.1 Closed failure evidence
+
+The primary reason remains exactly `CANDLE_FRAME_INVALID`. For that reason
+only, when one of the accepted candle validators raises before Central
+admission, terminal evidence may add exactly two finite fields:
+
+```text
+candle_validation_stage = FRAME | REQUEST_BINDING
+
+candle_validation_reason, when stage = FRAME:
+  FRAME_TYPE
+  INDEX_TYPE
+  INDEX_ORDER
+  OHLC_TYPE
+  OHLC_NONFINITE
+  OHLC_NONPOSITIVE
+  VOLUME_TYPE
+  VOLUME_NEGATIVE
+  OHLC_ORDER
+  CLOCK_TYPE
+
+candle_validation_reason, when stage = REQUEST_BINDING:
+  REQUEST_SHAPE
+  REQUEST_IDENTITY
+  REQUEST_TIME_PARSE
+  REQUEST_RANGE_ORDER
+  FIRST_BEGIN_BEFORE_FROM
+  LAST_CLOSE_AFTER_TO
+```
+
+The code denotes the **first failed predicate** in the existing deterministic
+validation order. It is an observation of the validation decision, not an
+assertion about a broker root cause. Duplicate index, insufficient/incomplete
+bars and candle age keep their existing distinct primary reasons; they do not
+receive a `CANDLE_FRAME_INVALID` diagnostic. The finite code must be preserved
+through `Q7ALiveError` and the create-once terminal writer without losing a
+post-admission recovery precedence. Unknown stage/reason combinations are
+omitted, never passed through as text.
+
+No raw candle, price, volume, account/instrument/order identifier, request
+timestamp, private path, exception message, provider body or credential enters
+shareable evidence. No new provider call, retry, redirect, cache fallback,
+strategy proposal, Central intent or POST is authorized. All validators and
+their existing acceptance thresholds remain unchanged.
+
+### 28.2 Frozen correction surface and verification
+
+This contract successor changes only
+`docs/project/V3_10_CL8_Q7A_LIVE_PREPARATION_RESCOPE_CONTRACT_RU.md`.
+After separate exact-head review and explicit acceptance of its commit/tree,
+the implementation successor may change only:
+
+```text
+current/tools/v3_10_q7a_live_entrypoint.py
+current/tests/test_v3_10_q7a_live_entrypoint.py
+```
+
+For `Q7A-CANDLE-OBS-01` alone, this section supersedes the implementation
+path/purpose restrictions of sections 3, 26.10 and 27.3; it does not reopen
+the provider-transport exception or authorize a fixture, owner, GUI,
+workflow or release path. Tests must prove every finite predicate produces
+its exact stage/reason with unchanged primary reason, unknown diagnostics
+cannot leak, successful provider-shaped synthetic frames retain existing
+behavior, terminal evidence is create-once, and all pre-admission failures
+leave Central/reservations/POST at zero. Existing Q7A tests remain green.
+
+Contract acceptance, implementation acceptance, qualification, isolated
+runtime/B0 materialization, Preparation review/acceptance and the exact
+`START EXPERIMENT` are separate gates. This amendment grants no provider,
+runtime, GitHub, merge, release or burn-in authority. The consumed
+Preparation cannot be reused.
