@@ -2631,3 +2631,99 @@ runtime/B0 materialization, Preparation review/acceptance and the exact
 `START EXPERIMENT` are separate gates. This amendment grants no provider,
 runtime, GitHub, merge, release or burn-in authority. The consumed
 Preparation cannot be reused.
+
+---
+
+## 29. Q7A-CANDLE-BOUNDARY-01 — first complete candle overlapping request `from`
+
+The exact `02d92efe23287f19d08a6d2e7735e03992539bb6` live attempt consumed
+Preparation `4e108792268954dd35f47aed5ac6c39d5aa9e0cd50b9695a68144b024f3c6a06`
+and stopped before proposal marking at
+`CANDLE_FRAME_INVALID / REQUEST_BINDING / FIRST_BEGIN_BEFORE_FROM`.
+The accepted terminal review binds zero Central intent, reservation, order
+POST attempt and ledger economic effect. Its shareable evidence does not
+contain the raw request `from` or first returned candle timestamp. The offline
+source analysis proves that a returned candle began before the exact `from`;
+whether the provider's response followed its normal boundary behavior or was
+an anomaly remains unproven. This amendment does not classify that historical
+response as valid after the fact.
+
+### 29.1 Exact lower-bound acceptance rule
+
+For this Q7A smoke, the configured request interval is
+`CANDLE_INTERVAL_HOUR`. Let `D` be its exact positive duration from the
+accepted interval mapping (`3600` seconds), `from` the UTC instant in the
+single captured and physically sent `GetCandles` request, and `first_begin`
+the UTC-normalized begin of the earliest returned complete candle in the
+captured canonical frame. The frame remains ordered and unique. The first
+candle may begin before `from` only when its half-open interval overlaps the
+lower request boundary:
+
+```text
+first_begin < from < first_begin + D
+```
+
+Equivalently, `first_begin + D > from` and `0 < from - first_begin < D`.
+Equality at the end (`first_begin + D == from`) fails. `first_begin == from`
+continues to pass the existing lower-bound rule. No other returned row may
+begin before `from`; the allowed overlap is exactly one first row, not a
+general tolerance, shifted timestamp, synthetic fill, or permission to
+discard an out-of-range row. A first candle fully before `from`, a first
+candle beginning at least one whole interval earlier, or any subsequent row
+beginning before `from` remains `REQUEST_BOUNDARY_MISMATCH` and retains the
+finite `REQUEST_BINDING / FIRST_BEGIN_BEFORE_FROM` diagnostic.
+
+This rule narrowly supersedes the lower-bound part of the exact-range
+requirements in sections 23.4, 26.6-26.8 and the unchanged-validator statement
+in section 28.1, wherever those requirements would reject the sole first
+overlapping candle. All other frame, OHLCV, complete-row count, strict
+ordering, uniqueness, captured-frame SHA, freshness, future-skew and
+request-identity checks remain authoritative. In particular, the last
+complete candle's close must remain `<= to`, and no candle after the first
+may cross the lower boundary. The `GetCandles` physical request count remains
+one, with zero retry, redirect, reacquisition or alternate data source.
+
+### 29.2 Frozen correction and adversarial oracle
+
+This contract amendment changes only
+`docs/project/V3_10_CL8_Q7A_LIVE_PREPARATION_RESCOPE_CONTRACT_RU.md`.
+Only after separate independent exact-head review and explicit acceptance of
+its commit/tree may a new implementation branch be created directly from
+that accepted head. For `Q7A-CANDLE-BOUNDARY-01` alone, the implementation
+delta is limited to:
+
+```text
+current/tools/v3_10_q7a_live_entrypoint.py
+current/tests/test_v3_10_q7a_live_entrypoint.py
+```
+
+This two-path limit supersedes conflicting path/purpose limits in sections 3,
+26.10, 27.3 and 28.2 only for the lower-bound predicate. Provider transport,
+StrategyCandleLoader, owner, fixture, GUI, workflow, release and other paths
+remain immutable. Tests must bind the exact captured request to the
+production validator and prove:
+
+```text
+aligned from, first_begin == from                  -> PASS
+unaligned from, sole first interval overlaps from -> PASS
+first interval ends exactly at from                -> REJECT
+first interval wholly before from                  -> REJECT
+first_begin at least one interval before from     -> REJECT
+second returned row begins before from            -> REJECT
+request identity drift or last_close > to          -> REJECT
+```
+
+The rejected cases keep primary `CANDLE_FRAME_INVALID` and the appropriate
+finite request-binding reason; they must reach no proposal marker, Central
+intent/reservation or provider order POST. Existing frame/OHLCV, sparse
+session-gap, freshness, one-shot acquisition and captured-frame mutation
+tests remain applicable. No raw candle or request timestamp is added to
+shareable terminal evidence.
+
+The accepted terminal classification is historical. The consumed
+Preparation, prior B0, Q1/Q4/Q5 results, artifact and native-smoke claims do
+not transfer to a new implementation commit. After implementation review and
+acceptance, exact-successor qualification, a new isolated runtime/B0 and a
+new Preparation each require their own gates. Any later provider READ or POST
+requires a separately reviewed and accepted exact Preparation and a new
+`START EXPERIMENT`; this amendment authorizes none of them.
