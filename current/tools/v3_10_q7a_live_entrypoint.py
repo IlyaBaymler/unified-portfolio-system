@@ -31,12 +31,6 @@ CURRENT = Path(__file__).resolve().parents[1]
 if str(CURRENT) not in sys.path:
     sys.path.insert(0, str(CURRENT))
 
-from tools.v3_10_q7a_e2e_smoke import (
-    Q7AControlledHooks,
-    Q7AControlRecord,
-    Q7ASyntheticError,
-    _proposal_canonical,
-)
 from trading_robot.candle_policy import strategy_lookback_days
 from trading_robot.central_order_coordinator import (
     CentralOrderCoordinationResult,
@@ -63,6 +57,13 @@ from trading_robot.strategy_runtime import (
     strategy_suite_from_bot_config,
 )
 from trading_robot.tbank_sandbox import TBankSandboxClient
+
+from tools.v3_10_q7a_e2e_smoke import (
+    Q7AControlledHooks,
+    Q7AControlRecord,
+    Q7ASyntheticError,
+    _proposal_canonical,
+)
 
 LIVE_CONTRACT_COMMIT = "67ce7bb77e506b67326c0e4f3265b3525fa30472"
 LIVE_CONTRACT_TREE = "4e52d0298d2cac3b75783da7da11e3c759c56e2f"
@@ -161,6 +162,32 @@ _POST_MARKER_GUI_REASONS = {
     "CANDIDATE_QUOTE_NOT_FRESH": "QUOTE_OR_METADATA_INVALID",
     "CYCLE_CLOCK_INVALID": "QUOTE_OR_METADATA_INVALID",
     "DECISION_AUDIT_UNAVAILABLE": "PROPOSAL_ADMISSION_BINDING_INVALID",
+}
+_CANDLE_VALIDATION_REASONS = {
+    "FRAME": frozenset(
+        {
+            "FRAME_TYPE",
+            "INDEX_TYPE",
+            "INDEX_ORDER",
+            "OHLC_TYPE",
+            "OHLC_NONFINITE",
+            "OHLC_NONPOSITIVE",
+            "VOLUME_TYPE",
+            "VOLUME_NEGATIVE",
+            "OHLC_ORDER",
+            "CLOCK_TYPE",
+        }
+    ),
+    "REQUEST_BINDING": frozenset(
+        {
+            "REQUEST_SHAPE",
+            "REQUEST_IDENTITY",
+            "REQUEST_TIME_PARSE",
+            "REQUEST_RANGE_ORDER",
+            "FIRST_BEGIN_BEFORE_FROM",
+            "LAST_CLOSE_AFTER_TO",
+        }
+    ),
 }
 _PRE_ADMISSION_CHECKPOINTS = frozenset(
     {
@@ -327,7 +354,14 @@ _FORBIDDEN_FUTURE_KEYS = frozenset(
 class Q7ALiveError(RuntimeError):
     """Finite, privacy-safe live-entrypoint failure."""
 
-    def __init__(self, reason: str, *, dependency_reason: str | None = None) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        dependency_reason: str | None = None,
+        candle_validation_stage: str | None = None,
+        candle_validation_reason: str | None = None,
+    ) -> None:
         normalized = str(reason or "").strip().upper()
         self.reason = (
             normalized if normalized in _PRIMARY_REASONS else "POSTCONDITION_FAILED"
@@ -341,11 +375,32 @@ class Q7ALiveError(RuntimeError):
             )
             else None
         )
+        valid_candle_diagnostic = (
+            self.reason == "CANDLE_FRAME_INVALID"
+            and type(candle_validation_stage) is str
+            and type(candle_validation_reason) is str
+            and candle_validation_reason
+            in _CANDLE_VALIDATION_REASONS.get(candle_validation_stage, ())
+        )
+        self.candle_validation_stage = (
+            candle_validation_stage if valid_candle_diagnostic else None
+        )
+        self.candle_validation_reason = (
+            candle_validation_reason if valid_candle_diagnostic else None
+        )
         super().__init__(self.reason)
 
 
 def _fail(reason: str) -> None:
     raise Q7ALiveError(reason)
+
+
+def _fail_candle(stage: str, reason: str) -> None:
+    raise Q7ALiveError(
+        "CANDLE_FRAME_INVALID",
+        candle_validation_stage=stage,
+        candle_validation_reason=reason,
+    )
 
 
 def _map_gui_blocker(exc: GuiRuntimeBlockedError) -> str:
@@ -848,8 +903,10 @@ def canonical_candle_evidence(
 ) -> CandleEvidence:
     """Validate and canonically bind the exact complete frame owner output."""
 
-    if type(frame) is not pd.DataFrame or type(frame.index) is not pd.DatetimeIndex:
-        _fail("CANDLE_FRAME_INVALID")
+    if type(frame) is not pd.DataFrame:
+        _fail_candle("FRAME", "FRAME_TYPE")
+    if type(frame.index) is not pd.DatetimeIndex:
+        _fail_candle("FRAME", "INDEX_TYPE")
     required = ("open", "high", "low", "close", "volume", "is_complete")
     if any(column not in frame.columns for column in required):
         _fail("CANDLE_FRAME_INCOMPLETE")
@@ -862,23 +919,26 @@ def canonical_candle_evidence(
     )
     seconds = _INTERVAL_SECONDS[policy["interval"]]
     if not normalized.is_monotonic_increasing:
-        _fail("CANDLE_FRAME_INVALID")
+        _fail_candle("FRAME", "INDEX_ORDER")
     rows: list[dict[str, object]] = []
     for timestamp, (_, row) in zip(normalized, frame.iterrows(), strict=True):
         values: dict[str, float] = {}
         for key in ("open", "high", "low", "close"):
             value = row[key]
-            if (
-                type(value) not in {float, np.float64}
-                or not math.isfinite(float(value))
-                or float(value) <= 0
-            ):
-                _fail("CANDLE_FRAME_INVALID")
-            values[key] = float(value)
+            if type(value) not in {float, np.float64}:
+                _fail_candle("FRAME", "OHLC_TYPE")
+            numeric = float(value)
+            if not math.isfinite(numeric):
+                _fail_candle("FRAME", "OHLC_NONFINITE")
+            if numeric <= 0:
+                _fail_candle("FRAME", "OHLC_NONPOSITIVE")
+            values[key] = numeric
         volume = row["volume"]
         complete = row["is_complete"]
-        if type(volume) not in {int, np.int64} or int(volume) < 0:
-            _fail("CANDLE_FRAME_INVALID")
+        if type(volume) not in {int, np.int64}:
+            _fail_candle("FRAME", "VOLUME_TYPE")
+        if int(volume) < 0:
+            _fail_candle("FRAME", "VOLUME_NEGATIVE")
         if type(complete) not in {bool, np.bool_} or not bool(complete):
             _fail("CANDLE_FRAME_INCOMPLETE")
         if not (
@@ -887,7 +947,7 @@ def canonical_candle_evidence(
             <= max(values["open"], values["close"])
             <= values["high"]
         ):
-            _fail("CANDLE_FRAME_INVALID")
+            _fail_candle("FRAME", "OHLC_ORDER")
         rows.append(
             {
                 "begin": timestamp.to_pydatetime().strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
@@ -900,7 +960,7 @@ def canonical_candle_evidence(
             }
         )
     if type(now) is not datetime or now.tzinfo is None or now.utcoffset() is None:
-        _fail("CANDLE_FRAME_INVALID")
+        _fail_candle("FRAME", "CLOCK_TYPE")
     latest_begin = normalized[-1].to_pydatetime()
     latest_close = latest_begin + timedelta(seconds=seconds)
     age = (now.astimezone(timezone.utc) - latest_close).total_seconds()
@@ -940,20 +1000,27 @@ def verify_candle_request_binding(
         "limit",
         "candle_source_type",
     }:
-        _fail("CANDLE_FRAME_INVALID")
+        _fail_candle("REQUEST_BINDING", "REQUEST_SHAPE")
     if (
         request["target_instrument_sha256"] != expected_target_sha256
         or request["interval"] != expected_interval
         or request["limit"] is not None
         or request["candle_source_type"] != "CANDLE_SOURCE_EXCHANGE"
     ):
-        _fail("CANDLE_FRAME_INVALID")
-    start = _timestamp(request["from_utc"], "CANDLE_FRAME_INVALID")
-    stop = _timestamp(request["to_utc"], "CANDLE_FRAME_INVALID")
-    earliest = _timestamp(evidence.earliest_begin_utc, "CANDLE_FRAME_INVALID")
-    latest_close = _timestamp(evidence.latest_close_utc, "CANDLE_FRAME_INVALID")
-    if start >= stop or earliest < start or latest_close > stop:
-        _fail("CANDLE_FRAME_INVALID")
+        _fail_candle("REQUEST_BINDING", "REQUEST_IDENTITY")
+    try:
+        start = _timestamp(request["from_utc"], "CANDLE_FRAME_INVALID")
+        stop = _timestamp(request["to_utc"], "CANDLE_FRAME_INVALID")
+        earliest = _timestamp(evidence.earliest_begin_utc, "CANDLE_FRAME_INVALID")
+        latest_close = _timestamp(evidence.latest_close_utc, "CANDLE_FRAME_INVALID")
+    except Q7ALiveError:
+        _fail_candle("REQUEST_BINDING", "REQUEST_TIME_PARSE")
+    if start >= stop:
+        _fail_candle("REQUEST_BINDING", "REQUEST_RANGE_ORDER")
+    if earliest < start:
+        _fail_candle("REQUEST_BINDING", "FIRST_BEGIN_BEFORE_FROM")
+    if latest_close > stop:
+        _fail_candle("REQUEST_BINDING", "LAST_CLOSE_AFTER_TO")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2291,10 +2358,11 @@ def _compose_live_owners(args: argparse.Namespace, prep: LivePreparation) -> Liv
     if control_fields.get("metadata_sha256") != prep.fields["static_metadata_sha256"]:
         _fail("CONTROL_RECORD_INVALID")
 
-    from tools.v3_10_q7_prepare_runtime import _configured_set
-    from tools.v3_10_runtime_cash_cutover import _open_runtime
     from trading_robot.central_order_coordinator import CentralOrderCoordinator
     from trading_robot.runtime_cash_authority import derive_account_scope
+
+    from tools.v3_10_q7_prepare_runtime import _configured_set
+    from tools.v3_10_runtime_cash_cutover import _open_runtime
 
     live = _open_runtime(
         args.runtime_dir,
@@ -2409,6 +2477,8 @@ def _write_terminal_blocked(
     reason: str,
     owners: LiveOwners | None,
     dependency_reason: str | None = None,
+    candle_validation_stage: str | None = None,
+    candle_validation_reason: str | None = None,
 ) -> str:
     normalized = reason if reason in _PRIMARY_REASONS else "POSTCONDITION_FAILED"
     terminal: dict[str, Any] = {
@@ -2470,6 +2540,16 @@ def _write_terminal_blocked(
                 )
         except Exception:  # noqa: BLE001 - best-effort privacy-safe read-back
             terminal["custody_readback"] = "UNAVAILABLE"
+    if (
+        terminal["reason"] == "CANDLE_FRAME_INVALID"
+        and "pre_admission_checkpoint" in terminal
+        and type(candle_validation_stage) is str
+        and type(candle_validation_reason) is str
+        and candle_validation_reason
+        in _CANDLE_VALIDATION_REASONS.get(candle_validation_stage, ())
+    ):
+        terminal["candle_validation_stage"] = candle_validation_stage
+        terminal["candle_validation_reason"] = candle_validation_reason
     try:
         write_evidence_once(args.evidence_dir / "terminal-blocked.json", terminal)
     except Exception:  # noqa: BLE001 - terminal evidence failure is itself finite
@@ -2534,9 +2614,13 @@ def main(argv: list[str] | None = None) -> int:
                 if type(dependency_reason) is str
                 else "POSTCONDITION_FAILED"
             )
+            candle_validation_stage = None
+            candle_validation_reason = None
         else:
             reason = exc.reason
             dependency_reason = exc.dependency_reason
+            candle_validation_stage = exc.candle_validation_stage
+            candle_validation_reason = exc.candle_validation_reason
         if consumed and prep is not None and args.evidence_dir is not None:
             reason = _write_terminal_blocked(
                 args=args,
@@ -2544,6 +2628,8 @@ def main(argv: list[str] | None = None) -> int:
                 reason=reason,
                 owners=owners,
                 dependency_reason=dependency_reason,
+                candle_validation_stage=candle_validation_stage,
+                candle_validation_reason=candle_validation_reason,
             )
         print(_canonical({"status": "BLOCKED", "reason": reason}).decode("utf-8"))
         return 2

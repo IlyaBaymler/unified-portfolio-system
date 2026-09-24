@@ -11,7 +11,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
-
 from tools import v3_10_q7a_live_entrypoint as live
 from trading_robot.multi_instrument_strategy import StrategyProposal
 from trading_robot.portfolio_adapters import BrokerPortfolioAdapter
@@ -610,6 +609,155 @@ def test_candle_frame_is_bound_to_exact_authorized_request_range() -> None:
         expected_interval="CANDLE_INTERVAL_HOUR",
         expected_target_sha256=VECTORS["target_instrument_sha256"],
     )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("frame_type", "FRAME_TYPE"),
+        ("index_type", "INDEX_TYPE"),
+        ("index_order", "INDEX_ORDER"),
+        ("ohlc_type", "OHLC_TYPE"),
+        ("ohlc_nonfinite", "OHLC_NONFINITE"),
+        ("ohlc_nonpositive", "OHLC_NONPOSITIVE"),
+        ("volume_type", "VOLUME_TYPE"),
+        ("volume_negative", "VOLUME_NEGATIVE"),
+        ("ohlc_order", "OHLC_ORDER"),
+        ("clock_type", "CLOCK_TYPE"),
+    ],
+)
+def test_candle_frame_invalid_has_exact_finite_diagnostic(
+    mutation: str, expected: str
+) -> None:
+    selected = valid_preparation()
+    value: object = frame()
+    now = datetime.fromisoformat(VECTORS["now"].replace("Z", "+00:00"))
+    if mutation == "frame_type":
+        value = {}
+    elif mutation == "index_type":
+        value = value.reset_index(drop=True)
+    elif mutation == "index_order":
+        value = value.iloc[::-1]
+    elif mutation == "ohlc_type":
+        value["open"] = value["open"].astype(object)
+        value.loc[value.index[-1], "open"] = "PRIVATE_PRICE_CANARY"
+    elif mutation == "ohlc_nonfinite":
+        value.loc[value.index[-1], "close"] = np.nan
+    elif mutation == "ohlc_nonpositive":
+        value.loc[value.index[-1], "open"] = 0.0
+    elif mutation == "volume_type":
+        value["volume"] = pd.Series([True, True, True], index=value.index, dtype=object)
+    elif mutation == "volume_negative":
+        value.loc[value.index[-1], "volume"] = -1
+    elif mutation == "ohlc_order":
+        value.loc[value.index[-1], "low"] = 999.0
+    else:
+        now = now.replace(tzinfo=None)
+    with pytest.raises(live.Q7ALiveError) as captured:
+        live.canonical_candle_evidence(value, policy=selected.candle_policy, now=now)
+    assert captured.value.reason == "CANDLE_FRAME_INVALID"
+    assert captured.value.candle_validation_stage == "FRAME"
+    assert captured.value.candle_validation_reason == expected
+    assert "PRIVATE_PRICE_CANARY" not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("shape", "REQUEST_SHAPE"),
+        ("identity", "REQUEST_IDENTITY"),
+        ("time_parse", "REQUEST_TIME_PARSE"),
+        ("range_order", "REQUEST_RANGE_ORDER"),
+        ("first_before_from", "FIRST_BEGIN_BEFORE_FROM"),
+        ("last_after_to", "LAST_CLOSE_AFTER_TO"),
+    ],
+)
+def test_candle_request_invalid_has_exact_finite_diagnostic(
+    mutation: str, expected: str
+) -> None:
+    selected = valid_preparation()
+    evidence = live.canonical_candle_evidence(
+        frame(),
+        policy=selected.candle_policy,
+        now=datetime.fromisoformat(VECTORS["now"].replace("Z", "+00:00")),
+    )
+    request = {
+        "target_instrument_sha256": VECTORS["target_instrument_sha256"],
+        "from_utc": "2026-09-22T09:00:00.000000Z",
+        "to_utc": "2026-09-22T12:00:00.000000Z",
+        "interval": "CANDLE_INTERVAL_HOUR",
+        "limit": None,
+        "candle_source_type": "CANDLE_SOURCE_EXCHANGE",
+    }
+    if mutation == "shape":
+        del request["limit"]
+    elif mutation == "identity":
+        request["interval"] = "PRIVATE_INTERVAL_CANARY"
+    elif mutation == "time_parse":
+        request["from_utc"] = "PRIVATE_TIME_CANARY"
+    elif mutation == "range_order":
+        request["from_utc"] = request["to_utc"]
+    elif mutation == "first_before_from":
+        request["from_utc"] = "2026-09-22T10:00:00.000000Z"
+    else:
+        request["to_utc"] = "2026-09-22T11:00:00.000000Z"
+    with pytest.raises(live.Q7ALiveError) as captured:
+        live.verify_candle_request_binding(
+            evidence,
+            request,
+            expected_interval="CANDLE_INTERVAL_HOUR",
+            expected_target_sha256=VECTORS["target_instrument_sha256"],
+        )
+    assert captured.value.reason == "CANDLE_FRAME_INVALID"
+    assert captured.value.candle_validation_stage == "REQUEST_BINDING"
+    assert captured.value.candle_validation_reason == expected
+    assert "PRIVATE_" not in str(captured.value)
+
+
+def test_provider_shaped_complete_candles_keep_existing_positive_path() -> None:
+    selected = valid_preparation()
+    candles = []
+    for offset, timestamp in enumerate(frame().index):
+        candles.append(
+            {
+                "time": timestamp.isoformat(),
+                "open": {"units": str(100 + offset), "nano": 0},
+                "high": {"units": str(102 + offset), "nano": 0},
+                "low": {"units": str(99 + offset), "nano": 0},
+                "close": {"units": str(101 + offset), "nano": 0},
+                "volume": 10 + offset,
+                "isComplete": True,
+            }
+        )
+    records: list[dict[str, Any]] = []
+    TBankSandboxClient._extend_candle_records(records, {"candles": candles})
+    value = (
+        pd.DataFrame.from_records(records)
+        .drop_duplicates(subset=["begin"], keep="last")
+        .set_index("begin")
+        .sort_index()
+    )
+    value = value[value["is_complete"]].copy()
+    evidence = live.canonical_candle_evidence(
+        value,
+        policy=selected.candle_policy,
+        now=datetime.fromisoformat(VECTORS["now"].replace("Z", "+00:00")),
+    )
+    live.verify_candle_request_binding(
+        evidence,
+        {
+            "target_instrument_sha256": VECTORS["target_instrument_sha256"],
+            "from_utc": "2026-09-22T09:00:00.000000Z",
+            "to_utc": "2026-09-22T12:00:00.000000Z",
+            "interval": "CANDLE_INTERVAL_HOUR",
+            "limit": None,
+            "candle_source_type": "CANDLE_SOURCE_EXCHANGE",
+        },
+        expected_interval="CANDLE_INTERVAL_HOUR",
+        expected_target_sha256=VECTORS["target_instrument_sha256"],
+    )
+    assert evidence.row_count == 3
+    assert evidence.latest_close_utc == "2026-09-22T12:00:00.000000Z"
 
 
 def test_stale_and_future_candle_frames_fail() -> None:
@@ -1782,6 +1930,165 @@ def test_terminal_checkpoint_is_closed_and_pre_admission_only(
     terminal = json.loads((evidence / "terminal-blocked.json").read_bytes())
     assert terminal.get("pre_admission_checkpoint") == expected
     assert "PRIVATE_ACCOUNT_ID_CANARY" not in json.dumps(terminal)
+
+
+def test_finite_candle_diagnostic_reaches_create_once_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime = (tmp_path / "runtime").resolve()
+    evidence = (tmp_path / "evidence").resolve()
+    runtime.mkdir()
+    evidence.mkdir()
+    raw, digest = preparation(
+        evidence_root_sha256=live.evidence_root_identity(evidence)
+    )
+    prep_path = tmp_path / "preparation.json"
+    prep_path.write_bytes(raw)
+    central = SimpleNamespace(intents=(), reserved_cash_kopecks=0)
+    authority = SimpleNamespace(post_attempt_count=0)
+    owners = SimpleNamespace(
+        pre_admission_checkpoint="BEFORE_PROPOSAL_MARKER",
+        coordinator=SimpleNamespace(manager=SimpleNamespace(state=lambda: central)),
+        execution_adapter=SimpleNamespace(
+            cash_authority_manager=SimpleNamespace(status=lambda: authority)
+        ),
+    )
+    monkeypatch.setattr(live, "_compose_live_owners", lambda *_: owners)
+
+    def fail_candle(_owners: object) -> dict[str, Any]:
+        raise live.Q7ALiveError(
+            "CANDLE_FRAME_INVALID",
+            candle_validation_stage="REQUEST_BINDING",
+            candle_validation_reason="LAST_CLOSE_AFTER_TO",
+        )
+
+    monkeypatch.setattr(live, "execute_economic_smoke", fail_candle)
+    args = [
+        live.LIVE_MODE,
+        "--preparation",
+        str(prep_path),
+        "--expected-preparation-sha256",
+        digest,
+        "--candidate-commit",
+        VECTORS["candidate_commit"],
+        "--candidate-tree",
+        VECTORS["candidate_tree"],
+        "--runtime-dir",
+        str(runtime),
+        "--evidence-dir",
+        str(evidence),
+    ]
+    assert live.main(args) == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "reason": "CANDLE_FRAME_INVALID",
+        "status": "BLOCKED",
+    }
+    terminal_path = evidence / "terminal-blocked.json"
+    original = terminal_path.read_bytes()
+    terminal = json.loads(original)
+    assert terminal["candle_validation_stage"] == "REQUEST_BINDING"
+    assert terminal["candle_validation_reason"] == "LAST_CLOSE_AFTER_TO"
+    assert terminal["pre_admission_checkpoint"] == "BEFORE_PROPOSAL_MARKER"
+    assert central.intents == ()
+    assert central.reserved_cash_kopecks == 0
+    assert authority.post_attempt_count == 0
+    assert (evidence / "preparation-consumed.json").exists()
+    assert not (evidence / "proposal-marker.json").exists()
+    assert not (evidence / "live-result.json").exists()
+    assert (
+        live._write_terminal_blocked(
+            args=SimpleNamespace(evidence_dir=evidence),
+            prep=valid_preparation(),
+            reason="CANDLE_FRAME_INVALID",
+            owners=owners,
+            candle_validation_stage="FRAME",
+            candle_validation_reason="OHLC_ORDER",
+        )
+        == "EVIDENCE_WRITE_FAILED"
+    )
+    assert terminal_path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("stage", "reason_code", "primary"),
+    [
+        ("FRAME", "PRIVATE_CANDLE_CANARY", "CANDLE_FRAME_INVALID"),
+        ("PRIVATE_STAGE_CANARY", "OHLC_ORDER", "CANDLE_FRAME_INVALID"),
+        ("FRAME", "OHLC_ORDER", "POSTCONDITION_FAILED"),
+    ],
+)
+def test_terminal_rejects_unknown_or_mismatched_candle_diagnostic(
+    tmp_path: Path, stage: str, reason_code: str, primary: str
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    owners = SimpleNamespace(
+        pre_admission_checkpoint="BEFORE_PROPOSAL_MARKER",
+        coordinator=SimpleNamespace(
+            manager=SimpleNamespace(state=lambda: SimpleNamespace(intents=()))
+        ),
+        execution_adapter=SimpleNamespace(
+            cash_authority_manager=SimpleNamespace(status=lambda: object())
+        ),
+    )
+    error = live.Q7ALiveError(
+        primary,
+        candle_validation_stage=stage,
+        candle_validation_reason=reason_code,
+    )
+    assert error.candle_validation_stage is None
+    assert error.candle_validation_reason is None
+    live._write_terminal_blocked(
+        args=SimpleNamespace(evidence_dir=evidence),
+        prep=valid_preparation(),
+        reason=error.reason,
+        owners=owners,
+        candle_validation_stage=stage,
+        candle_validation_reason=reason_code,
+    )
+    terminal = json.loads((evidence / "terminal-blocked.json").read_bytes())
+    assert "candle_validation_stage" not in terminal
+    assert "candle_validation_reason" not in terminal
+    assert "PRIVATE_" not in json.dumps(terminal)
+
+
+def test_candle_diagnostic_does_not_override_existing_intent_recovery(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    central = SimpleNamespace(
+        revision=2, intents=(SimpleNamespace(intent_id="PRIVATE-INTENT"),)
+    )
+    authority = SimpleNamespace(
+        sha256="a" * 64,
+        record_revision=3,
+        post_attempt_count=0,
+        pending_dispatch_proof_sha256=None,
+    )
+    owners = SimpleNamespace(
+        pre_admission_checkpoint="BEFORE_PROPOSAL_MARKER",
+        coordinator=SimpleNamespace(manager=SimpleNamespace(state=lambda: central)),
+        execution_adapter=SimpleNamespace(
+            cash_authority_manager=SimpleNamespace(status=lambda: authority)
+        ),
+    )
+    result = live._write_terminal_blocked(
+        args=SimpleNamespace(evidence_dir=evidence),
+        prep=valid_preparation(),
+        reason="CANDLE_FRAME_INVALID",
+        owners=owners,
+        candle_validation_stage="FRAME",
+        candle_validation_reason="OHLC_ORDER",
+    )
+    terminal = json.loads((evidence / "terminal-blocked.json").read_bytes())
+    assert result == "EXISTING_INTENT_REQUIRES_RECOVERY"
+    assert terminal["status"] == "RECOVERY_REQUIRED"
+    assert "candle_validation_stage" not in terminal
+    assert "candle_validation_reason" not in terminal
+    assert "PRIVATE-INTENT" not in json.dumps(terminal)
 
 
 @pytest.mark.parametrize(
