@@ -1520,6 +1520,7 @@ def admission_result(status: str) -> live.CentralOrderCoordinationResult:
             admission_result("PORTFOLIO_RISK_BLOCKED"),
             "PORTFOLIO_RISK_BLOCKED",
         ),
+        ("VALIDATE_ADMISSION", admission_result("RISK_BLOCKED"), "RISK_BLOCKED"),
         ("VALIDATE_ADMISSION", admission_result("QUEUED"), "QUEUED"),
         ("VALIDATE_ADMISSION", SimpleResult(), "UNRECOGNIZED_STATUS"),
         (
@@ -1624,7 +1625,9 @@ def test_quote_evidence_binds_exact_wire_value_without_raw_target() -> None:
         "quote-evidence-exception",
         "central-exception",
         "hook-after-central",
+        "synthetic-bridge-rejected",
         "portfolio-risk-blocked",
+        "risk-blocked",
         "queued-invalid-binding",
         "inactive-initial",
         "inactive-after-gate-a",
@@ -1633,6 +1636,7 @@ def test_quote_evidence_binds_exact_wire_value_without_raw_target() -> None:
 )
 def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     scenario: str,
 ) -> None:
     selected = valid_preparation()
@@ -1718,6 +1722,7 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
 
     class Hooks:
         admission_binding_raw: bytes | None = None
+        coordinate_calls = 0
 
         def evaluate_closed_candle(
             self, runtime: Any, candle_time: datetime, observed_at: datetime
@@ -1754,13 +1759,18 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
             )
 
         def coordinate_marked(self, **kwargs: Any) -> SimpleResult:
+            self.coordinate_calls += 1
             if scenario == "central-exception":
                 raise RuntimeError("PRIVATE_CENTRAL_CANARY")
             if scenario == "hook-after-central":
                 manager.active = after
                 raise RuntimeError("PRIVATE_POST_CENTRAL_CANARY")
+            if scenario == "synthetic-bridge-rejected":
+                raise live.Q7ASyntheticError("Q7A_ADMISSION_BINDING_INVALID")
             if scenario == "portfolio-risk-blocked":
                 return admission_result("PORTFOLIO_RISK_BLOCKED")
+            if scenario == "risk-blocked":
+                return admission_result("RISK_BLOCKED")
             if scenario == "queued-invalid-binding":
                 return admission_result("QUEUED")
             manager.active = after
@@ -1888,6 +1898,23 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         controlled_proposal_box=proposal_box,
         verify_active_runtime=verify_active_runtime,
     )
+
+    def blocked_terminal(
+        primary_reason: str, *, dependency_reason: str | None = None
+    ) -> dict[str, Any]:
+        evidence = tmp_path / "terminal-evidence"
+        evidence.mkdir()
+        live._write_terminal_blocked(
+            args=SimpleNamespace(evidence_dir=evidence),
+            prep=selected,
+            reason=primary_reason,
+            owners=owners,
+            dependency_reason=dependency_reason,
+        )
+        terminal = json.loads((evidence / "terminal-blocked.json").read_bytes())
+        assert "PRIVATE_" not in json.dumps(terminal)
+        return terminal
+
     if scenario == "inactive-initial":
         reason("CONFIGURED_SET_NOT_ACTIVE", live.execute_economic_smoke, owners)
         assert active_checks == 1
@@ -1911,6 +1938,10 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         assert manager.active is before
         assert manager.active.reserved_cash_kopecks == 0
         assert provider.post_calls == 0
+        terminal = blocked_terminal(expected)
+        assert terminal["admission_component"] == "VERIFY_ACTIVE_RUNTIME"
+        assert terminal["admission_status"] == "UNRECOGNIZED_STATUS"
+        assert hooks.coordinate_calls == 0
         return
     if scenario == "quote-evidence-exception":
 
@@ -1956,6 +1987,10 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         assert owners.admission_result is None
         assert manager.active is before
         assert provider.post_calls == 0
+        terminal = blocked_terminal("POSTCONDITION_FAILED")
+        assert terminal["admission_component"] == "Q7A_CONTROLLED_HOOKS"
+        assert terminal["admission_status"] == "UNRECOGNIZED_STATUS"
+        assert hooks.coordinate_calls == 1
         return
     if scenario == "hook-after-central":
         with pytest.raises(RuntimeError, match="PRIVATE_POST_CENTRAL_CANARY"):
@@ -1964,6 +1999,31 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         assert owners.admission_result is None
         assert manager.active is after
         assert provider.post_calls == 0
+        terminal = blocked_terminal("POSTCONDITION_FAILED")
+        assert terminal["status"] == "RECOVERY_REQUIRED"
+        assert terminal["reason"] == "EXISTING_INTENT_REQUIRES_RECOVERY"
+        assert terminal["admission_component"] == "Q7A_CONTROLLED_HOOKS"
+        assert terminal["admission_status"] == "UNRECOGNIZED_STATUS"
+        assert hooks.coordinate_calls == 1
+        assert manager.active is after
+        return
+    if scenario == "synthetic-bridge-rejected":
+        with pytest.raises(live.Q7ASyntheticError) as caught:
+            live.execute_economic_smoke(owners)
+        assert caught.value.reason == "Q7A_ADMISSION_BINDING_INVALID"
+        assert owners.pre_admission_checkpoint == "CENTRAL_ADMISSION"
+        assert owners.admission_component == "Q7A_CONTROLLED_HOOKS"
+        assert owners.admission_result is None
+        assert manager.active is before
+        assert provider.post_calls == 0
+        terminal = blocked_terminal(
+            "PROPOSAL_ADMISSION_BINDING_INVALID",
+            dependency_reason="Q7A_ADMISSION_BINDING_INVALID",
+        )
+        assert terminal["admission_component"] == "Q7A_CONTROLLED_HOOKS"
+        assert terminal["admission_status"] == "UNRECOGNIZED_STATUS"
+        assert terminal["dependency_reason"] == "Q7A_ADMISSION_BINDING_INVALID"
+        assert hooks.coordinate_calls == 1
         return
     if scenario == "portfolio-risk-blocked":
         reason(
@@ -1973,6 +2033,20 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         assert owners.admission_result.status == "PORTFOLIO_RISK_BLOCKED"
         assert manager.active is before
         assert provider.post_calls == 0
+        return
+    if scenario == "risk-blocked":
+        reason(
+            "PROPOSAL_ADMISSION_BINDING_INVALID", live.execute_economic_smoke, owners
+        )
+        assert owners.admission_component == "VALIDATE_ADMISSION"
+        assert live._admission_status_from_result(owners.admission_result) == (
+            "RISK_BLOCKED"
+        )
+        assert manager.active is before
+        assert provider.post_calls == 0
+        terminal = blocked_terminal("PROPOSAL_ADMISSION_BINDING_INVALID")
+        assert terminal["admission_component"] == "VALIDATE_ADMISSION"
+        assert terminal["admission_status"] == "RISK_BLOCKED"
         return
     if scenario == "queued-invalid-binding":
         reason(
