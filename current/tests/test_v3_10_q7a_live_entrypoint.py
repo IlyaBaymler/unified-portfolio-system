@@ -1496,6 +1496,104 @@ class SimpleResult:
     cancelled_intent_id: str | None = None
 
 
+def admission_result(status: str) -> live.CentralOrderCoordinationResult:
+    return live.CentralOrderCoordinationResult(
+        status=status,
+        instrument_id="PRIVATE_INSTRUMENT_CANARY",
+        ticker="PRIVATE_TICKER_CANARY",
+        portfolio_revision=1,
+        current_lots=0,
+        proposed_target_lots=1,
+        approved_target_lots=0,
+        intent_id=None,
+        reason="PRIVATE_REASON_CANARY",
+    )
+
+
+@pytest.mark.parametrize(
+    ("component", "result", "expected"),
+    [
+        ("VERIFY_ACTIVE_RUNTIME", None, "UNRECOGNIZED_STATUS"),
+        ("Q7A_CONTROLLED_HOOKS", None, "UNRECOGNIZED_STATUS"),
+        (
+            "CENTRAL_ORDER_COORDINATOR",
+            admission_result("PORTFOLIO_RISK_BLOCKED"),
+            "PORTFOLIO_RISK_BLOCKED",
+        ),
+        ("VALIDATE_ADMISSION", admission_result("QUEUED"), "QUEUED"),
+        ("VALIDATE_ADMISSION", SimpleResult(), "UNRECOGNIZED_STATUS"),
+        (
+            "CENTRAL_ORDER_COORDINATOR",
+            admission_result("PRIVATE_STATUS_CANARY"),
+            "UNRECOGNIZED_STATUS",
+        ),
+    ],
+)
+def test_terminal_admission_status_uses_only_exact_returned_result(
+    tmp_path: Path, component: str, result: object, expected: str
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    owners = SimpleNamespace(
+        pre_admission_checkpoint="CENTRAL_ADMISSION",
+        admission_component=component,
+        admission_result=result,
+        coordinator=SimpleNamespace(
+            manager=SimpleNamespace(state=lambda: SimpleNamespace(intents=()))
+        ),
+        execution_adapter=SimpleNamespace(
+            cash_authority_manager=SimpleNamespace(status=lambda: object())
+        ),
+    )
+    live._write_terminal_blocked(
+        args=SimpleNamespace(evidence_dir=evidence),
+        prep=valid_preparation(),
+        reason="POSTCONDITION_FAILED",
+        owners=owners,
+    )
+    terminal = json.loads((evidence / "terminal-blocked.json").read_bytes())
+    assert terminal["admission_component"] == component
+    assert terminal["admission_status"] == expected
+    assert "PRIVATE_" not in json.dumps(terminal)
+
+
+def test_terminal_admission_rejects_str_subclass_and_forged_exception(
+    tmp_path: Path,
+) -> None:
+    class StatusSubclass(str):
+        pass
+
+    class ForgedError(RuntimeError):
+        status = "QUEUED"
+
+    for name, result in (
+        ("subclass", admission_result(StatusSubclass("QUEUED"))),
+        ("exception", ForgedError("PORTFOLIO_RISK_BLOCKED PRIVATE_CANARY")),
+    ):
+        evidence = tmp_path / name
+        evidence.mkdir()
+        owners = SimpleNamespace(
+            pre_admission_checkpoint="CENTRAL_ADMISSION",
+            admission_component="VALIDATE_ADMISSION",
+            admission_result=result,
+            coordinator=SimpleNamespace(
+                manager=SimpleNamespace(state=lambda: SimpleNamespace(intents=()))
+            ),
+            execution_adapter=SimpleNamespace(
+                cash_authority_manager=SimpleNamespace(status=lambda: object())
+            ),
+        )
+        live._write_terminal_blocked(
+            args=SimpleNamespace(evidence_dir=evidence),
+            prep=valid_preparation(),
+            reason="POSTCONDITION_FAILED",
+            owners=owners,
+        )
+        terminal = json.loads((evidence / "terminal-blocked.json").read_bytes())
+        assert terminal["admission_status"] == "UNRECOGNIZED_STATUS"
+        assert "PRIVATE_CANARY" not in json.dumps(terminal)
+
+
 def test_quote_evidence_binds_exact_wire_value_without_raw_target() -> None:
     adapter = live.ProviderEvidenceAdapter(
         FakeProvider(), target_instrument_id="target"
@@ -1525,6 +1623,9 @@ def test_quote_evidence_binds_exact_wire_value_without_raw_target() -> None:
         "synthetic-invalid",
         "quote-evidence-exception",
         "central-exception",
+        "hook-after-central",
+        "portfolio-risk-blocked",
+        "queued-invalid-binding",
         "inactive-initial",
         "inactive-after-gate-a",
         "revision-after-gate-a",
@@ -1655,6 +1756,13 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         def coordinate_marked(self, **kwargs: Any) -> SimpleResult:
             if scenario == "central-exception":
                 raise RuntimeError("PRIVATE_CENTRAL_CANARY")
+            if scenario == "hook-after-central":
+                manager.active = after
+                raise RuntimeError("PRIVATE_POST_CENTRAL_CANARY")
+            if scenario == "portfolio-risk-blocked":
+                return admission_result("PORTFOLIO_RISK_BLOCKED")
+            if scenario == "queued-invalid-binding":
+                return admission_result("QUEUED")
             manager.active = after
             self.admission_binding_raw = b"admission-binding"
             return SimpleResult()
@@ -1798,6 +1906,8 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         reason(expected, live.execute_economic_smoke, owners)
         assert active_checks == 2
         assert owners.pre_admission_checkpoint == "CENTRAL_ADMISSION"
+        assert owners.admission_component == "VERIFY_ACTIVE_RUNTIME"
+        assert owners.admission_result is None
         assert manager.active is before
         assert manager.active.reserved_cash_kopecks == 0
         assert provider.post_calls == 0
@@ -1842,10 +1952,42 @@ def test_execute_smoke_binds_existing_owners_and_stops_safely_at_market_idle(
         with pytest.raises(RuntimeError, match="PRIVATE_CENTRAL_CANARY"):
             live.execute_economic_smoke(owners)
         assert owners.pre_admission_checkpoint == "CENTRAL_ADMISSION"
+        assert owners.admission_component == "Q7A_CONTROLLED_HOOKS"
+        assert owners.admission_result is None
+        assert manager.active is before
+        assert provider.post_calls == 0
+        return
+    if scenario == "hook-after-central":
+        with pytest.raises(RuntimeError, match="PRIVATE_POST_CENTRAL_CANARY"):
+            live.execute_economic_smoke(owners)
+        assert owners.admission_component == "Q7A_CONTROLLED_HOOKS"
+        assert owners.admission_result is None
+        assert manager.active is after
+        assert provider.post_calls == 0
+        return
+    if scenario == "portfolio-risk-blocked":
+        reason(
+            "PROPOSAL_ADMISSION_BINDING_INVALID", live.execute_economic_smoke, owners
+        )
+        assert owners.admission_component == "VALIDATE_ADMISSION"
+        assert owners.admission_result.status == "PORTFOLIO_RISK_BLOCKED"
+        assert manager.active is before
+        assert provider.post_calls == 0
+        return
+    if scenario == "queued-invalid-binding":
+        reason(
+            "PROPOSAL_ADMISSION_BINDING_INVALID", live.execute_economic_smoke, owners
+        )
+        assert owners.admission_component == "VALIDATE_ADMISSION"
+        assert live._admission_status_from_result(owners.admission_result) == "QUEUED"
         assert manager.active is before
         assert provider.post_calls == 0
         return
     result = live.execute_economic_smoke(owners)
+    assert owners.admission_component == "VALIDATE_ADMISSION"
+    assert live._admission_status_from_result(owners.admission_result) == (
+        "UNRECOGNIZED_STATUS"
+    )
     assert result["outcome_class"] == "PROVIDER_SAFE_REJECTED"
     assert result["provider_read_counts"] == {
         "GetCandles": 1,

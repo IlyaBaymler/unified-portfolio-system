@@ -181,6 +181,51 @@ def test_authoritative_admission_persists_finalized_portfolio_proof(tmp_path) ->
     assert risk_state.last_portfolio_risk_input_hash == proof.input_hash
 
 
+def test_authoritative_admission_accepts_financially_valid_clean_empty(
+    tmp_path,
+) -> None:
+    state = replace(portfolio_state(), state_status="EMPTY")
+    repository = save_portfolio(tmp_path, state)
+    selected_manager = manager(tmp_path)
+    runtime, _profiles, _state_store, policy_hash = services(tmp_path)
+
+    result = admit(
+        runtime,
+        selected_manager,
+        repository,
+        state,
+        policy_hash=policy_hash,
+    )
+
+    assert result.decision.status == "PASS"
+    assert result.enqueue.intent is not None
+    assert len(selected_manager.state().intents) == 1
+
+
+def test_authoritative_admission_clean_empty_cash_near_miss_creates_no_intent(
+    tmp_path,
+) -> None:
+    state = portfolio_state()
+    state = replace(
+        state,
+        state_status="EMPTY",
+        account=replace(state.account, cash_balances=()),
+    )
+    repository = save_portfolio(tmp_path, state)
+    selected_manager = manager(tmp_path)
+    runtime, _profiles, _state_store, policy_hash = services(tmp_path)
+
+    with pytest.raises(PortfolioRiskAuthorizationError):
+        admit(
+            runtime,
+            selected_manager,
+            repository,
+            state,
+            policy_hash=policy_hash,
+        )
+    assert selected_manager.state().intents == ()
+
+
 def test_authoritative_admission_rejects_unknown_currency_without_mutation(
     tmp_path,
 ) -> None:

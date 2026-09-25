@@ -162,6 +162,65 @@ _POST_MARKER_GUI_REASONS = {
     "CYCLE_CLOCK_INVALID": "QUOTE_OR_METADATA_INVALID",
     "DECISION_AUDIT_UNAVAILABLE": "PROPOSAL_ADMISSION_BINDING_INVALID",
 }
+_ADMISSION_COMPONENTS = frozenset(
+    {
+        "VERIFY_ACTIVE_RUNTIME",
+        "Q7A_CONTROLLED_HOOKS",
+        "CENTRAL_ORDER_COORDINATOR",
+        "VALIDATE_ADMISSION",
+    }
+)
+_ADMISSION_STATUSES = frozenset(
+    {
+        "QUEUED",
+        "ACCOUNT_BLOCKED",
+        "CANONICAL_UNAVAILABLE",
+        "PREFLIGHT_BLOCKED",
+        "RISK_BLOCKED",
+        "NO_POSITION_CHANGE",
+        "CANCELLED_NO_POSITION_CHANGE",
+        "AUTHORIZATION_BLOCKED",
+        "CANONICAL_CHANGED",
+        "REAUTHORIZED",
+        "REPLACED",
+        "ALREADY_PROCESSED",
+        "PORTFOLIO_RISK_ADMISSION_UNAVAILABLE",
+        "PORTFOLIO_RISK_PRICE_UNAVAILABLE",
+        "PORTFOLIO_RISK_BLOCKED",
+        "PORTFOLIO_RISK_NO_POSITION_CHANGE",
+        "PORTFOLIO_RISK_CURRENCY_UNKNOWN",
+        "PORTFOLIO_RISK_ACCOUNT_MISMATCH",
+        "PORTFOLIO_RISK_METADATA_MISMATCH",
+        "PORTFOLIO_RISK_NOT_ENFORCED",
+        "PORTFOLIO_RISK_POLICY_CHANGED",
+        "PORTFOLIO_RISK_STATE_CHANGED",
+        "PORTFOLIO_RISK_CANONICAL_CHANGED",
+        "PORTFOLIO_RISK_RESERVATION_CHANGED",
+        "PORTFOLIO_RISK_QUEUE_CHANGED",
+        "PORTFOLIO_RISK_TIMESTAMP_INVALID",
+        "PORTFOLIO_RISK_REAUTHORIZATION_REQUIRED",
+        "PORTFOLIO_RISK_PROOF_MISMATCH",
+        "COORDINATION_REQUEST_INVALID",
+        "COORDINATION_REQUEST_STALE",
+        "QUOTE_NOT_FRESH",
+        "Q7A_ADMISSION_REQUEST_INVALID",
+        "Q7A_PROPOSAL_DRIFT",
+        "Q7A_PRIVATE_PROPOSAL_DRIFT",
+        "Q7A_ADMISSION_BINDING_INVALID",
+        "PROPOSAL_MARKER_INVALID",
+    }
+)
+_UNRECOGNIZED_ADMISSION_STATUS = "UNRECOGNIZED_STATUS"
+
+
+def _admission_status_from_result(result: object) -> str:
+    if type(result) is CentralOrderCoordinationResult:
+        value = result.status
+        if type(value) is str and value in _ADMISSION_STATUSES:
+            return value
+    return _UNRECOGNIZED_ADMISSION_STATUS
+
+
 _CANDLE_VALIDATION_REASONS = {
     "FRAME": frozenset(
         {
@@ -1859,6 +1918,8 @@ class LiveOwners:
     controlled_proposal_box: dict[str, StrategyProposal]
     verify_active_runtime: Callable[[], ConfiguredExecutionSet]
     pre_admission_checkpoint: str = "BEFORE_PROPOSAL_MARKER"
+    admission_component: str | None = None
+    admission_result: CentralOrderCoordinationResult | None = None
 
 
 def execute_economic_smoke(owners: LiveOwners) -> dict[str, Any]:
@@ -2090,12 +2151,18 @@ def execute_economic_smoke(owners: LiveOwners) -> dict[str, Any]:
     if owners.clock() > gate_a_deadline:
         _fail("LIVE_EVIDENCE_EXPIRED_BEFORE_ADMISSION")
     owners.pre_admission_checkpoint = "CENTRAL_ADMISSION"
+    owners.admission_component = "VERIFY_ACTIVE_RUNTIME"
+    owners.admission_result = None
     owners.verify_active_runtime()
+    owners.admission_component = "Q7A_CONTROLLED_HOOKS"
     result = owners.q7a_hooks.coordinate_marked(
         coordinator=owners.coordinator,
         runtime=owners.runtime,
         request=request,
     )
+    owners.admission_component = "CENTRAL_ORDER_COORDINATOR"
+    owners.admission_result = result
+    owners.admission_component = "VALIDATE_ADMISSION"
     intent = validate_admission(
         result, coordinator=owners.coordinator, before_state=before
     )
@@ -2529,6 +2596,19 @@ def _write_terminal_blocked(
         terminal["dependency_reason"] = dependency_reason
     if owners is not None:
         checkpoint = getattr(owners, "pre_admission_checkpoint", None)
+        if type(checkpoint) is str and checkpoint == "CENTRAL_ADMISSION":
+            component = getattr(owners, "admission_component", None)
+            terminal["admission_component"] = (
+                component
+                if type(component) is str and component in _ADMISSION_COMPONENTS
+                else "VERIFY_ACTIVE_RUNTIME"
+            )
+            terminal["admission_status"] = (
+                _admission_status_from_result(getattr(owners, "admission_result", None))
+                if terminal["admission_component"]
+                in {"CENTRAL_ORDER_COORDINATOR", "VALIDATE_ADMISSION"}
+                else _UNRECOGNIZED_ADMISSION_STATUS
+            )
         try:
             central = owners.coordinator.manager.state()
             intents = tuple(central.intents)

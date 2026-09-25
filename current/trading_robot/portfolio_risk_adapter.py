@@ -35,6 +35,44 @@ class PortfolioRiskAdapterError(RuntimeError):
     """Raised when v3.8 state cannot form an unambiguous read-only input."""
 
 
+def _positive_finite_number(value: object) -> bool:
+    return type(value) in {int, float} and isfinite(value) and value > 0
+
+
+def _clean_empty_portfolio(
+    portfolio: PortfolioState,
+    central_orders: CentralOrderState,
+) -> bool:
+    """Recognize only a financially valid, account-bound flat owner snapshot."""
+
+    rub_cash = portfolio.account.cash("rub")
+    if (
+        portfolio.portfolio_source != "CANONICAL"
+        or portfolio.state_status != "EMPTY"
+        or portfolio.freshness is not SnapshotFreshness.FRESH
+        or portfolio.migration.complete is not True
+        or portfolio.blocking is not False
+        or portfolio.positions != ()
+        or portfolio.account_id != central_orders.account_id
+        or central_orders.intents != ()
+        or not _positive_finite_number(portfolio.account.total_value)
+        or rub_cash is None
+        or not _positive_finite_number(rub_cash.available)
+    ):
+        return False
+
+    # Reservations are derived from intents, not an independent input. Check
+    # both the aggregate and the account/revision-bound empty projection.
+    empty = CentralOrderState.empty(
+        central_orders.account_id, now=central_orders.created_at
+    )
+    return (
+        central_orders.reserved_cash_kopecks == 0
+        and central_reservation_projection_hash(central_orders)
+        == central_reservation_projection_hash(empty, revision=central_orders.revision)
+    )
+
+
 def _aware(value: Any) -> datetime:
     if isinstance(value, datetime):
         parsed = value
@@ -211,7 +249,10 @@ class PortfolioRiskInputAdapter:
             flags.add(f"PORTFOLIO_FRESHNESS_{portfolio.freshness.value}")
         if portfolio.blocking:
             flags.add("PORTFOLIO_BLOCKING")
-        if portfolio.state_status not in {"READY", "ACTIVE"}:
+        if portfolio.state_status not in {"READY", "ACTIVE"} and not (
+            portfolio.state_status == "EMPTY"
+            and _clean_empty_portfolio(portfolio, central_orders)
+        ):
             flags.add(f"PORTFOLIO_STATUS_{portfolio.state_status}")
 
         positions: list[PositionRiskInput] = []
