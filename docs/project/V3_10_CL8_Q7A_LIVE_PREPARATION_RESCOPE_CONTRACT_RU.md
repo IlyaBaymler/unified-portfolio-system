@@ -2727,3 +2727,179 @@ acceptance, exact-successor qualification, a new isolated runtime/B0 and a
 new Preparation each require their own gates. Any later provider READ or POST
 requires a separately reviewed and accepted exact Preparation and a new
 `START EXPERIMENT`; this amendment authorizes none of them.
+
+---
+
+## 30. Q7A R4 clean-EMPTY Portfolio Risk admission and finite terminal evidence
+
+This is the contract-only `Q7A_R4_ADMISSION_CONTRACT_AMENDMENT_GATE`. Its exact
+predecessor is implementation commit
+`eda9fa893a6c77a7f189683617d71a5ad6b4a55d` / tree
+`5f55621ee1791b0436fb156367fb02aa1007dfbf`. The one-shot R4 live
+Preparation `b1e59f3cc4d377b5e74a2c030815b4465ed28ac7a0cf940f6f22ca0882725982`
+was consumed. Its terminal SHA-256 is
+`3bb9a95269841ff4ed32cdd976d07da3195460c3957fe37bf24a8c7038a2df9b`:
+`BLOCKED / PROPOSAL_ADMISSION_BINDING_INVALID`, checkpoint
+`CENTRAL_ADMISSION`, with no Central intent/reservation, CL7 POST attempt or
+CashLedger effect. The separate privacy-safe offline diagnosis SHA-256 is
+`fdccbab5e92a610a8a062cf80187967d5db8ffc807fd170fd9541c32063162f9`.
+It proves that the pre-run B0's canonical, fresh, flat Portfolio produces the
+sole adapter data-quality flag `PORTFOLIO_STATUS_EMPTY`. A recorded shadow
+decision has the corresponding sole hard block
+`DATA_QUALITY:PORTFOLIO_STATUS_EMPTY`, legacy Risk target `1` and shadow
+approved target `0`. The exact historical Central result status was not
+persisted: this is a proven necessary BUY blocker, not proof that no other
+admission blocker existed. The amendment does not reclassify the consumed
+attempt as PASS or authorize its replay.
+
+### 30.1 `Q7A-R4-01` — exact clean-`EMPTY` conjunction
+
+`EMPTY` may cease to produce the single
+`PORTFOLIO_STATUS_EMPTY` data-quality flag only when **all** of the following
+are true in one account-bound canonical Portfolio/Central snapshot:
+
+```text
+portfolio.portfolio_source == CANONICAL
+AND portfolio.state_status == EMPTY
+AND portfolio.freshness == FRESH
+AND portfolio.migration.complete == true
+AND portfolio.blocking == false
+AND portfolio.positions == ()
+AND Central account scope == Portfolio account scope
+AND Central intents == ()
+AND Central reservations == 0
+AND Portfolio NAV is finite and > 0
+AND RUB available cash is finite and > 0
+```
+
+This is an input-quality classification in the existing
+`PortfolioRiskInputAdapter`, not an authorization or a synthetic replacement
+for the canonical owner. An absent, unknown, stale, blocked, partially
+migrated, non-canonical or internally inconsistent state is never a clean
+`EMPTY`. A position, any Central intent or reservation, a missing/invalid NAV
+or RUB cash, or a nonpositive NAV or available RUB cash defeats the exception.
+The exact account scope must match. The adapter must still emit every other
+applicable data-quality flag. `PortfolioRiskEvaluator`, enforced policy,
+single-order Risk, sizing, exposure, cash reserve, turnover, concentration,
+freshness, ownership and all existing limits retain their current semantics.
+In particular, removing this one flag does not imply `PASS`, `QUEUED`, an
+order POST, or permission to weaken the Sandbox Risk profile.
+
+The positive oracle uses a fresh, migrated, canonical, nonblocking,
+financially valid account with zero positions/intents/reservations and proves
+that its adapter input omits only `PORTFOLIO_STATUS_EMPTY`. Adversarial
+negative tests must independently flip **each** conjunction predicate, with
+one near-miss per predicate, and prove rejection or retention of the precise
+blocking flag. Where the existing state model rejects a malformed near-miss
+before adapter construction, that fail-closed model rejection is the required
+negative evidence; it may not be skipped or replaced by a generic exception
+assertion. An authoritative Portfolio Risk runtime test must prove that a
+clean `EMPTY` input can reach the existing decision path when all other
+policy conditions allow it, while a near-miss cannot create a Central intent.
+
+### 30.2 `Q7A-R4-02` — finite admission terminal evidence only
+
+At the `CENTRAL_ADMISSION` checkpoint, terminal evidence must add exactly
+`admission_component` and `admission_status` without changing the primary
+reason, owner decision, order path or recovery semantics. The component is
+selected from this closed set of existing call sites:
+
+```text
+Q7A_CONTROLLED_HOOKS
+CENTRAL_ORDER_COORDINATOR
+VALIDATE_ADMISSION
+```
+
+The status is copied only when `type(value) is str` and the value exactly
+matches one of the following existing finite machine-readable values:
+
+```text
+QUEUED
+ACCOUNT_BLOCKED
+CANONICAL_UNAVAILABLE
+PREFLIGHT_BLOCKED
+RISK_BLOCKED
+NO_POSITION_CHANGE
+CANCELLED_NO_POSITION_CHANGE
+AUTHORIZATION_BLOCKED
+CANONICAL_CHANGED
+REAUTHORIZED
+REPLACED
+ALREADY_PROCESSED
+PORTFOLIO_RISK_ADMISSION_UNAVAILABLE
+PORTFOLIO_RISK_PRICE_UNAVAILABLE
+PORTFOLIO_RISK_BLOCKED
+PORTFOLIO_RISK_NO_POSITION_CHANGE
+PORTFOLIO_RISK_CURRENCY_UNKNOWN
+PORTFOLIO_RISK_ACCOUNT_MISMATCH
+PORTFOLIO_RISK_METADATA_MISMATCH
+PORTFOLIO_RISK_NOT_ENFORCED
+PORTFOLIO_RISK_POLICY_CHANGED
+PORTFOLIO_RISK_STATE_CHANGED
+PORTFOLIO_RISK_CANONICAL_CHANGED
+PORTFOLIO_RISK_RESERVATION_CHANGED
+PORTFOLIO_RISK_QUEUE_CHANGED
+PORTFOLIO_RISK_TIMESTAMP_INVALID
+PORTFOLIO_RISK_REAUTHORIZATION_REQUIRED
+PORTFOLIO_RISK_PROOF_MISMATCH
+COORDINATION_REQUEST_INVALID
+COORDINATION_REQUEST_STALE
+QUOTE_NOT_FRESH
+Q7A_ADMISSION_REQUEST_INVALID
+Q7A_PROPOSAL_DRIFT
+Q7A_PRIVATE_PROPOSAL_DRIFT
+Q7A_ADMISSION_BINDING_INVALID
+PROPOSAL_MARKER_INVALID
+```
+
+Any missing, malformed, subclassed or unrecognized status becomes the exact
+sentinel `UNRECOGNIZED_STATUS`; it cannot be serialized verbatim or silently
+omitted after the checkpoint is reached. The component must reflect the
+observed return/exception boundary rather than infer an unseen downstream
+owner. `QUEUED` may appear in a blocked terminal if the subsequent exact
+`validate_admission` identity check fails; it is not a PASS assertion.
+No reason/free text, exception message, arbitrary `repr()`, raw Account ID,
+instrument/order/client ID, provider payload, token or credential enters
+shareable evidence. Existing finite primary and dependency reasons continue
+to take precedence. Unknown statuses preserve the same fail-closed rejection
+and must not cause a second Central call, replacement proposal or automatic
+retry. Adversarial tests cover recognized Portfolio Risk block, other known
+non-QUEUED status, queued-but-invalid binding, synthetic bridge rejection,
+unknown/string-subclass status and privacy canaries; all rejected cases retain
+zero unintended Central/CL7/provider POST effect.
+
+### 30.3 Exact scope, precedence and later gates
+
+This contract amendment changes only
+`docs/project/V3_10_CL8_Q7A_LIVE_PREPARATION_RESCOPE_CONTRACT_RU.md`.
+The future implementation surface for `Q7A-R4-01..02` is frozen to exactly:
+
+```text
+current/trading_robot/portfolio_risk_adapter.py
+current/tests/test_portfolio_risk_adapter_v3_9.py
+current/tests/test_portfolio_risk_runtime_v3_9.py
+current/tools/v3_10_q7a_live_entrypoint.py
+current/tests/test_v3_10_q7a_live_entrypoint.py
+```
+
+Only for these two findings, and only after independent/adversarial review
+with zero material findings plus separate explicit acceptance of this exact
+contract commit/tree, this five-path list supersedes conflicting
+implementation path/purpose restrictions in sections 3, 26.10, 27.3, 28.2
+and 29.2. It grants no implementation authority by itself; a separate
+implementation decision and an isolated branch directly from the accepted
+contract head are required. No fixture or sixth path is implicit. Central,
+Risk limits, Strategy, Portfolio owner/repository, Portfolio Risk evaluator,
+provider/client, credentials/launcher, execution/POST, schema migration,
+workflow, GUI and release code remain immutable. Implementation must not
+mutate the production or accepted isolated runtime artifact.
+
+After a separately reviewed and accepted implementation successor, Q1,
+Q4/Q5 artifacts/privacy and native standalone qualification must be repeated
+for that exact candidate; old PASS cannot be transferred. Then a new isolated
+runtime and verified B0 require separate custody, followed by a new exact
+Preparation, its independent read-only review and explicit acceptance. Any
+provider READ or POST remains closed until a new exact `START EXPERIMENT`
+command for that Preparation. No automatic restore or reuse of the consumed
+R4 B0/Preparation, provider call, burn-in, PR Ready, merge, release or Stable
+acceptance is authorized by this amendment.
