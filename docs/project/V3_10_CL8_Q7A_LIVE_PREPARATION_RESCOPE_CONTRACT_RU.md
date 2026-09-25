@@ -2,12 +2,12 @@
 
 Статус:
 
-`LIVE CONTRACT ACCEPTED THROUGH 0f317b6e... / PR224 R2 CONTRACT CORRECTION CANDIDATE FOR PR224-R2-C-R1-01..02 / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
+`Q7A R4 SECTION 30 CONTRACT CORRECTION CANDIDATE / IMPLEMENTATION BLOCKED / PROVIDER ACCESS BLOCKED / START EXPERIMENT INELIGIBLE`
 
 Этот файл содержит принятый live-preparation contract и additive contract
-rescope records. Раздел 26 является новым bounded contract-only candidate.
-До independent/adversarial review и explicit acceptance его exact successor
-раздел 26 не даёт implementation, provider, runtime или experiment authority.
+rescope records. Раздел 30 является текущим bounded contract-only candidate.
+До finding-scoped review и отдельного explicit acceptance его exact successor
+раздел 30 не даёт implementation, provider, runtime или experiment authority.
 
 Этот additive rescope закрывает только два blocker принятой Q7A lineage:
 
@@ -2767,17 +2767,28 @@ AND portfolio.blocking == false
 AND portfolio.positions == ()
 AND Central account scope == Portfolio account scope
 AND Central intents == ()
-AND Central reservations == 0
 AND Portfolio NAV is finite and > 0
 AND RUB available cash is finite and > 0
 ```
+
+`Central reservations` is a **derived invariant**, not an independently
+flippable predicate. In the accepted `CentralOrderState` model,
+`reserved_cash_kopecks` is the sum over reservation-status intents and the
+reservation projection selects rows from the same `intents` tuple. Therefore
+`Central intents == ()` implies `reserved_cash_kopecks == 0` and a canonical
+reservation projection with zero rows for that same account and revision.
+The implementation must verify this implication against the exact Central
+state; a violated implication is an invalid/tampered state and fails closed.
+The projection SHA remains account/revision-bound and need not equal one
+universal constant.
 
 This is an input-quality classification in the existing
 `PortfolioRiskInputAdapter`, not an authorization or a synthetic replacement
 for the canonical owner. An absent, unknown, stale, blocked, partially
 migrated, non-canonical or internally inconsistent state is never a clean
-`EMPTY`. A position, any Central intent or reservation, a missing/invalid NAV
-or RUB cash, or a nonpositive NAV or available RUB cash defeats the exception.
+`EMPTY`. A position, any Central intent, a violated derived reservation
+invariant, missing/invalid NAV or RUB cash, or nonpositive NAV or available
+RUB cash defeats the exception.
 The exact account scope must match. The adapter must still emit every other
 applicable data-quality flag. `PortfolioRiskEvaluator`, enforced policy,
 single-order Risk, sizing, exposure, cash reserve, turnover, concentration,
@@ -2786,15 +2797,21 @@ In particular, removing this one flag does not imply `PASS`, `QUEUED`, an
 order POST, or permission to weaken the Sandbox Risk profile.
 
 The positive oracle uses a fresh, migrated, canonical, nonblocking,
-financially valid account with zero positions/intents/reservations and proves
-that its adapter input omits only `PORTFOLIO_STATUS_EMPTY`. Adversarial
-negative tests must independently flip **each** conjunction predicate, with
-one near-miss per predicate, and prove rejection or retention of the precise
-blocking flag. Where the existing state model rejects a malformed near-miss
+financially valid account with zero positions/intents and the derived empty
+reservation projection. It proves that its adapter input omits only
+`PORTFOLIO_STATUS_EMPTY`. Adversarial
+negative tests must independently flip **each independent** conjunction
+predicate, with one near-miss per predicate, and prove rejection or retention
+of the precise blocking flag. Where the existing state model rejects a
+malformed near-miss
 before adapter construction, that fail-closed model rejection is the required
 negative evidence; it may not be skipped or replaced by a generic exception
-assertion. An authoritative Portfolio Risk runtime test must prove that a
-clean `EMPTY` input can reach the existing decision path when all other
+assertion. Separately, tests must prove the derived empty reservation
+projection for zero intents and fail closed on an invalid/tampered projection;
+they must not fabricate an independently nonzero reservation while keeping
+`intents == ()` in a valid `CentralOrderState`. An authoritative Portfolio Risk
+runtime test must prove that a clean `EMPTY` input can reach the existing
+decision path when all other
 policy conditions allow it, while a near-miss cannot create a Central intent.
 
 ### 30.2 `Q7A-R4-02` — finite admission terminal evidence only
@@ -2805,12 +2822,41 @@ reason, owner decision, order path or recovery semantics. The component is
 selected from this closed set of existing call sites:
 
 ```text
+VERIFY_ACTIVE_RUNTIME
 Q7A_CONTROLLED_HOOKS
 CENTRAL_ORDER_COORDINATOR
 VALIDATE_ADMISSION
 ```
 
-The status is copied only when `type(value) is str` and the value exactly
+The source of each field is frozen at the observable call boundary:
+
+```text
+Before owners.verify_active_runtime() returns at CENTRAL_ADMISSION:
+  admission_component = VERIFY_ACTIVE_RUNTIME
+  admission_status    = UNRECOGNIZED_STATUS
+
+After that guard returns, before coordinate_marked() returns:
+  admission_component = Q7A_CONTROLLED_HOOKS
+  admission_status    = UNRECOGNIZED_STATUS
+  This remains true if the hooks raise, even if an internal Central call
+  may have run. No result is inferred through the outer exception.
+
+Only if coordinate_marked() directly returns an exact
+CentralOrderCoordinationResult:
+  admission_component = CENTRAL_ORDER_COORDINATOR
+  admission_status source = that returned object's .status field
+  The returned object is the only observable coordinator-result source.
+
+Immediately before validate_admission(result), and through its return or
+exception:
+  admission_component = VALIDATE_ADMISSION
+  admission_status source = the exact same result.status passed as input
+  validate_admission returns an intent, not a new status.
+```
+
+The named `value` below means **only** the exact typed `result.status` from
+the latter two cases. It is copied only when `type(result) is
+CentralOrderCoordinationResult`, `type(value) is str`, and the value exactly
 matches one of the following existing finite machine-readable values:
 
 ```text
@@ -2854,9 +2900,12 @@ PROPOSAL_MARKER_INVALID
 
 Any missing, malformed, subclassed or unrecognized status becomes the exact
 sentinel `UNRECOGNIZED_STATUS`; it cannot be serialized verbatim or silently
-omitted after the checkpoint is reached. The component must reflect the
-observed return/exception boundary rather than infer an unseen downstream
-owner. `QUEUED` may appear in a blocked terminal if the subsequent exact
+omitted after the checkpoint is reached. Neither an exception's message,
+`str(exc)`, `repr(exc)`, `.reason`, `.status`, dependency code, nested payload,
+nor a Central read-back is a source for `admission_status`, even if its text
+accidentally matches this allowlist. The component reflects only the locally
+observed call boundary; no later internal owner is inferred through an outer
+exception. `QUEUED` may appear in a blocked terminal if the subsequent exact
 `validate_admission` identity check fails; it is not a PASS assertion.
 No reason/free text, exception message, arbitrary `repr()`, raw Account ID,
 instrument/order/client ID, provider payload, token or credential enters
@@ -2866,7 +2915,14 @@ and must not cause a second Central call, replacement proposal or automatic
 retry. Adversarial tests cover recognized Portfolio Risk block, other known
 non-QUEUED status, queued-but-invalid binding, synthetic bridge rejection,
 unknown/string-subclass status and privacy canaries; all rejected cases retain
-zero unintended Central/CL7/provider POST effect.
+the existing fail-closed effect boundary: before durable admission there is
+no intent/reservation/POST, while an already admitted same-lineage intent is
+preserved for recovery without a second Central call or provider POST. Tests
+additionally cover
+guard failure before hooks, hooks exception after a possible internal Central
+call without a returned result, and a forged exception with a recognized
+`.status` or message: all must emit `UNRECOGNIZED_STATUS` rather than claim
+an unobserved coordinator result.
 
 ### 30.3 Exact scope, precedence and later gates
 
