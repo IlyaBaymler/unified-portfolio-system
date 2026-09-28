@@ -238,6 +238,15 @@ def test_q7r_01_03_production_composition_success_missing_and_duplication(
     runtime = tmp_path / "runtime"
     provider = _provider()
     _materialize(runtime, provider)
+    # Desktop source now requires explicit verified configured metadata.
+    metadata = runtime / "portfolio_risk_metadata.json"
+    raw = json.dumps({"version": 1, "instruments": [
+        {"instrument_id": p.instrument_id, "lot_size": 10,
+         "asset_class": "share", "currency": "RUB"}
+        for p in _profiles()
+    ]}).encode("utf-8")
+    metadata.write_bytes(raw)
+    metadata.with_name(metadata.name + ".sha256").write_text(sha256(raw).hexdigest() + "\n")
     transports: list[object] = []
 
     class Transport:
@@ -2084,7 +2093,9 @@ def test_final_locked_revalidation_reads_withdraw_limits_exactly_once():
         assert source.count(".get_withdraw_limits(") == 1
         assert ".get_positions(" not in source
         assert "provider_as_of" not in source
-        assert source.index("get_portfolio(") < source.index("broker_cash_as_of")
+        # STEP11 selects the versioned accounting RPC; withdrawal remains one
+        # separate read and is not re-labelled as primary accounting money.
+        assert source.index("read_accounting_cash(") < source.index("broker_cash_as_of")
         assert source.index("broker_cash_as_of") < source.index("get_withdraw_limits(")
         assert source.index("get_withdraw_limits(") < source.index(
             "broker_withdraw_limits_as_of"

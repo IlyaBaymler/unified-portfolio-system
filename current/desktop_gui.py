@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import partial
+
 import json
 import logging
 import os
@@ -25,7 +27,9 @@ from trading_robot import __version__
 from trading_robot.backtest import BacktestConfig, BacktestResult, run_backtest
 from trading_robot.bot import BotConfig
 from trading_robot.broker_read_adapters import TBANK_OPERATION_CODEC
-from trading_robot.cash_ledger_opening_reconciliation import CL4_OPENING_CODEC
+from trading_robot.cash_ledger_opening_reconciliation import (
+    CL4_OPENING_CODEC, CL4_RUB_POSITION_OPENING_CODEC,
+)
 from trading_robot.cash_ledger_persistence import CashLedgerStore
 from trading_robot.central_order_manager import CentralOrderManager, CentralOrderStore
 from trading_robot.config_persistence import (
@@ -58,6 +62,9 @@ from trading_robot.gui_runtime_controller import (
     GuiRuntimeController,
     ProductionGuiCycleSource,
 )
+from trading_robot.gui_risk_metadata import (
+    GuiRiskMetadataError, bind_gui_risk_metadata,
+)
 from trading_robot.instrument_runtime import InstrumentRuntimeStore
 from trading_robot.journal import EventJournal, JournalEvent
 from trading_robot.locking import InterProcessFileLock, LockUnavailableError
@@ -69,6 +76,9 @@ from trading_robot.portfolio import (
     ExternalCloseAcknowledgementRequest,
     OwnershipRecoveryRequest,
 )
+from trading_robot.portfolio_observation import PortfolioObservationPolicy
+from trading_robot.desktop_fill_recovery import DesktopFillRecovery
+from trading_robot.portfolio_cash_observation import DesktopOwnCashPolicy
 from trading_robot.portfolio_manager import CanonicalPortfolioManager
 from trading_robot.portfolio_repository import PortfolioRepository
 from trading_robot.portfolio_risk_runtime import PortfolioRiskRuntime
@@ -120,6 +130,8 @@ from trading_robot.strategy_runtime import (
 )
 from trading_robot.support_bundle import SupportBundleBuilder, SupportBundleError
 from trading_robot.tbank_sandbox import TBankSandboxClient
+from trading_robot.exact_own_funds import LockedOwnFundsPolicy
+from trading_robot.cash_buying_availability import OwnBuyingBudgetPolicy
 
 APP_PATHS = resolve_app_paths(__file__)
 APP_PATHS.ensure_directories()
@@ -182,19 +194,26 @@ def _compose_production_gui_runtime(
     *,
     secret_provider: SecretProvider | None = None,
     transport_factory: Callable[..., Any] = TBankSandboxClient,
+    execution_order_type: str = "BESTPRICE",
 ) -> GuiRuntimeController:
     """Build the shipped account-level owner graph once, without provider calls."""
 
     global _PRODUCTION_COMPOSITION
+    if type(execution_order_type) is not str or execution_order_type not in {"MARKET", "BESTPRICE"}:
+        raise GuiRuntimeBlockedError("EXECUTION_ORDER_TYPE_INVALID")
     root = Path(runtime_dir).resolve()
     with _PRODUCTION_COMPOSITION_LOCK:
         if _PRODUCTION_COMPOSITION is not None:
             previous_root, controller = _PRODUCTION_COMPOSITION
-            if previous_root != root:
+            if previous_root != root or (
+                controller._composition_blocker is None
+                and controller.central_order_coordinator.execution_order_type != execution_order_type
+            ):
                 raise GuiRuntimeBlockedError(
                     "GUI_RUNTIME_COMPOSITION_REQUIRED",
                     "Stop the existing runtime composition before selecting another runtime.",
                 )
+            controller.validate_metadata_binding()
             return controller
 
         selected_provider = secret_provider or preferred_secret_provider(root)
@@ -204,52 +223,105 @@ def _compose_production_gui_runtime(
             identity_key=protected.identity_key,
             identity_key_id=protected.identity_key_id,
         )
-        transport = transport_factory(token=protected.token, max_retries=0)
         profile_store = MultiInstrumentProfileStore(
             root / "multi_instrument_profiles.json"
         )
         runtime_store = InstrumentRuntimeStore(root / "instrument_runtimes.json")
-        portfolio_manager = CanonicalPortfolioManager(
-            transport,
-            protected.account_id,
-            robot_state_file=root / "robot_state.json",
-            portfolio_state_file=root / "portfolio_state.json",
-            journal_file=root / "trading_events.db",
-        )
-        portfolio_repository: PortfolioRepository = portfolio_manager.repository
-        central = CentralOrderManager(
-            CentralOrderStore(root / "central_order_state.json"),
-            account_id=protected.account_id,
-        )
-        risk_profiles = RiskProfileStore(root / "risk_profiles.json")
-        risk_state = RiskStateStore(root / "risk_state.json")
-        risk = RiskRuntimeAdapter(
-            account_id=protected.account_id,
-            mode="SANDBOX_EXECUTION",
-            profile_store=risk_profiles,
-            state_store=risk_state,
-            auto_create_dry_run_profile=False,
-        )
-        portfolio_risk = PortfolioRiskRuntime(
-            account_id=protected.account_id,
-            profile_store=risk_profiles,
-            state_store=risk_state,
-        )
-        authority = RuntimeCashAuthorityManager(RuntimeCashAuthorityStore(root))
-        ledger = CashLedgerStore.open(
-            root / "cash_ledger_v3_10.sqlite3",
-            (CL4_OPENING_CODEC, TBANK_OPERATION_CODEC),
-            busy_timeout_ms=5_000,
-        )
-        cycle_source = ProductionGuiCycleSource(
-            provider=transport,
-            profile_store=profile_store,
-            runtime_store=runtime_store,
-            risk_runtime=risk,
-            portfolio_refresher=portfolio_manager.refresh,
-            account_id=protected.account_id,
-        )
         try:
+            metadata_binding = bind_gui_risk_metadata(
+                root / "portfolio_risk_metadata.json",
+                profiles=profile_store,
+                runtimes=runtime_store,
+                account_id=protected.account_id,
+            )
+        except GuiRiskMetadataError as exc:
+            raise GuiRuntimeBlockedError(exc.reason) from None
+        transport = transport_factory(token=protected.token, max_retries=0)
+        ledger = None
+        try:
+            portfolio_manager = CanonicalPortfolioManager(
+                transport,
+                protected.account_id,
+                robot_state_file=root / "robot_state.json",
+                portfolio_state_file=root / "portfolio_state.json",
+                journal_file=root / "trading_events.db",
+            )
+            portfolio_repository: PortfolioRepository = portfolio_manager.repository
+            central = CentralOrderManager(
+                CentralOrderStore(root / "central_order_state.json"),
+                account_id=protected.account_id,
+            )
+            risk_profiles = RiskProfileStore(root / "risk_profiles.json")
+            risk_state = RiskStateStore(root / "risk_state.json")
+            risk = RiskRuntimeAdapter(
+                account_id=protected.account_id,
+                mode="SANDBOX_EXECUTION",
+                profile_store=risk_profiles,
+                state_store=risk_state,
+                auto_create_dry_run_profile=False,
+            )
+            portfolio_risk = PortfolioRiskRuntime(
+                account_id=protected.account_id,
+                profile_store=risk_profiles,
+                state_store=risk_state,
+                instrument_metadata=metadata_binding.metadata,
+            )
+
+            controller = None
+
+            def validate_metadata() -> None:
+                try:
+                    if controller is not None and (
+                        controller.execution_adapter.cash_authority_manager is not authority
+                        or authority.cash_source_version != 3
+                        or authority.buying_budget_policy is not buying_budget_policy
+                        or controller.execution_adapter.cl7_own_funds_policy is not own_funds_policy
+                        or controller.central_order_coordinator.execution_order_type != execution_order_type
+                    ):
+                        raise GuiRiskMetadataError("GUI_EXECUTION_POLICY_CHANGED")
+                    if cycle_source.instrument_metadata != metadata_binding.metadata:
+                        raise GuiRiskMetadataError("GUI_RISK_METADATA_CHANGED")
+                    metadata_binding.verify(
+                        profile_store, runtime_store, portfolio_risk.instrument_metadata,
+                    )
+                except GuiRiskMetadataError as exc:
+                    raise GuiRuntimeBlockedError(exc.reason) from None
+
+            buying_budget_policy = OwnBuyingBudgetPolicy(
+                protected.account_id, metadata_binding.metadata, validate_metadata,
+                execution_order_type=execution_order_type,
+            )
+            authority = RuntimeCashAuthorityManager(
+                RuntimeCashAuthorityStore(root), cash_source_version=3,
+                buying_budget_policy=buying_budget_policy,
+            )
+            ledger = CashLedgerStore.open(
+                root / "cash_ledger_v3_10.sqlite3",
+                (CL4_OPENING_CODEC, CL4_RUB_POSITION_OPENING_CODEC, TBANK_OPERATION_CODEC),
+                busy_timeout_ms=5_000,
+            )
+            cycle_source = ProductionGuiCycleSource(
+                provider=transport,
+                profile_store=profile_store,
+                runtime_store=runtime_store,
+                risk_runtime=risk,
+                portfolio_refresher=partial(
+                    portfolio_manager.refresh,
+                    observation_policy=PortfolioObservationPolicy(
+                        protected.account_id, metadata_binding.metadata,
+                        binding_guard=validate_metadata,
+                    ),
+                    cash_observation_policy=DesktopOwnCashPolicy(
+                        protected.account_id, metadata_binding.metadata,
+                    ),
+                ),
+                account_id=protected.account_id,
+                instrument_metadata=metadata_binding.metadata,
+                metadata_guard=validate_metadata,
+            )
+            own_funds_policy = LockedOwnFundsPolicy(
+                protected.account_id, metadata_binding.metadata, validate_metadata,
+            )
             controller = GuiRuntimeController.compose(
                 profile_store=profile_store,
                 runtime_store=runtime_store,
@@ -269,14 +341,34 @@ def _compose_production_gui_runtime(
                 cl7_identity_key=protected.identity_key,
                 cl7_identity_key_id=protected.identity_key_id,
                 cl7_ledger_store=ledger,
+                cl7_own_funds_policy=own_funds_policy,
+                execution_order_type=execution_order_type,
                 journal=EventJournal(root / "trading_events.db"),
                 cycle_source=cycle_source,
+                metadata_guard=validate_metadata,
             )
+            cycle_source.portfolio_recovery = DesktopFillRecovery(
+                manager=portfolio_manager, central=central, risk=risk, authority=authority,
+                observation_policy=cycle_source.portfolio_refresher.keywords["observation_policy"],
+                cash_policy=cycle_source.portfolio_refresher.keywords["cash_observation_policy"],
+                profiles=profile_store, runtimes=runtime_store,
+                refresh=cycle_source.portfolio_refresher,
+                clock=lambda: cycle_source.clock(),
+            )
+            validate_metadata()
         except BaseException:
-            ledger.close()
+            # Cleanup must not mask the original composition failure.
+            if ledger is not None:
+                try:
+                    ledger.close()
+                except Exception:
+                    pass
             close = getattr(transport, "close", None)
             if callable(close):
-                close()
+                try:
+                    close()
+                except Exception:
+                    pass
             raise
         _PRODUCTION_COMPOSITION = (root, controller)
         return controller
@@ -2058,6 +2150,7 @@ class TradingRobotGUI(tk.Tk):
                         for category, event_type in (
                             ("strategy", "PRIMARY_STRATEGY_DECISION"),
                             ("decision", "CENTRAL_COORDINATION_RESULT"),
+                            ("decision", "GUI_EXECUTION_OUTCOME"),
                         ):
                             recent = self.event_journal.recent(
                                 limit=1,
@@ -2097,6 +2190,13 @@ class TradingRobotGUI(tk.Tk):
                 )
             except RiskPersistenceError:
                 portfolio_policy_status = "INVALID"
+            # A post-dispatch journal failure must not leave an old QUEUED row
+            # looking like the latest trustworthy delivery observation.
+            if any(
+                not outcome.audit_persisted
+                for outcome in controller.latest_cycle_outcomes().values()
+            ):
+                decision_audit_unavailable = True
 
         scopes = {
             row.account_scope_sha256

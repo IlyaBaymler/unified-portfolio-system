@@ -8,6 +8,7 @@ import json
 import re
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,7 @@ from trading_robot.gui_runtime_controller import CL4MoneyNormalizingTransport
 from trading_robot.portfolio_manager import CanonicalPortfolioManager
 from trading_robot.portfolio_model import PortfolioState
 from trading_robot.portfolio_repository import PortfolioRepository
+from trading_robot.portfolio_risk_adapter import PortfolioRiskInstrumentMetadata
 from trading_robot.portfolio_risk_runtime import PortfolioRiskRuntime
 from trading_robot.reporting_risk_cash_context import RiskCashContextReason
 from trading_robot.risk_persistence import RiskProfileStore, RiskStateStore
@@ -558,7 +560,11 @@ class _Runtime:
             "wait_ns": lambda duration: time.sleep(duration / 1_000_000_000),
         }
 
-    def adapter(self) -> SandboxExecutionAdapter:
+    def adapter(
+        self,
+        *,
+        instrument_metadata: Mapping[str, PortfolioRiskInstrumentMetadata] | None = None,
+    ) -> SandboxExecutionAdapter:
         if self.provider is None:
             raise CL7RuntimeError(
                 CL7RuntimeReason.BROKER_READ_FAILED,
@@ -575,6 +581,7 @@ class _Runtime:
             account_id=self.raw_account,
             profile_store=self.profiles,
             state_store=self.risk_state,
+            instrument_metadata=instrument_metadata,
         )
         return SandboxExecutionAdapter(
             self.provider,

@@ -1408,8 +1408,16 @@ def test_v310_cl6_33_every_context_identity_field_is_hmac_bound(
     identity_fields = {
         field.name
         for field in dataclasses.fields(context)
-        if field.name != "context_identity_sha256"
+        if field.name not in {"context_identity_sha256", "broker_own_buying_as_of", "buying_scope_sha256"}
     }
+    # STEP12: these fields do not exist in the historical V2 wire/HMAC schema.
+    # They must remain None and are rejected, not silently ignored or re-labelled.
+    for name, value in (("broker_own_buying_as_of", END_PLUS_10), ("buying_scope_sha256", "f" * 64)):
+        assert getattr(context, name) is None
+        forged = dataclasses.replace(context)
+        object.__setattr__(forged, name, value)
+        with pytest.raises(cl6.CL6Error):
+            cl6._context_identity(forged, KEY)
     assert set(mutations) == identity_fields
     for field, value in mutations.items():
         forged = dataclasses.replace(context)

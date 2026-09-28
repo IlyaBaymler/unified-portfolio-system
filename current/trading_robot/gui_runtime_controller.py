@@ -3,14 +3,20 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Any, Protocol
+from types import MappingProxyType
 from uuid import uuid4
 
-from .central_order_coordinator import CentralOrderCoordinator
+from .central_order_coordinator import (
+    CentralOrderCoordinator,
+    PortfolioRiskQuoteObservation,
+)
+from .gui_execution_outcome import GuiCycleOutcome, observe_gui_cycle
+from .portfolio_risk_adapter import PortfolioRiskInstrumentMetadata
 from .global_scheduler import (
     GlobalScheduler,
     InstrumentRuntimeHooks,
@@ -52,6 +58,11 @@ _GUI_AUDIT_BLOCKERS = frozenset(
         "CANDIDATE_QUOTE_INVALID",
         "CANDIDATE_QUOTE_NOT_FRESH",
         "DECISION_AUDIT_UNAVAILABLE",
+        "CENTRAL_DISPATCH_BINDING_INVALID",
+        "EXECUTION_OBSERVATION_BLOCKED",
+        "GUI_RISK_METADATA_INVALID",
+        "GUI_RISK_METADATA_SCOPE_INVALID",
+        "GUI_RISK_METADATA_CHANGED",
     }
 )
 
@@ -223,6 +234,9 @@ class GuiCoordinationRequest:
     cash_buffer_bps: int = 100
     portfolio_risk_candidate_quote: Any | None = None
     evaluated_at: datetime | None = None
+    portfolio_risk_quote_loader: (
+        Callable[[], PortfolioRiskQuoteObservation] | None
+    ) = None
 
 
 class GuiStrategyHooks(InstrumentRuntimeHooks, Protocol):
@@ -248,6 +262,7 @@ class _ProductionGuiHooks:
         frames: Mapping[str, Any],
         lot_sizes: Mapping[str, int],
         clock: Callable[[], datetime],
+        defer_candidate_quote: bool = False,
     ) -> None:
         self.provider = provider
         self.risk_runtime = risk_runtime
@@ -256,6 +271,7 @@ class _ProductionGuiHooks:
         self.frames = dict(frames)
         self.lot_sizes = dict(lot_sizes)
         self.clock = clock
+        self.defer_candidate_quote = defer_candidate_quote
 
     def refresh_market_status(self, runtime: InstrumentRuntime, now: datetime) -> Any:
         del now
@@ -302,6 +318,39 @@ class _ProductionGuiHooks:
     ) -> GuiCoordinationRequest:
         del candle_time, now
         instrument_id = runtime.config.instrument_id
+        if self.defer_candidate_quote:
+            return GuiCoordinationRequest(
+                proposal=proposal,
+                profile=self.profiles[instrument_id],
+                candles=self.frames[instrument_id],
+                lot_size=self.lot_sizes[instrument_id],
+                evaluated_at=self._evaluated_at(),
+                portfolio_risk_quote_loader=(
+                    lambda: self._load_candidate_quote(instrument_id)
+                ),
+            )
+        # Keep the historical controlled-Q7A eager quote contract unchanged.
+        observation = self._load_candidate_quote(instrument_id)
+        return GuiCoordinationRequest(
+            proposal=proposal,
+            profile=self.profiles[instrument_id],
+            candles=self.frames[instrument_id],
+            lot_size=self.lot_sizes[instrument_id],
+            portfolio_risk_candidate_quote=observation.quote,
+            evaluated_at=observation.evaluated_at,
+        )
+
+    def _evaluated_at(self) -> datetime:
+        evaluated_at = self.clock()
+        if (
+            not isinstance(evaluated_at, datetime)
+            or evaluated_at.tzinfo is None
+            or evaluated_at.utcoffset() is None
+        ):
+            raise GuiRuntimeBlockedError("CYCLE_CLOCK_INVALID")
+        return evaluated_at.astimezone(timezone.utc)
+
+    def _load_candidate_quote(self, instrument_id: str) -> PortfolioRiskQuoteObservation:
         try:
             prices = self.provider.get_last_prices([instrument_id])
         except Exception:
@@ -338,24 +387,11 @@ class _ProductionGuiHooks:
             )
         except (InvalidOperation, OverflowError, TypeError, ValueError, PortfolioRiskShadowError):
             raise GuiRuntimeBlockedError("CANDIDATE_QUOTE_INVALID") from None
-        evaluated_at = self.clock()
-        if (
-            not isinstance(evaluated_at, datetime)
-            or evaluated_at.tzinfo is None
-            or evaluated_at.utcoffset() is None
-        ):
-            raise GuiRuntimeBlockedError("CYCLE_CLOCK_INVALID")
-        age_seconds = (evaluated_at.astimezone(timezone.utc) - quote.price_at).total_seconds()
+        evaluated_at = self._evaluated_at()
+        age_seconds = (evaluated_at - quote.price_at).total_seconds()
         if age_seconds < -5 or age_seconds > 300:
             raise GuiRuntimeBlockedError("CANDIDATE_QUOTE_NOT_FRESH")
-        return GuiCoordinationRequest(
-            proposal=proposal,
-            profile=self.profiles[instrument_id],
-            candles=self.frames[instrument_id],
-            lot_size=self.lot_sizes[instrument_id],
-            portfolio_risk_candidate_quote=quote,
-            evaluated_at=evaluated_at.astimezone(timezone.utc),
-        )
+        return PortfolioRiskQuoteObservation(quote=quote, evaluated_at=evaluated_at)
 
 
 class ProductionGuiCycleSource:
@@ -376,7 +412,13 @@ class ProductionGuiCycleSource:
         portfolio_refresher: Callable[[], Any],
         account_id: str,
         clock: Callable[[], datetime] | None = None,
+        instrument_metadata: Mapping[str, PortfolioRiskInstrumentMetadata] | None = None,
+        metadata_guard: Callable[[], None] | None = None,
+        portfolio_recovery: Callable[[], Any] | None = None,
     ) -> None:
+        self.portfolio_recovery = portfolio_recovery
+        self.instrument_metadata = MappingProxyType(dict(instrument_metadata)) if instrument_metadata is not None else None
+        self.metadata_guard = metadata_guard
         self.provider = provider
         self.profile_store = profile_store
         self.runtime_store = runtime_store
@@ -390,6 +432,8 @@ class ProductionGuiCycleSource:
     def __call__(
         self,
     ) -> tuple[datetime, Mapping[str, datetime | None], GuiStrategyHooks]:
+        if self.metadata_guard is not None:
+            self.metadata_guard()
         now = self.clock()
         if now.tzinfo is None or now.utcoffset() is None:
             raise GuiRuntimeBlockedError("CYCLE_CLOCK_INVALID")
@@ -417,22 +461,38 @@ class ProductionGuiCycleSource:
             timestamp = frame.index[-1]
             latest[runtime.runtime_key] = timestamp.to_pydatetime()
             profile_map[profile.instrument_id] = profile
-            lot_size = self._lot_sizes.get(profile.instrument_id)
-            if lot_size is None:
-                metadata = self.provider.get_instrument_by_id(profile.instrument_id)
-                lot_size = int(metadata.get("lot") or 0)
-                if lot_size < 1:
-                    raise GuiRuntimeBlockedError("INSTRUMENT_LOT_SIZE_INVALID")
-                self._lot_sizes[profile.instrument_id] = lot_size
+            if self.instrument_metadata is not None:
+                metadata = self.instrument_metadata.get(profile.instrument_id)
+                if (
+                    type(metadata) is not PortfolioRiskInstrumentMetadata
+                    or metadata.instrument_id != profile.instrument_id
+                    or type(metadata.lot_size) is not int
+                    or metadata.lot_size < 1
+                    or metadata.currency != "RUB"
+                ):
+                    raise GuiRuntimeBlockedError("GUI_RISK_METADATA_INVALID")
+                # The verified snapshot is the same lot/currency authority used
+                # by Portfolio Risk; no unbound provider lot-size cache is used.
+                lot_size = metadata.lot_size
+            else:
+                # Compatibility for historical controlled/synthetic callers.
+                lot_size = self._lot_sizes.get(profile.instrument_id)
+                if lot_size is None:
+                    metadata = self.provider.get_instrument_by_id(profile.instrument_id)
+                    lot_size = int(metadata.get("lot") or 0)
+                    if lot_size < 1:
+                        raise GuiRuntimeBlockedError("INSTRUMENT_LOT_SIZE_INVALID")
+                    self._lot_sizes[profile.instrument_id] = lot_size
             lots[profile.instrument_id] = lot_size
         hooks = _ProductionGuiHooks(
             provider=self.provider,
             risk_runtime=self.risk_runtime,
-            portfolio_refresher=self.portfolio_refresher,
+            portfolio_refresher=self.portfolio_recovery or self.portfolio_refresher,
             profiles=profile_map,
             frames=frames,
             lot_sizes=lots,
             clock=self.clock,
+            defer_candidate_quote=True,
         )
         return now.astimezone(timezone.utc), latest, hooks
 
@@ -461,6 +521,8 @@ class _CoordinatingHooks:
         candle_time: datetime,
         now: datetime,
     ) -> Any:
+        self.controller.require_execution_observable()
+        self.controller.validate_metadata_binding()
         proposal = self.hooks.evaluate_closed_candle(runtime, candle_time, now)
         if proposal is None:
             return None
@@ -471,6 +533,20 @@ class _CoordinatingHooks:
                 "COORDINATION_REQUEST_REQUIRED",
                 "A non-null strategy proposal must be bound to one Central request.",
             )
+        quote_options = {}
+        coordination_at = request.evaluated_at or now
+        if request.portfolio_risk_quote_loader is not None:
+            quote_loader = request.portfolio_risk_quote_loader
+
+            def load_quote() -> PortfolioRiskQuoteObservation:
+                nonlocal coordination_at
+                observation = quote_loader()
+                self.controller.validate_metadata_binding()
+                if type(observation) is PortfolioRiskQuoteObservation:
+                    coordination_at = observation.evaluated_at
+                return observation
+
+            quote_options["portfolio_risk_quote_loader"] = load_quote
         outcome = self.controller.central_order_coordinator.coordinate(
             request.proposal,
             runtime,
@@ -480,18 +556,54 @@ class _CoordinatingHooks:
             now=request.evaluated_at or now,
             cash_buffer_bps=request.cash_buffer_bps,
             portfolio_risk_candidate_quote=request.portfolio_risk_candidate_quote,
+            **quote_options,
         )
         self.controller._record_coordination_result(
-            runtime, proposal, outcome, request.evaluated_at or now
+            runtime, proposal, outcome, coordination_at
         )
         if str(getattr(outcome, "status", "")).upper() in {
             "QUEUED",
             "INTENT_QUEUED",
             "AUTHORIZED",
+            "REAUTHORIZED",
+            "REPLACED",
         }:
-            self.controller.execution_adapter.dispatch_next(
-                self.controller.portfolio_repository
-            )
+            intent_id = getattr(outcome, "intent_id", None)
+            if (
+                type(intent_id) is not str
+                or not intent_id
+                or intent_id != intent_id.strip()
+                or len(intent_id) > 128
+            ):
+                raise GuiRuntimeBlockedError("CENTRAL_DISPATCH_BINDING_INVALID")
+            try:
+                self.controller.validate_metadata_binding()
+            except GuiRuntimeBlockedError:
+                self.controller.observe_execution(
+                    runtime, proposal, outcome, coordination_at, metadata_blocked=True,
+                )
+                raise
+            try:
+                dispatched = self.controller.execution_adapter.dispatch_next(
+                    self.controller.portfolio_repository,
+                    expected_intent_id=intent_id,
+                )
+            except Exception:
+                # An exception may occur after transport IO. Never assert
+                # NOT_SENT, export exception text, or automatically retry.
+                self.controller.observe_execution(
+                    runtime, proposal, outcome, coordination_at,
+                    dispatch_invoked=True, exception=True,
+                )
+            else:
+                self.controller.observe_execution(
+                    runtime, proposal, outcome, coordination_at,
+                    dispatch_invoked=True, dispatch_result=dispatched,
+                )
+        else:
+            self.controller.observe_execution(runtime, proposal, outcome, coordination_at)
+        # Compatibility: this remains the Central result, not broker evidence.
+        # The explicit combined observation is in latest_cycle_outcomes()/journal.
         return outcome
 
 
@@ -521,7 +633,11 @@ class GuiRuntimeController:
         | None = None,
         session_id: str | None = None,
         journal: EventJournal | None = None,
+        metadata_guard: Callable[[], None] | None = None,
     ) -> None:
+        self.metadata_guard = metadata_guard
+        self._cycle_outcomes: dict[str, GuiCycleOutcome] = {}
+        self._execution_observation_blocked = False
         self.profile_store = profile_store
         self.runtime_store = runtime_store
         self.portfolio_repository = portfolio_repository
@@ -581,11 +697,14 @@ class GuiRuntimeController:
         cl7_identity_key: bytes | None = None,
         cl7_identity_key_id: str | None = None,
         cl7_ledger_store: Any | None = None,
+        cl7_own_funds_policy: Any | None = None,
+        execution_order_type: str = "BESTPRICE",
         journal: EventJournal,
         cycle_source: Callable[
             [], tuple[datetime, Mapping[str, datetime | None], GuiStrategyHooks]
         ]
         | None = None,
+        metadata_guard: Callable[[], None] | None = None,
     ) -> GuiRuntimeController:
         """Compose the one accepted Central/adapter graph with shared Risk."""
 
@@ -594,6 +713,7 @@ class GuiRuntimeController:
             portfolio_repository,
             risk_runtime,
             portfolio_risk_runtime=portfolio_risk_runtime,
+            execution_order_type=execution_order_type,
         )
         adapter = SandboxExecutionAdapter(
             CL4MoneyNormalizingTransport(execution_transport),
@@ -605,6 +725,7 @@ class GuiRuntimeController:
             cl7_identity_key=cl7_identity_key,
             cl7_identity_key_id=cl7_identity_key_id,
             cl7_ledger_store=cl7_ledger_store,
+            cl7_own_funds_policy=cl7_own_funds_policy,
         )
         return cls(
             profile_store=profile_store,
@@ -618,7 +739,61 @@ class GuiRuntimeController:
             account_scope_sha256=account_scope_sha256,
             cycle_source=cycle_source,
             journal=journal,
+            metadata_guard=metadata_guard,
         )
+
+    def validate_metadata_binding(self) -> None:
+        guard = getattr(self, "metadata_guard", None)
+        if guard is not None:
+            guard()
+
+    def require_execution_observable(self) -> None:
+        if getattr(self, "_execution_observation_blocked", False):
+            raise GuiRuntimeBlockedError("EXECUTION_OBSERVATION_BLOCKED")
+
+    def latest_cycle_outcomes(self) -> dict[str, GuiCycleOutcome]:
+        """Immutable values; no private provider payload and no execution commands."""
+        return dict(getattr(self, "_cycle_outcomes", {}))
+
+    def observe_execution(
+        self,
+        runtime: InstrumentRuntime,
+        proposal: Any,
+        coordination: Any,
+        now: datetime,
+        **observation: Any,
+    ) -> None:
+        result = observe_gui_cycle(
+            coordination, proposed_target=getattr(proposal, "primary_target_lots", None),
+            account_scope=self.account_scope_sha256, **observation,
+        )
+        outcomes = getattr(self, "_cycle_outcomes", None)
+        if outcomes is None:
+            self._cycle_outcomes = outcomes = {}
+        instrument_id = runtime.config.instrument_id
+        outcomes[instrument_id] = result
+        if self.journal is not None:
+            try:
+                self.journal.record(JournalEvent(
+                    category="decision", event_type="GUI_EXECUTION_OUTCOME",
+                    session_id=self.session_id, instrument_id=instrument_id,
+                    ticker=runtime.config.ticker, candle_time=proposal.candle_time,
+                    mode="SANDBOX_EXECUTION", status=result.execution_status,
+                    action=result.action, strategy_id=str(proposal.primary_strategy),
+                    config_hash=proposal.strategy_profile_hash,
+                    payload={"account_scope_sha256": self.account_scope_sha256,
+                             **replace(result, audit_persisted=True).to_dict()},
+                    timestamp_utc=now.astimezone(timezone.utc).isoformat(),
+                ))
+                result = replace(result, audit_persisted=True)
+            except Exception:
+                result = replace(result, recovery_required=True)
+                self._execution_observation_blocked = True
+        # Historical synthetic/no-journal controllers retain a memory-only
+        # observation. The desktop composition always supplies EventJournal.
+        if result.execution_status in {"DISPATCH_EXCEPTION", "DISPATCH_RESULT_INVALID"}:
+            self._execution_observation_blocked = True
+        outcomes[instrument_id] = result
 
     def restore(self) -> ConfiguredExecutionSet:
         configured = self._load_configured_set()
@@ -793,7 +968,7 @@ class GuiRuntimeController:
         if any(item.status != "ACTIVE" for item in self.scheduler.runtimes):
             raise GuiRuntimeBlockedError("CONFIGURED_SET_NOT_ACTIVE")
         if self._recovery_required():
-            raise GuiRuntimeBlockedError("RECOVERY_REQUIRED")
+            return self._service_desktop_fill_recovery(now)
         result = self.scheduler.tick(
             now=now,
             latest_closed_candles=latest_closed_candles,
@@ -815,14 +990,66 @@ class GuiRuntimeController:
         return self._composition_blocker is None and self.cycle_source is not None
 
     def run_cycle(self) -> SchedulerTickResult:
+        self.require_execution_observable()
+        self.validate_metadata_binding()
         if self.cycle_source is None:
             raise GuiRuntimeBlockedError("GUI_RUNTIME_SOURCE_UNAVAILABLE")
+        # Recovery is a separate read/accounting tick. It must be reachable
+        # before candle acquisition and before the scheduler's pending gate.
+        if isinstance(self.cycle_source, ProductionGuiCycleSource) and self._recovery_required():
+            return self._service_desktop_fill_recovery(self.cycle_source.clock())
         now, candles, hooks = self.cycle_source()
         return self.service_tick(
             now=now,
             latest_closed_candles=candles,
             hooks=hooks,
         )
+
+    def _service_desktop_fill_recovery(self, now: datetime) -> SchedulerTickResult:
+        from .desktop_fill_recovery import DesktopFillRecovery
+        from .global_scheduler import SchedulerActionResult
+
+        self.require_execution_observable()
+        self.validate_metadata_binding()
+        if not self.connected:
+            raise GuiRuntimeBlockedError("PROVIDER_DISCONNECTED")
+        if self.market_state != "OPEN":
+            raise GuiRuntimeBlockedError("MARKET_IDLE")
+        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+            raise GuiRuntimeBlockedError("CYCLE_CLOCK_INVALID")
+        if self.scheduler is None or self._configured_set is None:
+            self.restore()
+        if any(item.status != "ACTIVE" for item in self.scheduler.runtimes):
+            raise GuiRuntimeBlockedError("CONFIGURED_SET_NOT_ACTIVE")
+        recovery = getattr(self.cycle_source, "portfolio_recovery", None)
+        intent = self.central_order_coordinator.manager.state().blocking_intent
+        if (type(recovery) is not DesktopFillRecovery or intent is None
+                or recovery.central is not self.central_order_coordinator.manager
+                or recovery.risk is not self.central_order_coordinator.risk_runtime
+                or recovery.manager.repository is not self.portfolio_repository
+                or recovery.authority is not self.cash_authority):
+            raise GuiRuntimeBlockedError("RECOVERY_REQUIRED")
+        recovery()
+        # Do not enter Strategy/dispatch or advance candle watermarks in this
+        # tick, even after success. The next normal tick reevaluates everything.
+        if self.journal is not None:
+            try:
+                self.journal.record(JournalEvent(
+                    category="gui_runtime", event_type="GUI_FILL_RECOVERY", severity="INFO",
+                    mode="SANDBOX_EXECUTION", status=recovery.last_status,
+                    timestamp_utc=now.astimezone(timezone.utc).isoformat(),
+                    payload={"account_scope_sha256": self.account_scope_sha256,
+                             "recovery_status": recovery.last_status,
+                             "provider_post_attempts": 0, "strategy_evaluated": False},
+                ))
+            except Exception:
+                self._execution_observation_blocked = True
+                raise GuiRuntimeBlockedError("RECOVERY_AUDIT_UNAVAILABLE") from None
+        return SchedulerTickResult(serviced_at=now, actions=(SchedulerActionResult(
+            runtime_key=intent.candidate.runtime_key, ticker=intent.candidate.ticker,
+            action="FULL_FILL_RECOVERY" if recovery.last_status == "RECONCILED_FULL_FILL"
+            else "ORDER_RECOVERY", status=recovery.last_status,
+        ),))
 
     def set_connected(self, connected: bool) -> None:
         self.connected = bool(connected)
@@ -1005,6 +1232,8 @@ class GuiRuntimeController:
         return ConfiguredExecutionSet(self.account_scope_sha256, tuple(bindings))
 
     def _prevalidate_start(self) -> ConfiguredExecutionSet:
+        self.require_execution_observable()
+        self.validate_metadata_binding()
         # Revalidate process-local owner identity at every Start.  The graph
         # can be stale or replaced after construction; construction-time
         # validation alone must not become a lasting authorization.

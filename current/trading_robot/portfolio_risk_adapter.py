@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from math import isfinite
 from typing import Any
@@ -9,6 +9,7 @@ from typing import Any
 from .central_order_manager import (
     ACCOUNT_BLOCKING_STATUSES,
     RESERVATION_STATUSES,
+    TERMINAL_STATUSES,
     CentralOrderState,
     central_reservation_projection_hash,
 )
@@ -42,8 +43,16 @@ def _positive_finite_number(value: object) -> bool:
 def _clean_empty_portfolio(
     portfolio: PortfolioState,
     central_orders: CentralOrderState,
+    *,
+    excluded_reservation_ids: tuple[str, ...] = (),
 ) -> bool:
-    """Recognize only a financially valid, account-bound flat owner snapshot."""
+    """Admit financial EMPTY with retired history or one replaceable BUY.
+
+    Exclusions are the existing Portfolio Risk input mechanism, not new order
+    authority: Central checks the exact same-instrument exclusion under its
+    admission lock, and dispatch replays the finalized proof. Never exclude an
+    account blocker or an unrelated active reservation to make EMPTY pass.
+    """
 
     rub_cash = portfolio.account.cash("rub")
     if (
@@ -54,22 +63,53 @@ def _clean_empty_portfolio(
         or portfolio.blocking is not False
         or portfolio.positions != ()
         or portfolio.account_id != central_orders.account_id
-        or central_orders.intents != ()
         or not _positive_finite_number(portfolio.account.total_value)
         or rub_cash is None
         or not _positive_finite_number(rub_cash.available)
     ):
         return False
 
-    # Reservations are derived from intents, not an independent input. Check
-    # both the aggregate and the account/revision-bound empty projection.
-    empty = CentralOrderState.empty(
-        central_orders.account_id, now=central_orders.created_at
+    # A single exclusion can represent the currently replaceable reservation
+    # or its now-terminal predecessor when dispatch replays a replacement.
+    # Terminal records retain their original cash field as history; only the
+    # existing RESERVATION_STATUSES contribute to the live aggregate.
+    if len(excluded_reservation_ids) > 1:
+        return False
+    for intent in central_orders.intents:
+        if intent.status in TERMINAL_STATUSES:
+            continue
+        if (
+            intent.status != "QUEUED"
+            or intent.intent_id not in excluded_reservation_ids
+            or intent.candidate.current_lots != 0
+            or intent.candidate.direction != "BUY"
+        ):
+            return False
+
+    expected_reserved = sum(
+        intent.reserved_cash_kopecks
+        for intent in central_orders.intents
+        if intent.status in RESERVATION_STATUSES
+    )
+    # Build a separate reference with only the excluded identity retained.
+    # Its post-exclusion projection is empty but remains bound to the account,
+    # revision and excluded IDs. No persisted intent or reserve is mutated.
+    reference = replace(
+        central_orders,
+        intents=tuple(
+            intent
+            for intent in central_orders.intents
+            if intent.intent_id in excluded_reservation_ids
+        ),
     )
     return (
-        central_orders.reserved_cash_kopecks == 0
-        and central_reservation_projection_hash(central_orders)
-        == central_reservation_projection_hash(empty, revision=central_orders.revision)
+        central_orders.reserved_cash_kopecks == expected_reserved
+        and central_reservation_projection_hash(
+            central_orders, excluded_reservation_ids=excluded_reservation_ids
+        )
+        == central_reservation_projection_hash(
+            reference, excluded_reservation_ids=excluded_reservation_ids
+        )
     )
 
 
@@ -251,7 +291,9 @@ class PortfolioRiskInputAdapter:
             flags.add("PORTFOLIO_BLOCKING")
         if portfolio.state_status not in {"READY", "ACTIVE"} and not (
             portfolio.state_status == "EMPTY"
-            and _clean_empty_portfolio(portfolio, central_orders)
+            and _clean_empty_portfolio(
+                portfolio, central_orders, excluded_reservation_ids=excluded
+            )
         ):
             flags.add(f"PORTFOLIO_STATUS_{portfolio.state_status}")
 

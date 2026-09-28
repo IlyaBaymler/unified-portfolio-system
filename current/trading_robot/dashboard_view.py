@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .gui_execution_outcome import valid_gui_execution_payload
 from .config_persistence import ProfileMode, normalize_profile_mode
 from .instrument_runtime import InstrumentRuntime, InstrumentRuntimeStore
 from .multi_instrument_config import (
@@ -89,7 +90,7 @@ class SandboxDecisionDisplay:
 
 
 _DECISION_EVENT_TYPES = frozenset(
-    {"PRIMARY_STRATEGY_DECISION", "CENTRAL_COORDINATION_RESULT"}
+    {"PRIMARY_STRATEGY_DECISION", "CENTRAL_COORDINATION_RESULT", "GUI_EXECUTION_OUTCOME"}
 )
 _DECISION_ACTIONS = frozenset({"LONG", "FLAT", "BUY", "HOLD", "SELL", "UNDETERMINED"})
 _SAFE_DECISION_STATUS = re.compile(r"[A-Z0-9_]{1,80}\Z")
@@ -157,6 +158,12 @@ def latest_sandbox_decisions(
             and _SAFE_DECISION_STATUS.fullmatch(status) is not None
             and type(timestamp) is str
         )
+        if event_type == "GUI_EXECUTION_OUTCOME":
+            valid = valid and valid_gui_execution_payload(payload)
+            if valid:
+                valid = status == payload["execution_status"] and action == payload["action"]
+            if valid:
+                status = payload["coordination_status"] + " / " + payload["execution_status"]
         at_utc = "—"
         if valid:
             try:

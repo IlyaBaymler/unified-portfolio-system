@@ -38,6 +38,7 @@ from .runtime_cash_authority import (
     legacy_execution_guard,
 )
 from .tbank_sandbox import TBankAPIError
+from .exact_own_funds import MAX_AGE_NS, LockedOwnFundsPolicy, OwnFundsError
 
 SANDBOX_EXECUTION_CONFIRMATION = "ENABLE V3.8 SANDBOX EXECUTION"
 _AMBIGUOUS_HTTP_STATUSES = frozenset({408, 409, 425, 429})
@@ -83,6 +84,8 @@ class SandboxExecutionTransport(Protocol):
     ) -> dict[str, Any]: ...
 
     def get_portfolio(self, account_id: str) -> dict[str, Any]: ...
+
+    def get_positions(self, account_id: str) -> dict[str, Any]: ...
 
     def get_withdraw_limits(self, account_id: str) -> Any: ...
 
@@ -176,6 +179,7 @@ class SandboxExecutionAdapter:
         cl7_identity_key: bytes | None = None,
         cl7_identity_key_id: str | None = None,
         cl7_ledger_store: Any | None = None,
+        cl7_own_funds_policy: LockedOwnFundsPolicy | None = None,
         cl7_proof_builder: Callable[
             [RuntimeCashAuthorityRecord, CentralOrderState, CentralOrderIntent],
             LockedDispatchProof,
@@ -209,6 +213,7 @@ class SandboxExecutionAdapter:
         self.cl7_identity_key = cl7_identity_key
         self.cl7_identity_key_id = cl7_identity_key_id
         self.cl7_ledger_store = cl7_ledger_store
+        self.cl7_own_funds_policy = cl7_own_funds_policy
         self.cl7_proof_builder = cl7_proof_builder
         self.cl7_clock = cl7_clock or (
             lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
@@ -373,14 +378,24 @@ class SandboxExecutionAdapter:
                     transition_at=self.cl7_clock(),
                 )
                 try:
-                    portfolio_response = self.transport.get_portfolio(
-                        self.policy.account_id
+                    portfolio_response = authority_manager.read_accounting_cash(
+                        self.transport, self.policy.account_id,
+                        clock=self.cl7_clock, monotonic_ns=self.cl7_monotonic_ns,
                     )
                     broker_cash_as_of = self.cl7_clock()
-                    withdraw_limits_observation = self.transport.get_withdraw_limits(
-                        self.policy.account_id
-                    )
-                    broker_withdraw_limits_as_of = self.cl7_clock()
+                    if authority_manager.buying_budget_policy is None:
+                        withdraw_limits_observation = self.transport.get_withdraw_limits(self.policy.account_id)
+                        broker_withdraw_limits_as_of = self.cl7_clock()
+                        own_buying_cash_proof = None
+                    else:
+                        withdraw_limits_observation, broker_withdraw_limits_as_of, own_buying_cash_proof = authority_manager.read_availability_cash(
+                            self.transport, self.policy.account_id,
+                            account_scope_sha256=authority.account_scope_sha256,
+                            identity_key=self.cl7_identity_key, identity_key_id=self.cl7_identity_key_id,
+                            clock=self.cl7_clock, monotonic_ns=self.cl7_monotonic_ns,
+                        )
+                except CL7RuntimeError:
+                    raise
                 except Exception:  # noqa: BLE001 - provider trust boundary
                     raise CL7RuntimeError(
                         CL7RuntimeReason.BROKER_READ_FAILED,
@@ -419,10 +434,22 @@ class SandboxExecutionAdapter:
                             leased_at=_cl7_iso_timestamp(evaluated_at),
                         )
                         with authority_manager.ledger_guard(self.cl7_ledger_store):
+                            own_funds_started_ns = None
+
+                            def require_dispatch_fresh(proof: LockedDispatchProof) -> None:
+                                _require_cl7_proof_fresh(proof, self.cl7_clock())
+                                if own_funds_started_ns is not None:
+                                    tick = self.cl7_monotonic_ns()
+                                    if (type(own_funds_started_ns) is not int
+                                        or type(tick) is not int
+                                        or not 0 <= tick - own_funds_started_ns <= MAX_AGE_NS):
+                                        raise CL7RuntimeError(CL7RuntimeReason.CONTEXT_STALE)
+
                             def validate(
                                 central: CentralOrderState,
                                 queued: CentralOrderIntent,
                             ) -> LockedDispatchProof:
+                                nonlocal own_funds_started_ns
                                 if self.portfolio_risk_runtime is not None:
                                     self.portfolio_risk_runtime.validate_dispatch(
                                         portfolio=locked_portfolio,
@@ -440,6 +467,7 @@ class SandboxExecutionAdapter:
                                     broker_withdraw_limits_as_of=(
                                         broker_withdraw_limits_as_of
                                     ),
+                                    own_buying_cash_proof=own_buying_cash_proof,
                                     central_state=central,
                                     portfolio_lease=portfolio_lease,
                                     risk_policy=risk_policy,
@@ -450,6 +478,19 @@ class SandboxExecutionAdapter:
                                     evaluated_at=evaluated_at,
                                     require_ready=True,
                                 )
+                                own_funds = None
+                                if self.cl7_own_funds_policy is not None:
+                                    if type(self.cl7_own_funds_policy) is not LockedOwnFundsPolicy or self.cl7_proof_builder is not None:
+                                        raise CL7RuntimeError(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
+                                    try:
+                                        own_funds_started_ns = self.cl7_monotonic_ns()
+                                        own_funds = self.cl7_own_funds_policy.acquire(
+                                            self.transport, queued, central,
+                                            clock=self.cl7_clock, monotonic_ns=self.cl7_monotonic_ns,
+                                        )
+                                    except OwnFundsError as exc:
+                                        raise CL7RuntimeError(CL7RuntimeReason.OWN_FUNDS_BLOCKED, str(exc),
+                                                              stage="LOCKED_OWN_FUNDS") from None
                                 if self.cl7_proof_builder is None:
                                     proof = authority_manager.build_locked_dispatch_proof(
                                         context=evidence.context,
@@ -461,6 +502,7 @@ class SandboxExecutionAdapter:
                                         target_lots=queued.candidate.target_lots,
                                         direction=queued.candidate.direction,
                                         evaluated_at=evaluated_at,
+                                        own_funds_evidence=own_funds,
                                     )
                                 else:
                                     proof = self.cl7_proof_builder(
@@ -476,7 +518,7 @@ class SandboxExecutionAdapter:
                                     raw_intent_id=queued.intent_id,
                                     identity_key=self.cl7_identity_key,
                                 )
-                                _require_cl7_proof_fresh(proof, self.cl7_clock())
+                                require_dispatch_fresh(proof)
                                 return proof
 
                             with self.manager.locked_dispatch_lease(
@@ -486,17 +528,30 @@ class SandboxExecutionAdapter:
                                 validator=validate,
                             ) as lease:
                                 try:
+                                    require_dispatch_fresh(lease.proof)
                                     pending = authority_manager._record_dispatch_attempt_locked(
                                         authority,
                                         lease.proof,
                                         transition_at=self.cl7_clock(),
                                     )
                                 except CL7RuntimeError as exc:
-                                    if exc.reason is CL7RuntimeReason.ATTEMPT_RECORD_FAILED:
+                                    if exc.reason in {CL7RuntimeReason.ATTEMPT_RECORD_FAILED, CL7RuntimeReason.CONTEXT_STALE}:
                                         lease.mark_pre_submit_failed(
-                                            reason="CL7_ATTEMPT_RECORD_FAILED"
+                                            reason="CL7_" + exc.reason.value
                                         )
                                     raise
+                                # Custody writes may consume the evidence lifetime. Once
+                                # the attempt marker exists, an expired proof is kept
+                                # pending for recovery, never cleared for an automatic retry.
+                                try:
+                                    require_dispatch_fresh(lease.proof)
+                                except CL7RuntimeError:
+                                    return SandboxDispatchResult(
+                                        status="CL7_RECOVERY_REQUIRED",
+                                        intent_id=lease.intent.intent_id,
+                                        market=market,
+                                        error="EVIDENCE_EXPIRED_AFTER_MARKER",
+                                    )
                                 try:
                                     response = self.transport.post_order_once(
                                         self.policy.account_id,
@@ -1081,6 +1136,11 @@ def _cl7_reserved_cash(intent: CentralOrderIntent):
 
 
 def _require_cl7_proof_fresh(proof: LockedDispatchProof, now: str) -> None:
+    if proof.own_funds_evidence is not None:
+        try:
+            proof.own_funds_evidence.check_age(now)
+        except OwnFundsError:
+            raise CL7RuntimeError(CL7RuntimeReason.CONTEXT_STALE) from None
     evaluated = _cl7_timestamp_ns(proof.evaluated_at)
     current = _cl7_timestamp_ns(now)
     if evaluated > current or current - evaluated > 10_000_000_000:

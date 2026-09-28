@@ -23,6 +23,7 @@ from typing import Any
 from uuid import uuid4
 
 from .cash_ledger_domain import Money
+from .exact_own_funds import OwnFundsEvidence, timestamp_ns as _cash_timestamp_ns
 from .locking import InterProcessFileLock, LockUnavailableError
 
 _VERSION = 1
@@ -114,6 +115,7 @@ class CL7RuntimeReason(StrEnum):
     ROLLBACK_FORBIDDEN_AFTER_ATTEMPT = "ROLLBACK_FORBIDDEN_AFTER_ATTEMPT"
     PRIVACY_BOUNDARY_FAILED = "PRIVACY_BOUNDARY_FAILED"
     INTERNAL_BOUNDARY_FAILED = "INTERNAL_BOUNDARY_FAILED"
+    OWN_FUNDS_BLOCKED = "OWN_FUNDS_BLOCKED"
 
 
 class CL7RuntimeError(RuntimeError):
@@ -839,10 +841,15 @@ class LockedDispatchProof:
     target_lots: int
     proof_identity_sha256: str
     version: int = _VERSION
+    own_funds_evidence: OwnFundsEvidence | None = None
 
     def __post_init__(self) -> None:
-        if type(self.version) is not int or self.version != _VERSION:
+        if type(self.version) is not int or self.version not in {1, 2}:
             _fail(CL7RuntimeReason.VERSION_UNSUPPORTED)
+        if (self.version == 1 and self.own_funds_evidence is not None) or (
+            self.version == 2 and type(self.own_funds_evidence) is not OwnFundsEvidence
+        ):
+            _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
         for value in (
             self.account_scope_sha256,
             self.authority_record_sha256,
@@ -869,7 +876,7 @@ class LockedDispatchProof:
             self.target_lots,
         ):
             _plain_int(value, CL7RuntimeReason.DISPATCH_PROOF_INVALID)
-        if self.direction not in {"BUY", "SELL"} or type(self.direction) is not str:
+        if type(self.direction) is not str or self.direction not in {"BUY", "SELL"}:
             _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
         _timestamp(self.evaluated_at)
         if (
@@ -888,8 +895,17 @@ class LockedDispatchProof:
         ):
             _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
 
+        if self.version == 2:
+            own = self.own_funds_evidence
+            if (own.direction != self.direction
+                or own.requested_lots != abs(self.target_lots - self.current_lots)
+                or own.own_reservation_nano != self.reserved_cash.minor_units
+                or (self.direction == "BUY" and
+                    self.free_investable_cash.minor_units > own.free_after_reservations_nano)):
+                _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
+
     def _base_dict(self, *, domain: str) -> dict[str, object]:
-        return {
+        result = {
             "account_scope_sha256": self.account_scope_sha256,
             "authority_record_revision": str(self.authority_record_revision),
             "authority_record_sha256": self.authority_record_sha256,
@@ -917,6 +933,10 @@ class LockedDispatchProof:
             "target_lots": self.target_lots,
             "version": self.version,
         }
+        if self.version == 2:
+            result["domain"] = domain + "-own-funds-v2"
+            result["own_funds_evidence"] = self.own_funds_evidence.to_canonical_dict()
+        return result
 
     def to_canonical_dict(self) -> dict[str, object]:
         result = self._base_dict(domain=_PROOF_DOMAIN)
@@ -973,13 +993,15 @@ class LockedDispatchProof:
 
     @classmethod
     def from_canonical_dict(cls, value: object) -> LockedDispatchProof:
-        if (
-            not isinstance(value, Mapping)
-            or frozenset(value) != _PROOF_FIELDS
-            or value.get("domain") != _PROOF_DOMAIN
-        ):
+        if not isinstance(value, Mapping) or type(value.get("version")) is not int:
+            _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
+        v2 = value.get("version") == 2
+        expected_fields = _PROOF_FIELDS | {"own_funds_evidence"} if v2 else _PROOF_FIELDS
+        expected_domain = _PROOF_DOMAIN + "-own-funds-v2" if v2 else _PROOF_DOMAIN
+        if frozenset(value) != expected_fields or value.get("domain") != expected_domain:
             _fail(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
         try:
+            own = OwnFundsEvidence.from_canonical_dict(value["own_funds_evidence"]) if v2 else None
             free = Money.from_canonical_dict(value["free_investable_cash"])
             reserved = Money.from_canonical_dict(value["reserved_cash"])
         except Exception:
@@ -1026,6 +1048,7 @@ class LockedDispatchProof:
             ),
             proof_identity_sha256=value["proof_identity_sha256"],
             version=value["version"],
+            own_funds_evidence=own,
         )
 
     def verify_identity(self, *, raw_intent_id: str, identity_key: bytes) -> None:
@@ -1387,6 +1410,7 @@ class _RuntimeEvidenceSet:
     portfolio: Any
     risk_guard: Any
     context: Any
+    broker_own_buying_cash_proof: Any = None
 
 
 class RuntimeCashAuthorityManager:
@@ -1398,10 +1422,89 @@ class RuntimeCashAuthorityManager:
     ARM_PHRASE = "ARM V3.10 CL7 SANDBOX EXACT CASH EXECUTION"
     ROLLBACK_PHRASE = "ROLLBACK V3.10 CL7 TO LEGACY CASH AUTHORITY"
 
-    def __init__(self, store: RuntimeCashAuthorityStore) -> None:
-        if type(store) is not RuntimeCashAuthorityStore:
+    def __init__(self, store: RuntimeCashAuthorityStore, *, cash_source_version: int = 2,
+                 buying_budget_policy: Any = None) -> None:
+        if (type(store) is not RuntimeCashAuthorityStore
+            or type(cash_source_version) is not int or cash_source_version not in (2, 3)):
             _fail(CL7RuntimeReason.TYPE_INVALID)
         self.store = store
+        self._cash_source_version = cash_source_version
+        from .cash_buying_availability import OwnBuyingBudgetPolicy
+        if buying_budget_policy is not None and (type(buying_budget_policy) is not OwnBuyingBudgetPolicy
+                                                 or cash_source_version != 3):
+            _fail(CL7RuntimeReason.TYPE_INVALID)
+        self._buying_budget_policy = buying_budget_policy
+
+    @property
+    def cash_source_version(self) -> int:
+        """CL4 source version. The separate buying policy selects CL5 semantics."""
+        if type(self._cash_source_version) is not int or self._cash_source_version not in (2, 3):
+            _fail(CL7RuntimeReason.TYPE_INVALID)
+        return self._cash_source_version
+
+    @property
+    def buying_budget_policy(self) -> Any:
+        from .cash_buying_availability import OwnBuyingBudgetPolicy
+        policy = getattr(self, "_buying_budget_policy", None)
+        if policy is not None and (type(policy) is not OwnBuyingBudgetPolicy or self.cash_source_version != 3):
+            _fail(CL7RuntimeReason.TYPE_INVALID)
+        return policy
+
+    def read_availability_cash(
+        self, provider: Any, raw_account_id: str, *, account_scope_sha256: str,
+        identity_key: bytes, identity_key_id: str, clock: Any, monotonic_ns: Any,
+    ) -> tuple[Any, str | None, Any]:
+        """Legacy observation/time or V3 own proof. Never relabel withdrawal data."""
+        from .cash_availability import CL5Error
+        policy = self.buying_budget_policy
+        if policy is None:
+            observation = provider.get_withdraw_limits(raw_account_id)
+            return observation, _timestamp(clock()), None
+        if policy.account_id != raw_account_id:
+            _fail(CL7RuntimeReason.ACCOUNT_SCOPE_INVALID)
+        try:
+            proof = policy.acquire(provider, account_scope_sha256=account_scope_sha256,
+                identity_key=identity_key, identity_key_id=identity_key_id,
+                clock=lambda: _timestamp(clock()), monotonic_ns=monotonic_ns)
+        except CL5Error as exc:
+            _fail(CL7RuntimeReason.AVAILABILITY_BLOCKED, exc.reason.value, stage="CL5_OWN_BUYING")
+        return None, None, proof
+
+    def read_accounting_cash(
+        self, provider: Any, raw_account_id: str, *, clock: Any = None, monotonic_ns: Any = None,
+    ) -> object:
+        """Read the selected raw source without fallback or field rewriting.
+
+        V3 bounds a single synchronous read by both clocks (5s); this is an
+        elapsed check, not HTTP cancellation or a broker-atomic snapshot.
+        """
+        if self.cash_source_version == 3:
+            if not callable(clock) or not callable(monotonic_ns):
+                _fail(CL7RuntimeReason.TYPE_INVALID)
+            begin = _cash_timestamp_ns(_timestamp(clock()))
+            tick = monotonic_ns()
+            if type(tick) is not int or tick < 0:
+                _fail(CL7RuntimeReason.CONTEXT_STALE)
+            response = provider.get_positions(raw_account_id)
+            end = _cash_timestamp_ns(_timestamp(clock()))
+            finish = monotonic_ns()
+            if (type(finish) is not int or not 0 <= finish - tick <= 5_000_000_000
+                or not 0 <= end - begin <= 5_000_000_000):
+                _fail(CL7RuntimeReason.CONTEXT_STALE)
+            return response
+        if self.cash_source_version != 2:
+            _fail(CL7RuntimeReason.TYPE_INVALID)
+        return provider.get_portfolio(raw_account_id)
+
+    def _build_accounting_cash_proof(self, response: object, *, raw_account_id: str, **kwargs: Any) -> Any:
+        from . import cash_ledger_opening_reconciliation as cl4
+        if self.cash_source_version == 3:
+            return cl4.build_broker_rub_position_cash_proof(
+                response, raw_account_id=raw_account_id, **kwargs,
+            )
+        if self.cash_source_version != 2:
+            _fail(CL7RuntimeReason.TYPE_INVALID)
+        return cl4.build_broker_cash_proof(response, **kwargs)
 
     def status(self) -> RuntimeCashAuthorityRecord:
         return self.store.load()
@@ -1469,8 +1572,8 @@ class RuntimeCashAuthorityManager:
             _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
         self._account(current, raw_account_id, identity_key, identity_key_id)
         try:
-            proof = cl4.build_broker_cash_proof(
-                portfolio_response,
+            proof = self._build_accounting_cash_proof(
+                portfolio_response, raw_account_id=raw_account_id,
                 account_scope_sha256=current.account_scope_sha256,
                 environment=broker.BrokerEnvironment.SANDBOX,
                 as_of=_timestamp(as_of),
@@ -1512,7 +1615,7 @@ class RuntimeCashAuthorityManager:
         portfolio_response: object,
         withdraw_limits_observation: object,
         broker_cash_as_of: str,
-        broker_withdraw_limits_as_of: str,
+        broker_withdraw_limits_as_of: str | None,
         central_state: Any,
         portfolio_lease: Any,
         risk_policy: Any,
@@ -1522,6 +1625,7 @@ class RuntimeCashAuthorityManager:
         identity_key_id: str,
         evaluated_at: str,
         require_ready: bool = True,
+        own_buying_cash_proof: Any = None,
     ) -> Any:
         """Rebuild current CL4 -> CL5 -> CL6 evidence from exact inputs."""
 
@@ -1535,8 +1639,8 @@ class RuntimeCashAuthorityManager:
         self._account(current, raw_account_id, identity_key, identity_key_id)
         try:
             ledger_export = ledger_store.export_bytes()
-            cash = cl4.build_broker_cash_proof(
-                portfolio_response,
+            cash = self._build_accounting_cash_proof(
+                portfolio_response, raw_account_id=raw_account_id,
                 account_scope_sha256=current.account_scope_sha256,
                 environment=broker.BrokerEnvironment.SANDBOX,
                 as_of=_timestamp(broker_cash_as_of),
@@ -1545,16 +1649,26 @@ class RuntimeCashAuthorityManager:
                 identity_key=identity_key,
                 identity_key_id=identity_key_id,
             )
-            withdraw_limits = cl5.build_broker_withdraw_limits_cash_proof(
-                withdraw_limits_observation,
-                account_scope_sha256=current.account_scope_sha256,
-                environment=broker.BrokerEnvironment.SANDBOX,
-                as_of=_timestamp(broker_withdraw_limits_as_of),
-                evaluated_at=evaluated_at,
-                response_complete=True,
-                identity_key=identity_key,
-                identity_key_id=identity_key_id,
-            )
+            from . import cash_buying_availability as buying
+            policy = self.buying_budget_policy
+            if policy is None:
+                if own_buying_cash_proof is not None:
+                    _fail(CL7RuntimeReason.AVAILABILITY_BLOCKED, stage="CL5_SOURCE_MISMATCH")
+                withdraw_limits = cl5.build_broker_withdraw_limits_cash_proof(
+                    withdraw_limits_observation,
+                    account_scope_sha256=current.account_scope_sha256,
+                    environment=broker.BrokerEnvironment.SANDBOX,
+                    as_of=_timestamp(broker_withdraw_limits_as_of),
+                    evaluated_at=evaluated_at, response_complete=True,
+                    identity_key=identity_key, identity_key_id=identity_key_id,
+                )
+            else:
+                if withdraw_limits_observation is not None or broker_withdraw_limits_as_of is not None:
+                    _fail(CL7RuntimeReason.AVAILABILITY_BLOCKED, stage="CL5_SOURCE_MISMATCH")
+                policy.binding_guard()
+                withdraw_limits = buying.validate_own_buying_proof(own_buying_cash_proof, identity_key,
+                    buying_scope_sha256=policy.scope_sha256)
+            availability_builder = buying.build_own_cash_availability if policy is not None else cl5.build_cash_availability
             reconciliation = cl4.reconcile_shadow_cash(
                 ledger_export,
                 cash,
@@ -1569,7 +1683,7 @@ class RuntimeCashAuthorityManager:
                 identity_key=identity_key,
                 identity_key_id=identity_key_id,
             )
-            availability = cl5.build_cash_availability(
+            availability = availability_builder(
                 ledger_export,
                 reconciliation,
                 withdraw_limits,
@@ -1645,7 +1759,8 @@ class RuntimeCashAuthorityManager:
         return _RuntimeEvidenceSet(
             ledger_export_bytes=ledger_export,
             broker_cash_proof=cash,
-            broker_withdraw_limits_proof=withdraw_limits,
+            broker_withdraw_limits_proof=withdraw_limits if policy is None else None,
+            broker_own_buying_cash_proof=withdraw_limits if policy is not None else None,
             reconciliation=reconciliation,
             reservations=reservations,
             availability=availability,
@@ -1666,12 +1781,13 @@ class RuntimeCashAuthorityManager:
         portfolio_response: object,
         withdraw_limits_observation: object,
         broker_cash_as_of: str,
-        broker_withdraw_limits_as_of: str,
+        broker_withdraw_limits_as_of: str | None,
         raw_account_id: str,
         identity_key: bytes,
         identity_key_id: str,
         evaluated_at: str,
         require_ready: bool = True,
+        own_buying_cash_proof: Any = None,
         finalizer: Any | None = None,
     ) -> _RuntimeEvidenceSet:
         """Freeze Portfolio/Risk/ledger/Central in the contract lock order."""
@@ -1722,6 +1838,7 @@ class RuntimeCashAuthorityManager:
                                 identity_key_id=identity_key_id,
                                 evaluated_at=evaluated_at,
                                 require_ready=require_ready,
+                                own_buying_cash_proof=own_buying_cash_proof,
                             )
                             if finalizer is None:
                                 return evidence
@@ -1841,12 +1958,23 @@ class RuntimeCashAuthorityManager:
             commit_authority=commit_sync,
         )
         try:
-            portfolio_response = provider.get_portfolio(raw_account_id)
-            broker_cash_as_of = _timestamp(clock())
-            withdraw_limits_observation = provider.get_withdraw_limits(
-                raw_account_id
+            portfolio_response = self.read_accounting_cash(
+                provider, raw_account_id, clock=clock, monotonic_ns=monotonic_ns,
             )
-            broker_withdraw_limits_as_of = _timestamp(clock())
+            broker_cash_as_of = _timestamp(clock())
+            if self.buying_budget_policy is None:
+                # Preserve the historical call sequence and independently sampled time.
+                withdraw_limits_observation = provider.get_withdraw_limits(raw_account_id)
+                broker_withdraw_limits_as_of = _timestamp(clock())
+                own_buying_cash_proof = None
+            else:
+                withdraw_limits_observation, broker_withdraw_limits_as_of, own_buying_cash_proof = self.read_availability_cash(
+                    provider, raw_account_id, account_scope_sha256=current.account_scope_sha256,
+                    identity_key=identity_key, identity_key_id=identity_key_id,
+                    clock=clock, monotonic_ns=monotonic_ns,
+                )
+        except CL7RuntimeError:
+            raise
         except Exception:
             _fail(
                 CL7RuntimeReason.BROKER_READ_FAILED,
@@ -1873,6 +2001,7 @@ class RuntimeCashAuthorityManager:
             withdraw_limits_observation=withdraw_limits_observation,
             broker_cash_as_of=broker_cash_as_of,
             broker_withdraw_limits_as_of=broker_withdraw_limits_as_of,
+            own_buying_cash_proof=own_buying_cash_proof,
             raw_account_id=raw_account_id,
             identity_key=identity_key,
             identity_key_id=identity_key_id,
@@ -1949,8 +2078,12 @@ class RuntimeCashAuthorityManager:
                 expected_sha256=current.sha256,
             )
             try:
-                opening_response = provider.get_portfolio(raw_account_id)
+                opening_response = self.read_accounting_cash(
+                provider, raw_account_id, clock=clock, monotonic_ns=monotonic_ns,
+            )
                 opening_as_of = _timestamp(clock())
+            except CL7RuntimeError:
+                raise
             except Exception:
                 _fail(
                     CL7RuntimeReason.BROKER_READ_FAILED,
@@ -2831,6 +2964,7 @@ class RuntimeCashAuthorityManager:
         target_lots: int,
         direction: str,
         evaluated_at: str,
+        own_funds_evidence: OwnFundsEvidence | None = None,
     ) -> LockedDispatchProof:
         context_status = getattr(context, "status", None)
         if getattr(context_status, "value", None) != "READY_FOR_LOCKED_REVALIDATION":
@@ -2849,7 +2983,10 @@ class RuntimeCashAuthorityManager:
             current_lots=current_lots,
             direction=direction,
             evaluated_at=evaluated_at,
-            free_investable_cash=context.free_investable_cash,
+            free_investable_cash=(
+                Money("RUB", min(context.free_investable_cash.minor_units, own_funds_evidence.free_after_reservations_nano))
+                if own_funds_evidence is not None and direction == "BUY" else context.free_investable_cash
+            ),
             identity_key_id=context.identity_key_id,
             ledger_head_sha256=context.ledger_head_sha256,
             ledger_revision=context.ledger_revision,
@@ -2861,6 +2998,8 @@ class RuntimeCashAuthorityManager:
             risk_policy_hash=context.risk_policy_hash,
             risk_state_guard_hash=context.risk_state_guard_hash,
             target_lots=target_lots,
+            version=2 if own_funds_evidence is not None else 1,
+            own_funds_evidence=own_funds_evidence,
         )
 
 

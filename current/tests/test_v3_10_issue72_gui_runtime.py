@@ -903,7 +903,7 @@ class _Coordinator:
 
     def coordinate(self, proposal, *_args, **_kwargs):
         self.calls.append(proposal)
-        return SimpleNamespace(status="QUEUED")
+        return SimpleNamespace(status="QUEUED", intent_id="synthetic-queued-intent")
 
 
 class _Adapter:
@@ -915,9 +915,11 @@ class _Adapter:
         self.cash_authority_manager = cash_authority
         self.dispatches = 0
 
-    def dispatch_next(self, repository):
+    def dispatch_next(self, repository, *, expected_intent_id):
+        assert expected_intent_id == "synthetic-queued-intent"
         self.dispatches += 1
-        return SimpleNamespace(status="IDLE")
+        from trading_robot.sandbox_execution_adapter import SandboxDispatchResult
+        return SandboxDispatchResult(status="IDLE")
 
 
 def _controller(root: Path, state=RuntimeCashAuthorityState.EXACT_CASH_ARMED):

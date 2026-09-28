@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING as _TYPE_CHECKING
 
 from trading_robot import broker_read_adapters as _broker
 from trading_robot import cash_availability as _cl5
+from trading_robot import cash_buying_availability as _buying
 from trading_robot import cash_ledger_domain as _ledger
 from trading_robot import cash_ledger_opening_reconciliation as _cl4
 from trading_robot import cash_ledger_persistence as _persistence
@@ -1902,7 +1903,7 @@ class PortfolioRiskCashContext:
     availability_reason: str
     availability_evaluated_at: str
     broker_cash_as_of: str
-    broker_withdraw_limits_as_of: str
+    broker_withdraw_limits_as_of: str | None
     free_investable_cash: Money | None
     ledger_export_sha256: str
     ledger_revision: int
@@ -1924,20 +1925,29 @@ class PortfolioRiskCashContext:
     identity_key_id: str
     context_identity_sha256: str
     version: int = PORTFOLIO_RISK_CASH_CONTEXT_VERSION
+    broker_own_buying_as_of: str | None = None
+    buying_scope_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version != PORTFOLIO_RISK_CASH_CONTEXT_VERSION
+            or self.version not in (PORTFOLIO_RISK_CASH_CONTEXT_VERSION, 3)
         ):
             _fail(CL6Reason.VERSION_UNSUPPORTED)
+        if self.version == 2:
+            if self.broker_own_buying_as_of is not None or self.buying_scope_sha256 is not None:
+                _fail(CL6Reason.EVIDENCE_CORRELATION_INVALID)
+        else:
+            if self.broker_withdraw_limits_as_of is not None:
+                _fail(CL6Reason.EVIDENCE_CORRELATION_INVALID)
+            _require_hash(self.buying_scope_sha256, CL6Reason.EVIDENCE_CORRELATION_INVALID)
         _require_hash(self.account_scope_sha256, CL6Reason.ACCOUNT_SCOPE_INVALID)
         _require_environment(self.environment)
         for value in (
             self.evaluated_at,
             self.availability_evaluated_at,
             self.broker_cash_as_of,
-            self.broker_withdraw_limits_as_of,
+            self.broker_withdraw_limits_as_of if self.version == 2 else self.broker_own_buying_as_of,
             self.central_projection_evaluated_at,
             self.portfolio_snapshot_at,
             self.portfolio_captured_at,
@@ -1988,7 +1998,7 @@ class PortfolioRiskCashContext:
         _require_key_id(self.identity_key_id)
 
     def _identity_dict(self) -> dict[str, object]:
-        return {
+        result = {
             "account_scope_sha256": self.account_scope_sha256,
             "availability_evaluated_at": self.availability_evaluated_at,
             "availability_reason": self.availability_reason,
@@ -2027,9 +2037,17 @@ class PortfolioRiskCashContext:
             "version": self.version,
         }
 
+        if self.version == 3:
+            del result["broker_withdraw_limits_as_of"]
+            result["broker_own_buying_as_of"] = self.broker_own_buying_as_of
+            result["buying_scope_sha256"] = self.buying_scope_sha256
+            result["domain"] = "v3.10-cl6-own-buying-risk-cash-context-identity"
+        return result
+
     def to_canonical_dict(self) -> dict[str, object]:
         result = self._identity_dict()
-        result["domain"] = "v3.10-cl6-portfolio-risk-cash-context"
+        result["domain"] = ("v3.10-cl6-portfolio-risk-cash-context" if self.version == 2
+                            else "v3.10-cl6-own-buying-risk-cash-context")
         result["context_identity_sha256"] = self.context_identity_sha256
         return result
 
@@ -2788,7 +2806,10 @@ def _rebuild_availability(
     identity_key: bytes,
 ) -> _cl5.CashAvailabilitySnapshot:
     try:
-        rebuilt = _cl5.build_cash_availability(
+        builder = (_buying.build_own_cash_availability
+                   if type(withdraw_limits) is _buying.OwnBuyingCashProof
+                   else _cl5.build_cash_availability)
+        rebuilt = builder(
             ledger_export_bytes,
             reconciliation,
             withdraw_limits,
@@ -2806,7 +2827,7 @@ def _rebuild_availability(
     except Exception:  # noqa: BLE001 - accepted CL5 boundary
         failure = CL6Error(CL6Reason.INTERNAL_BOUNDARY_FAILED)
     else:
-        if type(rebuilt) is not _cl5.CashAvailabilitySnapshot:
+        if type(rebuilt) not in (_cl5.CashAvailabilitySnapshot, _buying.OwnCashAvailabilitySnapshot):
             failure = CL6Error(CL6Reason.INTERNAL_BOUNDARY_FAILED)
         else:
             try:
@@ -2822,6 +2843,9 @@ def _context_identity(
     context: PortfolioRiskCashContext,
     identity_key: bytes,
 ) -> str:
+    if context.version == 2 and (context.broker_own_buying_as_of is not None
+                                 or context.buying_scope_sha256 is not None):
+        _fail(CL6Reason.EVIDENCE_CORRELATION_INVALID)
     return _hmac_sha256(identity_key, context._identity_dict())
 
 
@@ -2841,9 +2865,9 @@ def build_portfolio_risk_cash_context(
     if (
         type(ledger_export_bytes) is not bytes
         or type(reconciliation) is not _cl4.CashReconciliation
-        or type(withdraw_limits) is not _cl5.BrokerWithdrawLimitsCashProof
+        or type(withdraw_limits) not in (_cl5.BrokerWithdrawLimitsCashProof, _buying.OwnBuyingCashProof)
         or type(reservations) is not _cl5.CentralReservationProjection
-        or type(availability) is not _cl5.CashAvailabilitySnapshot
+        or type(availability) not in (_cl5.CashAvailabilitySnapshot, _buying.OwnCashAvailabilitySnapshot)
         or type(portfolio) is not PortfolioIdentityEvidence
         or type(risk_guard) is not RiskGuardEvidence
         or type(evaluated_at) is not str
@@ -2851,6 +2875,9 @@ def build_portfolio_risk_cash_context(
         or type(identity_key_id) is not str
     ):
         _fail(CL6Reason.TYPE_INVALID)
+    own = type(withdraw_limits) is _buying.OwnBuyingCashProof
+    if own != (type(availability) is _buying.OwnCashAvailabilitySnapshot):
+        _fail(CL6Reason.CASH_AVAILABILITY_INVALID)
     evaluated_ns = _timestamp_ns(evaluated_at)
     key = _require_key(identity_key)
     key_id = _require_key_id(identity_key_id)
@@ -2904,7 +2931,7 @@ def build_portfolio_risk_cash_context(
     timestamps = (
         rebuilt.evaluated_at,
         rebuilt.broker_cash_as_of,
-        rebuilt.broker_withdraw_limits_as_of,
+        rebuilt.broker_own_buying_as_of if own else rebuilt.broker_withdraw_limits_as_of,
         rebuilt.central_projection_evaluated_at,
         checked_portfolio.portfolio_snapshot_at,
         checked_portfolio.captured_at,
@@ -2933,7 +2960,8 @@ def build_portfolio_risk_cash_context(
     if not availability_ready:
         status = RiskCashContextStatus.BLOCKED
         reason = RiskCashContextReason.CASH_AVAILABILITY_NOT_READY
-    elif any(evaluated_ns - value > MAX_CONTEXT_AGE_NS for value in availability_times):
+    elif any(evaluated_ns - value > (_buying.MAX_AGE_NS if own else MAX_CONTEXT_AGE_NS)
+             for value in availability_times):
         status = RiskCashContextStatus.BLOCKED
         reason = RiskCashContextReason.CASH_AVAILABILITY_STALE
     elif not portfolio_ready:
@@ -2967,7 +2995,10 @@ def build_portfolio_risk_cash_context(
         availability_reason=rebuilt.availability_reason.value,
         availability_evaluated_at=rebuilt.evaluated_at,
         broker_cash_as_of=rebuilt.broker_cash_as_of,
-        broker_withdraw_limits_as_of=rebuilt.broker_withdraw_limits_as_of,
+        broker_withdraw_limits_as_of=None if own else rebuilt.broker_withdraw_limits_as_of,
+        broker_own_buying_as_of=rebuilt.broker_own_buying_as_of if own else None,
+        buying_scope_sha256=rebuilt.buying_scope_sha256 if own else None,
+        version=3 if own else 2,
         free_investable_cash=free,
         ledger_export_sha256=rebuilt.ledger_export_sha256,
         ledger_revision=rebuilt.ledger_revision,

@@ -57,6 +57,8 @@ from trading_robot.multi_instrument_strategy import (
     build_strategy_proposal,
 )
 from trading_robot.portfolio_repository import PortfolioRepository
+from trading_robot.portfolio_risk_adapter import PortfolioRiskInstrumentMetadata
+from trading_robot.portfolio_risk_read_service import load_portfolio_risk_metadata
 from trading_robot.runtime_cash_authority import RuntimeCashAuthorityState
 from trading_robot.strategy_runtime import (
     compare_strategy_decisions,
@@ -2407,6 +2409,80 @@ def consume_preparation_once(path: Path, prep: LivePreparation) -> str:
         raise
 
 
+def _load_bound_risk_metadata(
+    path: Path,
+    *,
+    expected_raw: bytes,
+) -> dict[str, PortfolioRiskInstrumentMetadata]:
+    """Bind the existing metadata loader to the exact Preparation-pinned bytes.
+
+    The loader verifies its normal checksum/schema. Comparing its normalized
+    result with the pinned payload also rejects a read-time A/B/A substitution;
+    before/after file equality alone would not establish that binding.
+    """
+
+    reason = "QUOTE_OR_METADATA_INVALID"
+    checksum_path = path.with_name(path.name + ".sha256")
+    checksum_raw = _read_exact(checksum_path, reason)
+    if _read_exact(path, reason) != expected_raw:
+        _fail(reason)
+    try:
+        if checksum_raw.decode("ascii").strip().lower() != _sha256(expected_raw):
+            _fail(reason)
+        fields = json.loads(expected_raw, object_pairs_hook=_unique_metadata_object)
+        if (
+            type(fields) is not dict
+            or set(fields) != {"version", "instruments"}
+            or type(fields["version"]) is not int
+            or fields["version"] != 1
+            or type(fields["instruments"]) is not list
+        ):
+            _fail(reason)
+        pinned: dict[str, PortfolioRiskInstrumentMetadata] = {}
+        for row in fields["instruments"]:
+            if (
+                type(row) is not dict
+                or set(row) - {"instrument_id", "lot_size", "asset_class", "currency"}
+                or type(row.get("instrument_id")) is not str
+                or not row["instrument_id"].strip()
+                or type(row.get("lot_size")) is not int
+                or row["lot_size"] <= 0
+                or type(row.get("currency")) is not str
+                or not row["currency"].strip()
+                or (
+                    row.get("asset_class") is not None
+                    and type(row["asset_class"]) is not str
+                )
+            ):
+                _fail(reason)
+            item = PortfolioRiskInstrumentMetadata(**row)
+            if item.instrument_id in pinned:
+                _fail(reason)
+            pinned[item.instrument_id] = item
+        metadata = load_portfolio_risk_metadata(path)
+        if not pinned or metadata != pinned:
+            _fail(reason)
+    except Q7ALiveError:
+        raise
+    except (OSError, RuntimeError, TypeError, ValueError):
+        _fail(reason)
+    if (
+        _read_exact(path, reason) != expected_raw
+        or _read_exact(checksum_path, reason) != checksum_raw
+    ):
+        _fail(reason)
+    return metadata
+
+
+def _unique_metadata_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            _fail("QUOTE_OR_METADATA_INVALID")
+        result[key] = value
+    return result
+
+
 def _compose_live_owners(args: argparse.Namespace, prep: LivePreparation) -> LiveOwners:
     """Materialize the accepted existing owner graph after all public checks."""
 
@@ -2506,6 +2582,21 @@ def _compose_live_owners(args: argparse.Namespace, prep: LivePreparation) -> Liv
     )
     if binding is None:
         _fail("TARGET_NOT_MEMBER")
+    # Preserve the established inactive-runtime/identity gate precedence before
+    # constructing the authoritative metadata-bound Risk/execution adapter.
+    metadata = _load_bound_risk_metadata(args.metadata, expected_raw=metadata_raw)
+    configured_instruments = {
+        item.runtime.config.instrument_id for item in configured.bindings
+    }
+    selected_metadata = metadata.get(target)
+    if (
+        set(metadata) != configured_instruments
+        or selected_metadata is None
+        or selected_metadata.currency != "RUB"
+        or type(control_fields.get("target_lot_size")) is not int
+        or selected_metadata.lot_size != control_fields["target_lot_size"]
+    ):
+        _fail("QUOTE_OR_METADATA_INVALID")
     provider = ProviderEvidenceAdapter(
         live.provider,
         target_instrument_id=target,
@@ -2516,7 +2607,7 @@ def _compose_live_owners(args: argparse.Namespace, prep: LivePreparation) -> Liv
     )
     live.provider = provider
     live.portfolio_manager.api = provider
-    adapter = live.adapter()
+    adapter = live.adapter(instrument_metadata=metadata)
     coordinator = CentralOrderCoordinator(
         live.central,
         live.portfolio,

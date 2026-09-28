@@ -2597,7 +2597,13 @@ class CentralOrderManager:
         risk_runtime: Any | None = None,
         execution_price_rub: float | None = None,
         execution_price_source: str | None = None,
+        expected_intent: CentralOrderIntent | None = None,
+        expected_portfolio_state: PortfolioState | None = None,
     ) -> CentralOrderIntent:
+        if expected_intent is not None and type(expected_intent) is not CentralOrderIntent:
+            raise CentralOrderConflictError("Exact reconciliation intent is invalid.")
+        if expected_portfolio_state is not None and type(expected_portfolio_state) is not PortfolioState:
+            raise CentralOrderConflictError("Exact reconciliation portfolio is invalid.")
         selected = _required_text(intent_id, "intent_id")
         normalized_outcome = _required_text(outcome, "outcome").upper()
         normalized_executed_lots = _non_negative_int(
@@ -2608,6 +2614,9 @@ class CentralOrderManager:
         with portfolio_repository.locked_snapshot(
             expected_account_id=self.account_id
         ) as locked_portfolio:
+            if (expected_portfolio_state is not None
+                    and locked_portfolio.to_dict() != expected_portfolio_state.to_dict()):
+                raise CentralOrderConflictError("Exact reconciliation portfolio changed.")
             observed = next(
                 (
                     item
@@ -2618,6 +2627,8 @@ class CentralOrderManager:
             )
             if observed is None:
                 raise CentralOrderConflictError(f"Unknown intent {selected}.")
+            if expected_intent is not None and observed != expected_intent:
+                raise CentralOrderConflictError("Exact reconciliation intent changed.")
             lease = self._validate_reconciliation(
                 portfolio_repository,
                 observed,
@@ -2646,6 +2657,8 @@ class CentralOrderManager:
                 )
                 if current is None:
                     raise CentralOrderConflictError(f"Unknown intent {selected}.")
+                if expected_intent is not None and current != expected_intent:
+                    raise CentralOrderConflictError("Exact reconciliation intent changed.")
                 if current.status != observed.status:
                     raise CentralOrderConflictError(
                         "Central order changed during reconciliation."

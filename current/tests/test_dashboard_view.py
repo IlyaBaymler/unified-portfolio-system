@@ -234,6 +234,7 @@ def test_gui_row_separates_journal_decision_from_unknown_position(tmp_path):
         detail="Missing owner evidence: PORTFOLIO",
     )
     controller = SimpleNamespace(
+        latest_cycle_outcomes=lambda: {},
         session_id="current-session",
         account_scope_sha256="a" * 64,
         dashboard=lambda: MultiInstrumentDashboard(

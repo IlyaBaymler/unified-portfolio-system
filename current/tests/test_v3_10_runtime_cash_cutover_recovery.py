@@ -1443,6 +1443,9 @@ def test_initial_rebuild_timestamps_non_atomic_provider_reads_independently(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = object.__new__(cl7.RuntimeCashAuthorityManager)
+    # STEP11: this deliberately constructor-free fixture exercises the unchanged
+    # legacy source. Give it the explicit selector normally set by __init__.
+    manager._cash_source_version = 2
     current = SimpleNamespace(operations_complete_through=T0)
     batch = SimpleNamespace()
     captured: dict[str, object] = {}
