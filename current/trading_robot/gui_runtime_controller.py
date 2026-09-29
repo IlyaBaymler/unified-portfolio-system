@@ -1023,32 +1023,43 @@ class GuiRuntimeController:
             raise GuiRuntimeBlockedError("CONFIGURED_SET_NOT_ACTIVE")
         recovery = getattr(self.cycle_source, "portfolio_recovery", None)
         intent = self.central_order_coordinator.manager.state().blocking_intent
-        if (type(recovery) is not DesktopFillRecovery or intent is None
+        if (type(recovery) is not DesktopFillRecovery
                 or recovery.central is not self.central_order_coordinator.manager
                 or recovery.risk is not self.central_order_coordinator.risk_runtime
                 or recovery.manager.repository is not self.portfolio_repository
                 or recovery.authority is not self.cash_authority):
             raise GuiRuntimeBlockedError("RECOVERY_REQUIRED")
-        recovery()
+        authority = self._authority_record()
+        if authority.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING:
+            from .exact_recovery_tick import run_exact_recovery_tick
+            result = run_exact_recovery_tick(self.execution_adapter, recovery=recovery)
+            runtime_key, ticker = result.runtime_key, result.ticker
+            status, action = result.status, "EXACT_SETTLEMENT_RECOVERY"
+        else:
+            if intent is None:
+                raise GuiRuntimeBlockedError("RECOVERY_REQUIRED")
+            recovery()
+            runtime_key, ticker = intent.candidate.runtime_key, intent.candidate.ticker
+            status = recovery.last_status
+            action = ("FULL_FILL_RECOVERY" if status == "RECONCILED_FULL_FILL"
+                      else "ORDER_RECOVERY")
         # Do not enter Strategy/dispatch or advance candle watermarks in this
         # tick, even after success. The next normal tick reevaluates everything.
         if self.journal is not None:
             try:
                 self.journal.record(JournalEvent(
                     category="gui_runtime", event_type="GUI_FILL_RECOVERY", severity="INFO",
-                    mode="SANDBOX_EXECUTION", status=recovery.last_status,
+                    mode="SANDBOX_EXECUTION", status=status,
                     timestamp_utc=now.astimezone(timezone.utc).isoformat(),
                     payload={"account_scope_sha256": self.account_scope_sha256,
-                             "recovery_status": recovery.last_status,
+                             "recovery_status": status,
                              "provider_post_attempts": 0, "strategy_evaluated": False},
                 ))
             except Exception:
                 self._execution_observation_blocked = True
                 raise GuiRuntimeBlockedError("RECOVERY_AUDIT_UNAVAILABLE") from None
         return SchedulerTickResult(serviced_at=now, actions=(SchedulerActionResult(
-            runtime_key=intent.candidate.runtime_key, ticker=intent.candidate.ticker,
-            action="FULL_FILL_RECOVERY" if recovery.last_status == "RECONCILED_FULL_FILL"
-            else "ORDER_RECOVERY", status=recovery.last_status,
+            runtime_key=runtime_key, ticker=ticker, action=action, status=status,
         ),))
 
     def set_connected(self, connected: bool) -> None:

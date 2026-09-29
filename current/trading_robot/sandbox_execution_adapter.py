@@ -13,6 +13,12 @@ from .central_order_manager import (
     CentralOrderManager,
     CentralOrderState,
 )
+from .exact_order_receipt import (
+    ExactOrderReceipt,
+    ExactOrderReceiptError,
+    decode_exact_order_receipt,
+    validate_exact_receipt_binding,
+)
 from .exact_own_funds import MAX_AGE_NS, LockedOwnFundsPolicy, OwnFundsError
 from .market_idle import MarketAvailability, classify_market_status
 from .orders import (
@@ -156,6 +162,8 @@ class SandboxInspectionResult:
     execution_price_source: str | None = None
     retryable: bool = False
     error: str | None = None
+    exact_receipt: ExactOrderReceipt | None = None
+    reconciliation_block_reason: str | None = None
 
 
 class SandboxExecutionAdapter:
@@ -923,6 +931,46 @@ class SandboxExecutionAdapter:
             ),
         )
 
+    def finalize_exact_settlement(self, *, recovery: Any, proof_sha256: str) -> Any:
+        """Explicit bounded owner closure after verified STEP14 cash components."""
+        from .exact_settlement_closure import finalize_exact_settlement
+        return finalize_exact_settlement(self, recovery=recovery, proof_sha256=proof_sha256)
+
+    def reconcile_fee_alias(self, *, recovery: Any, proof_sha256: str,
+                            original_transaction_sha256: str) -> Any:
+        """Explicit zero-money alias verification; may retain a fee HOLD."""
+        from .exact_fee_alias import reconcile_fee_alias
+
+        return reconcile_fee_alias(self, recovery=recovery, proof_sha256=proof_sha256,
+                                   original_transaction_sha256=original_transaction_sha256)
+
+    def reconcile_fee_replacement(self, *, recovery: Any, proof_sha256: str,
+                                  original_transaction_sha256: str) -> Any:
+        """Explicit immutable commission correction; never a new order or arm."""
+        from .exact_fee_replacement import reconcile_fee_replacement
+
+        return reconcile_fee_replacement(self, recovery=recovery, proof_sha256=proof_sha256,
+                                         original_transaction_sha256=original_transaction_sha256)
+
+    def reconcile_late_fee(self, *, recovery: Any, proof_sha256: str) -> Any:
+        """Explicit cash-only late-fee gate for the latest closed exact intent.
+
+        Requires DISARMED or this gate's own held state. It never arms or
+        records another Risk execution; incomplete evidence retains the hold.
+        """
+        from .exact_late_fee import reconcile_late_fee
+        return reconcile_late_fee(self, recovery=recovery, proof_sha256=proof_sha256)
+
+    def record_exact_cash_components(self, *, expected_proof_sha256: str | None = None) -> Any:
+        """Record verified full-fill cash components; do not reconcile the order.
+
+        Explicit recovery substep, never invoked by dispatch or LEGACY recovery.
+        The exact pending guard remains closed even after successful recording.
+        """
+        from .exact_cash_settlement import record_exact_cash_components
+
+        return record_exact_cash_components(self, expected_proof_sha256=expected_proof_sha256)
+
     def inspect_blocking_order(self) -> SandboxInspectionResult:
         blocker = self.manager.state().blocking_intent
         if blocker is None:
@@ -941,6 +989,8 @@ class SandboxExecutionAdapter:
                 retryable=False,
                 error="CENTRAL_CHANGED",
             )
+        if blocker.cl7_locked_dispatch_proof is not None:
+            return self._inspect_exact_order(blocker)
         try:
             response = self.transport.get_order_state(
                 self.policy.account_id,
@@ -1007,6 +1057,103 @@ class SandboxExecutionAdapter:
             ),
             execution_price_rub=price,
             execution_price_source=price_source,
+        )
+
+    def _inspect_exact_order(
+        self, blocker: CentralOrderIntent,
+    ) -> SandboxInspectionResult:
+        """One bounded read, with optimistic custody checks; never a settlement.
+
+        The CLI may already hold the authority lock. Read the protected record
+        without acquiring that lock again, and reject a changed snapshot. These
+        observations are not a lease for any later mutation or authority clear.
+        """
+        try:
+            own_policy = self.cl7_own_funds_policy
+            if own_policy is None or own_policy.account_id != self.policy.account_id:
+                raise ExactOrderReceiptError("EXACT_RECEIPT_METADATA_UNAVAILABLE")
+            own_policy.binding_guard()
+            instrument = own_policy.instruments.get(blocker.candidate.instrument_id)
+            validate_exact_receipt_binding(
+                blocker, account_id=self.policy.account_id,
+                identity_key=self.cl7_identity_key,
+                identity_key_id=self.cl7_identity_key_id, instrument=instrument,
+            )
+            authority = self.cash_authority_manager.store._load_unlocked(
+                allow_missing_legacy=False,
+            )
+            central = self.manager.state()
+            if (authority.state is not RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+                    or central.blocking_intent != blocker
+                    or self.cash_authority_manager._recovery_intent_from_state(
+                        authority, central, identity_key=self.cl7_identity_key,
+                    ) != blocker):
+                raise ExactOrderReceiptError("EXACT_RECEIPT_CUSTODY_MISMATCH")
+            started, started_at = self.cl7_monotonic_ns(), self.cl7_clock()
+            if type(started) is not int or started < 0:
+                raise ExactOrderReceiptError("EXACT_RECEIPT_CLOCK_INVALID")
+            start_wall = _cl7_timestamp_ns(started_at)
+            try:
+                raw = self.transport.get_order_state(
+                    self.policy.account_id, blocker.intent_id, by_request_id=True,
+                )
+            except TBankAPIError as exc:
+                return SandboxInspectionResult(
+                    status=("NOT_FOUND_UNCERTAIN" if exc.status_code == 404
+                            and not exc.transient else "INSPECTION_UNAVAILABLE"),
+                    intent_id=blocker.intent_id, retryable=True,
+                    error="EXACT_RECEIPT_READ_UNAVAILABLE",
+                    reconciliation_block_reason="EXACT_SETTLEMENT_REQUIRED",
+                )
+            except Exception:  # noqa: BLE001 - never surface private provider diagnostics
+                return SandboxInspectionResult(
+                    status="INSPECTION_UNAVAILABLE", intent_id=blocker.intent_id,
+                    retryable=True, error="EXACT_RECEIPT_READ_UNAVAILABLE",
+                    reconciliation_block_reason="EXACT_SETTLEMENT_REQUIRED",
+                )
+            finished, observed_at = self.cl7_monotonic_ns(), self.cl7_clock()
+            if (type(finished) is not int or not 0 <= finished - started <= MAX_AGE_NS
+                    or not 0 <= _cl7_timestamp_ns(observed_at) - start_wall <= MAX_AGE_NS):
+                raise ExactOrderReceiptError("EXACT_RECEIPT_READ_STALE")
+            receipt = decode_exact_order_receipt(
+                raw, blocker, account_id=self.policy.account_id,
+                identity_key=self.cl7_identity_key,
+                identity_key_id=self.cl7_identity_key_id, instrument=instrument,
+                observed_at=observed_at,
+            )
+            own_policy.binding_guard()
+            if (self.manager.state() != central
+                    or self.cash_authority_manager.store._load_unlocked(
+                        allow_missing_legacy=False,
+                    ) != authority
+                    or self.cl7_own_funds_policy is not own_policy
+                    or own_policy.instruments.get(blocker.candidate.instrument_id) != instrument):
+                raise ExactOrderReceiptError("EXACT_RECEIPT_CUSTODY_CHANGED")
+            completed = self.cl7_monotonic_ns()
+            if (type(completed) is not int or not finished <= completed
+                    or not 0 <= completed - started <= MAX_AGE_NS
+                    or not 0 <= _cl7_timestamp_ns(self.cl7_clock()) - start_wall <= MAX_AGE_NS):
+                raise ExactOrderReceiptError("EXACT_RECEIPT_READ_STALE")
+            average = receipt.average_price_rub
+            return SandboxInspectionResult(
+                status="ORDER_OBSERVED", intent_id=blocker.intent_id,
+                broker_order_id=raw["orderId"], provider_status=receipt.provider_status,
+                executed_lots=receipt.executed_lots, terminal=receipt.terminal,
+                # Compatibility/display field only. Exact economics remain in
+                # integer/rational form; no float is booked into CashLedger.
+                execution_price_rub=None if average is None else float(average),
+                execution_price_source=None if average is None else "GET_ORDER_STATE_STAGES",
+                exact_receipt=receipt,
+                reconciliation_block_reason="EXACT_SETTLEMENT_REQUIRED",
+            )
+        except ExactOrderReceiptError as exc:
+            error = str(exc)
+        except Exception:  # noqa: BLE001 - includes custody and metadata provider failures
+            error = "EXACT_RECEIPT_DEPENDENCY_FAILED"
+        return SandboxInspectionResult(
+            status="INSPECTION_UNCERTAIN", intent_id=blocker.intent_id,
+            retryable=True, error=error,
+            reconciliation_block_reason="EXACT_SETTLEMENT_REQUIRED",
         )
 
     def _market_precheck(

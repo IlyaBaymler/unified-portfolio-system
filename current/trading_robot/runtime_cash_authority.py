@@ -68,6 +68,7 @@ class RuntimeCashAuthorityState(StrEnum):
     EXACT_CASH_DISARMED = "EXACT_CASH_DISARMED"
     EXACT_CASH_ARMED = "EXACT_CASH_ARMED"
     EXACT_CASH_DISPATCH_PENDING = "EXACT_CASH_DISPATCH_PENDING"
+    EXACT_CASH_FEE_ADJUSTMENT_PENDING = "EXACT_CASH_FEE_ADJUSTMENT_PENDING"
 
 
 class RuntimeCashAuthorityOwner(StrEnum):
@@ -499,6 +500,16 @@ _TRANSITION_KINDS = frozenset(
         "DISPATCH_REJECTED_REARMED",
         "DISPATCH_ACCOUNTED_REARMED",
         "RECOVERY_CLOSED_DISARMED",
+        "EXACT_SETTLEMENT_CLOSED_DISARMED",
+        "EXACT_ZERO_TERMINAL_CLOSED_DISARMED",
+        "FEE_ALIAS_HELD",
+        "FEE_ALIAS_CLOSED_DISARMED",
+        "FEE_ALIAS_REVIEW_HELD",
+        "FEE_REPLACEMENT_HELD",
+        "FEE_REPLACEMENT_CLOSED_DISARMED",
+        "FEE_REPLACEMENT_REVIEW_HELD",
+        "LATE_FEE_ADJUSTMENT_HELD",
+        "LATE_FEE_ADJUSTMENT_CLOSED_DISARMED",
         "ROLLBACK_TO_LEGACY",
     }
 )
@@ -628,7 +639,8 @@ class RuntimeCashAuthorityRecord:
             if not self.ever_exact_activated:
                 _fail(CL7RuntimeReason.STATE_INVALID)
         if (self.pending_dispatch_proof_sha256 is not None) != (
-            self.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+            self.state in {RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING,
+                           RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING}
         ):
             _fail(CL7RuntimeReason.STATE_INVALID)
 
@@ -1122,6 +1134,46 @@ def _transition_pair(
             {RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING},
             RuntimeCashAuthorityState.EXACT_CASH_ARMED,
         ),
+        "EXACT_SETTLEMENT_CLOSED_DISARMED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+        ),
+        "EXACT_ZERO_TERMINAL_CLOSED_DISARMED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+        ),
+        "FEE_ALIAS_HELD": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING,
+        ),
+        "FEE_ALIAS_REVIEW_HELD": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING,
+        ),
+        "FEE_ALIAS_CLOSED_DISARMED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+        ),
+        "FEE_REPLACEMENT_HELD": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING,
+        ),
+        "FEE_REPLACEMENT_REVIEW_HELD": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING,
+        ),
+        "FEE_REPLACEMENT_CLOSED_DISARMED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+        ),
+        "LATE_FEE_ADJUSTMENT_HELD": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING,
+        ),
+        "LATE_FEE_ADJUSTMENT_CLOSED_DISARMED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+        ),
         "RECOVERY_CLOSED_DISARMED": (
             {RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING},
             RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
@@ -1192,8 +1244,101 @@ def _transition_pair(
         "DISPATCH_REJECTED_REARMED": {"pending_dispatch_proof_sha256"},
         "DISPATCH_ACCOUNTED_REARMED": {"pending_dispatch_proof_sha256"},
         "RECOVERY_CLOSED_DISARMED": {"pending_dispatch_proof_sha256"},
+        "EXACT_SETTLEMENT_CLOSED_DISARMED": {
+            "pending_dispatch_proof_sha256", "ledger_head_sha256",
+            "ledger_revision", "operations_complete_through",
+        },
+        "EXACT_ZERO_TERMINAL_CLOSED_DISARMED": {
+            "pending_dispatch_proof_sha256", "ledger_head_sha256",
+            "ledger_revision", "operations_complete_through",
+        },
+        "FEE_ALIAS_HELD": {"pending_dispatch_proof_sha256"},
+        "FEE_ALIAS_REVIEW_HELD": {"pending_dispatch_proof_sha256"},
+        "FEE_ALIAS_CLOSED_DISARMED": {
+            "pending_dispatch_proof_sha256", "operations_complete_through",
+        },
+        "FEE_REPLACEMENT_HELD": {"pending_dispatch_proof_sha256"},
+        "FEE_REPLACEMENT_REVIEW_HELD": {"pending_dispatch_proof_sha256"},
+        "FEE_REPLACEMENT_CLOSED_DISARMED": {
+            "pending_dispatch_proof_sha256", "ledger_head_sha256",
+            "ledger_revision", "operations_complete_through",
+        },
+        "LATE_FEE_ADJUSTMENT_HELD": {"pending_dispatch_proof_sha256"},
+        "LATE_FEE_ADJUSTMENT_CLOSED_DISARMED": {
+            "pending_dispatch_proof_sha256", "ledger_head_sha256",
+            "ledger_revision", "operations_complete_through",
+        },
         "ROLLBACK_TO_LEGACY": set(),
     }
+    if current.transition_kind == "EXACT_SETTLEMENT_CLOSED_DISARMED":
+        if (current.ledger_revision is None or previous.ledger_revision is None
+                or current.ledger_revision <= previous.ledger_revision
+                or current.ledger_head_sha256 == previous.ledger_head_sha256
+                or current.operations_complete_through is None
+                or previous.operations_complete_through is None
+                or not previous.operations_complete_through < current.operations_complete_through <= current.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "EXACT_ZERO_TERMINAL_CLOSED_DISARMED":
+        # Dedicated zero-effect / one-fee transition. Never relax the positive
+        # settlement rule, invent a zero transaction, or reset the spent attempt.
+        if (current.ledger_revision is None or previous.ledger_revision is None
+                or current.ledger_revision - previous.ledger_revision not in {0, 1}
+                or (current.ledger_head_sha256 == previous.ledger_head_sha256)
+                   != (current.ledger_revision == previous.ledger_revision)
+                or current.operations_complete_through is None
+                or previous.operations_complete_through is None
+                or not previous.operations_complete_through < current.operations_complete_through <= current.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind in {"FEE_ALIAS_HELD", "FEE_ALIAS_REVIEW_HELD"}:
+        if (previous.post_attempt_count < 1 or current.pending_dispatch_proof_sha256 is None
+                or current.transition_at < previous.transition_at
+                or (current.transition_kind == "FEE_ALIAS_REVIEW_HELD"
+                    and previous.transition_kind != "FEE_ALIAS_CLOSED_DISARMED")):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "FEE_ALIAS_CLOSED_DISARMED":
+        # An observation alias is never a ledger mutation or a dispatch attempt.
+        if (previous.transition_kind != "FEE_ALIAS_HELD"
+                or current.ledger_revision is None or current.ledger_head_sha256 is None
+                or current.ledger_revision != previous.ledger_revision
+                or current.ledger_head_sha256 != previous.ledger_head_sha256
+                or current.pending_dispatch_proof_sha256 is not None
+                or current.operations_complete_through is None
+                or previous.operations_complete_through is None
+                or not previous.operations_complete_through < current.operations_complete_through <= current.transition_at
+                or current.transition_at < previous.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind in {"FEE_REPLACEMENT_HELD", "FEE_REPLACEMENT_REVIEW_HELD"}:
+        if (previous.post_attempt_count < 1 or current.pending_dispatch_proof_sha256 is None
+                or current.transition_at < previous.transition_at
+                or (current.transition_kind == "FEE_REPLACEMENT_REVIEW_HELD"
+                    and previous.transition_kind != "FEE_REPLACEMENT_CLOSED_DISARMED")):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "FEE_REPLACEMENT_CLOSED_DISARMED":
+        # CL2 correction bundle is one ledger transition with two transactions.
+        if (previous.transition_kind != "FEE_REPLACEMENT_HELD"
+                or current.ledger_revision is None or previous.ledger_revision is None
+                or current.ledger_revision != previous.ledger_revision + 1
+                or current.ledger_head_sha256 == previous.ledger_head_sha256
+                or current.operations_complete_through is None
+                or previous.operations_complete_through is None
+                or not previous.operations_complete_through < current.operations_complete_through <= current.transition_at
+                or current.transition_at < previous.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "LATE_FEE_ADJUSTMENT_HELD":
+        # A separate quarantine, not a spent POST attempt or an auto-arm.
+        if (previous.post_attempt_count < 1
+                or current.pending_dispatch_proof_sha256 is None
+                or current.transition_at < previous.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "LATE_FEE_ADJUSTMENT_CLOSED_DISARMED":
+        if (current.ledger_revision is None or previous.ledger_revision is None
+                or current.ledger_revision != previous.ledger_revision + 1
+                or current.ledger_head_sha256 == previous.ledger_head_sha256
+                or current.operations_complete_through is None
+                or previous.operations_complete_through is None
+                or not previous.operations_complete_through < current.operations_complete_through <= current.transition_at
+                or current.transition_at < previous.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
     always = {
         "record_revision",
         "previous_record_sha256",
@@ -1512,6 +1657,24 @@ class RuntimeCashAuthorityManager:
     @contextmanager
     def ledger_guard(self, ledger_store: Any) -> Iterator[Any]:
         """Freeze CL2 against every SQLite writer during final revalidation."""
+
+        # Explicit v4 pin/lease path. This only freezes a complete cash graph;
+        # it does not turn the view into a v1 store or an accepted CL7 context.
+        from .versioned_operational_store import VersionedOperationalStore
+        from .versioned_runtime_adapter import VersionedRuntimeStoreAdapter
+
+        if type(ledger_store) is VersionedRuntimeStoreAdapter:
+            try:
+                with ledger_store.locked_snapshot() as view:
+                    yield view
+            except CL7RuntimeError:
+                raise
+            except Exception:
+                _fail(CL7RuntimeReason.LEDGER_UNAVAILABLE, stage="VERSIONED_LEDGER")
+            return
+        if type(ledger_store) is VersionedOperationalStore:
+            _fail(CL7RuntimeReason.LEDGER_UNAVAILABLE,
+                  "VERSIONED_PINNED_ADAPTER_REQUIRED", stage="VERSIONED_LEDGER")
 
         root = getattr(ledger_store, "root", None)
         if not isinstance(root, Path):
@@ -2485,9 +2648,15 @@ class RuntimeCashAuthorityManager:
                 central,
                 identity_key=identity_key,
             )
+            # Canonical position/Risk reconciliation does not attest to CL2
+            # debit/credit/fee completeness. The generic clear API accepts no
+            # settlement evidence and therefore cannot close any executed path.
+            if intent.status == "RECONCILED":
+                _fail(CL7RuntimeReason.RECOVERY_REQUIRED,
+                      "EXACT_SETTLEMENT_REQUIRED", stage="POST_FILL")
             fully_resolved = (
                 intent.status == "FAILED" and intent.outcome == "SUBMISSION_REJECTED"
-            ) or intent.status == "RECONCILED"
+            )
             if not fully_resolved:
                 _fail(CL7RuntimeReason.RECOVERY_REQUIRED)
             candidate = self._change(
@@ -2929,7 +3098,8 @@ class RuntimeCashAuthorityManager:
         ):
             kind = "DISPATCH_REJECTED_REARMED"
         elif getattr(central_intent, "status", None) == "RECONCILED":
-            kind = "DISPATCH_ACCOUNTED_REARMED"
+            _fail(CL7RuntimeReason.RECOVERY_REQUIRED,
+                  "EXACT_SETTLEMENT_REQUIRED", stage="POST_FILL")
         else:
             kind = None
         if (

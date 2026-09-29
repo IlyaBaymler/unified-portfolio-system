@@ -405,6 +405,12 @@ def _blocked_payload(
         "status": "BLOCKED",
     }
     if (
+        exc.reason is CL7RuntimeReason.RECOVERY_REQUIRED
+        and exc.stage == "POST_FILL"
+        and exc.dependency_reason == "EXACT_SETTLEMENT_REQUIRED"
+    ):
+        payload["dependency_reason"] = "EXACT_SETTLEMENT_REQUIRED"
+    if (
         exc.reason is CL7RuntimeReason.OPENING_INVALID
         and exc.stage == "CL4_OPENING"
         and exc.dependency_reason in {reason.value for reason in CL4Reason}
@@ -705,13 +711,25 @@ def _safe_dispatch(result: SandboxDispatchResult) -> dict[str, object]:
 
 
 def _safe_inspection(result: SandboxInspectionResult) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "executed_lots": result.executed_lots,
         "provider_status": _operator_token(result.provider_status),
         "retryable": result.retryable,
         "status": result.status,
         "terminal": result.terminal,
     }
+    if result.reconciliation_block_reason is not None:
+        payload["reconciliation_block_reason"] = _operator_token(
+            result.reconciliation_block_reason
+        )
+        # The private typed receipt retains exact figures for a future ledger
+        # match. Public CLI diagnostics expose no monetary amounts or raw IDs.
+        payload["receipt_binding_verified"] = result.exact_receipt is not None
+        payload["settlement_verified"] = False
+        payload["authority_clear_allowed"] = False
+        payload["fee_status"] = (result.exact_receipt.fee_status
+                                 if result.exact_receipt is not None else None)
+    return payload
 
 
 def _print(payload: dict[str, object]) -> None:
@@ -852,6 +870,11 @@ def main(argv: list[str] | None = None) -> int:
                         inspection = adapter._inspect_order(blocker)
                         if inspection.status != "ORDER_OBSERVED":
                             raise CL7RuntimeError(CL7RuntimeReason.RECOVERY_REQUIRED)
+                        if inspection.suggested_reconciliation_outcome is None:
+                            raise CL7RuntimeError(
+                                CL7RuntimeReason.RECOVERY_REQUIRED,
+                                "EXACT_SETTLEMENT_REQUIRED", stage="POST_FILL",
+                            )
                         if blocker.status == "IN_FLIGHT":
                             if inspection.broker_order_id is None:
                                 raise CL7RuntimeError(

@@ -2627,6 +2627,10 @@ class CentralOrderManager:
             )
             if observed is None:
                 raise CentralOrderConflictError(f"Unknown intent {selected}.")
+            # This API has no exact cash-settlement evidence parameter. Do not
+            # retire reservations or record Risk from position proof alone.
+            if observed.cl7_locked_dispatch_proof is not None:
+                raise CentralOrderConflictError("EXACT_SETTLEMENT_REQUIRED")
             if expected_intent is not None and observed != expected_intent:
                 raise CentralOrderConflictError("Exact reconciliation intent changed.")
             lease = self._validate_reconciliation(
