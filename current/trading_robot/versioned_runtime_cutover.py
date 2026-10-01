@@ -66,8 +66,8 @@ def _point(fault: Callable[[str], None] | None, point: str) -> None:
         fault(point)
 
 
-def _physical(root: Path) -> dict[str, str]:
-    db = cl2._validate_live_root(root)
+def _physical(root: Path, connection: Any) -> dict[str, str]:
+    db = cl2._validate_open_root(root, connection)
     st = db.stat()
     return {"root": str(root.resolve(strict=True)), "device": str(st.st_dev), "inode": str(st.st_ino)}
 
@@ -78,7 +78,7 @@ def _identity(a: Any, r: Any) -> dict[str, Any]:
     return {"account_scope_sha256": a.cash_authority_manager.store._load_unlocked(
                 allow_missing_legacy=False).account_scope_sha256,
         "key_id": a.cl7_identity_key_id,
-        "source": _physical(a.cl7_ledger_store.root),
+        "source": _physical(a.cl7_ledger_store.root, a.cl7_ledger_store._connection),
         "authority_path": str(a.cash_authority_manager.store.path.resolve(strict=True)),
         "portfolio_lock": str(r.manager.repository.lock_path.resolve()),
         "risk_lock": str(r.risk.state_store.lock_path.resolve()),
@@ -226,7 +226,9 @@ def prepare_versioned_cutover(a: Any, *, recovery: Any, candidate: v4.VersionedO
                 plan = {"domain": DOMAIN, "version": 1, "kind": "PREPARED",
                     "target_root": str(root.resolve()), "runtime_identity": identity,
                     "owners_before": owners, "config_sha256": config,
-                    "source_export_sha256": source_sha, "journal_identity": _physical(journal_store.root),
+                    "source_export_sha256": source_sha, "journal_identity": _physical(
+                        journal_store.root, journal_store._connection
+                    ),
                     "journal_pins": {name: getattr(journal_pins, name) for name in journal_pins.__dataclass_fields__},
                     "candidate_pins": candidate_pins.to_dict(), "target_identity": _source_identity(target),
                     "registry_checkpoint": {"root_sha256": state.checkpoint.root_sha256,
@@ -324,7 +326,11 @@ def confirm_versioned_cutover(a: Any, *, recovery: Any, target_root: object,
     r, root = recovery, _path(target_root)
     with a.cash_authority_manager.store.locked():
         p = _load_prepared(a, r, root, expected_plan_sha256)
-        _require(_physical(journal_store.root) == p["journal_identity"], "JOURNAL_CHANGED")
+        _require(
+            _physical(journal_store.root, journal_store._connection)
+            == p["journal_identity"],
+            "JOURNAL_CHANGED",
+        )
         commit = _commit_plan(a, p, expected_plan_sha256)
         current = a.cash_authority_manager.store._load_unlocked(allow_missing_legacy=False)
         before = RuntimeCashAuthorityRecord.from_canonical_dict(p["owners_before"]["authority"])

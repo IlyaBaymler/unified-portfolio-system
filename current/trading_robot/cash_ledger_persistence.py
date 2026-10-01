@@ -1312,7 +1312,7 @@ def _validate_busy_timeout(value: object) -> int:
     return value
 
 
-def _validate_live_root(root: Path) -> Path:
+def _validate_store_layout(root: Path) -> tuple[Path, Path, Path]:
     _validate_existing_components(root)
     if not root.exists():
         _fail(PersistenceReason.STORE_MISSING)
@@ -1350,12 +1350,46 @@ def _validate_live_root(root: Path) -> Path:
                 raise PersistenceError(
                     PersistenceReason.WAL_SIDECAR_INCONSISTENT
                 ) from exc
+    return database, wal, shared_memory
+
+
+def _validate_live_root(root: Path) -> Path:
+    """Validate a cold/pre-open store, including raw WAL/SHM custody."""
+    database, wal, shared_memory = _validate_store_layout(root)
     if wal.exists():
         metadata = _validate_wal(database, wal)
         if metadata is None:
             _validate_empty_shm(database, shared_memory)
         else:
             _validate_shm(metadata, shared_memory)
+    return database
+
+
+def _validate_open_root(root: Path, connection: sqlite3.Connection) -> Path:
+    """Validate layout and bind an already-open WAL connection without reading SHM."""
+    database, _, _ = _validate_store_layout(root)
+    try:
+        databases = connection.execute("PRAGMA database_list").fetchall()
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()
+    except sqlite3.Error as exc:
+        raise PersistenceError(PersistenceReason.IO_FAILURE) from exc
+    main_databases = [row for row in databases if row[1] == "main"]
+    if (
+        len(main_databases) != 1
+        or not main_databases[0][2]
+        or any(row[1] not in {"main", "temp"} for row in databases)
+        or any(row[1] == "temp" and row[2] for row in databases)
+    ):
+        _fail(PersistenceReason.PATH_INVALID)
+    try:
+        connected = Path(main_databases[0][2]).resolve(strict=True)
+        expected = database.resolve(strict=True)
+    except OSError as exc:
+        raise PersistenceError(PersistenceReason.PATH_INVALID) from exc
+    if os.path.normcase(str(connected)) != os.path.normcase(str(expected)):
+        _fail(PersistenceReason.PATH_INVALID)
+    if journal_mode is None or str(journal_mode[0]).lower() != "wal":
+        _fail(PersistenceReason.VERSION_UNSUPPORTED)
     return database
 
 
@@ -1640,7 +1674,7 @@ class CashLedgerStore:
 
     def validate(self) -> StoreSnapshot:
         self._ensure_open()
-        _validate_live_root(self._root)
+        _validate_open_root(self._root, self._connection)
         _validate_connection(self._connection, self._registry)
         return self.snapshot()
 
@@ -2278,7 +2312,7 @@ class CashLedgerStore:
 
     def backup(self, destination: object) -> BackupVerification:
         self._ensure_open()
-        _validate_live_root(self._root)
+        _validate_open_root(self._root, self._connection)
         _validate_connection(self._connection, self._registry)
         target = _path_from(destination)
         _validate_target_parent(target)
@@ -2315,7 +2349,7 @@ class CashLedgerStore:
                 busy_timeout_ms=self._busy_timeout_ms,
             )
             self._fault("backup.before_promote")
-            _validate_live_root(self._root)
+            _validate_open_root(self._root, self._connection)
             _validate_connection(self._connection, self._registry)
             _promote_staging(staging, target)
             return BackupVerification(

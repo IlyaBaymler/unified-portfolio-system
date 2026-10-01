@@ -11,6 +11,7 @@ import sqlite3
 from dataclasses import replace
 from decimal import Decimal
 from hashlib import sha256
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +23,7 @@ from test_q7a_source_versioned_financial_readers import read_case, _args
 from test_q7a_source_versioned_operational_store import op_case, _operation, _sync, _request, _later
 from test_q7a_source_settlement_closure import _snapshot
 from trading_robot.central_order_manager import CentralOrderIntent
+from trading_robot import cash_ledger_persistence as cl2
 from trading_robot import versioned_operational_store as v4
 from trading_robot.runtime_cash_authority import CL7RuntimeError, LockedDispatchProof
 
@@ -327,3 +329,30 @@ def test_specific_own_money_caps_cash_without_a_second_reserve_subtraction(op_ca
         binding=a.build_request_binding(view,**d);body=json.loads(binding.payload_bytes)
         assert body['free_cash_nano']==str(39_500_000_000)
         assert body['reserved_cash_nano']==str(1060_500_000_000)
+
+
+def test_locked_view_validation_never_raw_reads_live_shm(op_case, monkeypatch):
+    x = op_case
+    a = adapter(x)
+    shared_memory = x.store.root / "store.sqlite3-shm"
+    original_read_bytes = Path.read_bytes
+    attempted_shm_reads = []
+
+    def reject_live_shm(path):
+        if path == shared_memory and path.exists():
+            attempted_shm_reads.append(path)
+            raise PermissionError("simulated Windows live SHM denial")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_live_shm)
+    with a.locked_snapshot() as view:
+        assert view.snapshot().pins == a.pins
+        assert view.export_bytes()
+        assert view.project_cash().expected_cash_nano > 0
+    assert attempted_shm_reads == []
+    with pytest.raises(
+        cl2.PersistenceError,
+        match=f"^{cl2.PersistenceReason.WAL_SIDECAR_INCONSISTENT.value}$",
+    ):
+        cl2._validate_live_root(x.store.root)
+    assert attempted_shm_reads == [shared_memory]

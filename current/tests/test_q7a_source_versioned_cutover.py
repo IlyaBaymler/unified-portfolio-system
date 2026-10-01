@@ -5,6 +5,7 @@ import importlib
 import json
 from dataclasses import replace
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,7 @@ from test_q7a_source_provider_refresh import refresh_case, money
 from test_q7a_source_versioned_financial_readers import read_case, _pins
 from test_q7a_source_versioned_operational_store import op_case
 from test_q7a_source_settlement_closure import _snapshot
+from trading_robot import cash_ledger_persistence as cl2
 from trading_robot.runtime_cash_authority import RuntimeCashAuthorityState as State
 
 
@@ -361,3 +363,33 @@ def test_total_capture_and_commit_deadline_is_not_restarted(cut_case,monkeypatch
     with pytest.raises(c.m.VersionedCutoverError,match='STALE'):_confirm(c,fault_injector=late)
     assert c.a.cash_authority_manager.status().state is State.EXACT_CASH_SOURCE_CUTOVER_PENDING
     assert c.x.c.y.x.p.order_calls==1
+
+
+def test_cutover_open_store_identities_never_raw_read_live_shm(cut_case, monkeypatch):
+    c = cut_case
+    source_shared_memory = c.a.cl7_ledger_store.root / "store.sqlite3-shm"
+    live_shared_memories = {
+        source_shared_memory,
+        c.x.store.root / "store.sqlite3-shm",
+        c.journal.root / "store.sqlite3-shm",
+        c.root / "ledger" / "store.sqlite3-shm",
+    }
+    original_read_bytes = Path.read_bytes
+    attempted_shm_reads = []
+
+    def reject_live_shm(path):
+        if path in live_shared_memories and path.exists():
+            attempted_shm_reads.append(path)
+            raise PermissionError("simulated Windows live SHM denial")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_live_shm)
+    prepared = _prepare(c)
+    assert prepared.plan_sha256
+    assert attempted_shm_reads == []
+    with pytest.raises(
+        cl2.PersistenceError,
+        match=f"^{cl2.PersistenceReason.WAL_SIDECAR_INCONSISTENT.value}$",
+    ):
+        cl2._validate_live_root(c.a.cl7_ledger_store.root)
+    assert attempted_shm_reads == [source_shared_memory]

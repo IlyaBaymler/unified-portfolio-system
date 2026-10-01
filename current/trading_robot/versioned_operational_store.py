@@ -614,7 +614,7 @@ class LockedOperationalView:
         _require(self._connection.total_changes == self._total_changes, "VIEW_CHANGED")
         tick = self._clock()
         _require(type(tick) is int and 0 <= tick - self._started <= MAX_AGE_NS, "VIEW_EXPIRED")
-        db = cl2._validate_live_root(self._root)
+        db = cl2._validate_open_root(self._root, self._connection)
         st = db.stat()
         _require((st.st_dev, st.st_ino) == self._file_identity, "VIEW_DATABASE_REPLACED")
         _check_connection(self._connection)
@@ -719,7 +719,7 @@ class VersionedOperationalStore:
         _require(type(expected_pins) is OperationalPins and callable(monotonic_ns), "PIN_INVALID")
         begin = monotonic_ns()
         _require(type(begin) is int and begin >= 0, "CLOCK_INVALID")
-        db = cl2._validate_live_root(self.root)
+        db = cl2._validate_open_root(self.root, self._connection)
         identity = db.stat()
         conn = None
         view = None

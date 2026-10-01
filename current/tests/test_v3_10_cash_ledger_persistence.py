@@ -1517,3 +1517,62 @@ def test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files() -> None:
         assert {
             line.replace("\\", "/") for line in cumulative_text.splitlines()
         } == cumulative_allowed
+
+
+def test_v310_cl2_29_open_validation_never_raw_reads_live_shm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    vectors: dict[str, dict[str, object]],
+    descriptor: CodecDescriptor,
+) -> None:
+    root = tmp_path / "live-store"
+    store = CashLedgerStore.create(root, [descriptor])
+    other = CashLedgerStore.create(tmp_path / "other-store", [descriptor])
+    shared_memory = root / "store.sqlite3-shm"
+    original_read_bytes = Path.read_bytes
+    attempted_shm_reads: list[Path] = []
+
+    def reject_live_shm(path: Path) -> bytes:
+        if path == shared_memory and path.exists():
+            attempted_shm_reads.append(path)
+            raise PermissionError("simulated Windows live SHM denial")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_live_shm)
+    try:
+        store.append_observation(
+            _observation(vectors, descriptor, "observation-original"),
+            expected_store_revision=0,
+        )
+        expected = store.snapshot()
+        exported = store.export_bytes()
+        assert store.validate() == expected
+        assert store.snapshot() == expected
+        assert store.export_bytes() == exported
+        assert store.backup(tmp_path / "backup").store_revision == expected.store_revision
+        assert attempted_shm_reads == []
+
+        with _reason(PersistenceReason.PATH_INVALID):
+            persistence._validate_open_root(root, other._connection)
+
+        store._connection.execute("ATTACH DATABASE ':memory:' AS unexpected")
+        try:
+            with _reason(PersistenceReason.PATH_INVALID):
+                store.validate()
+        finally:
+            store._connection.execute("DETACH DATABASE unexpected")
+
+        journal = root / "store.sqlite3-journal"
+        journal.write_bytes(b"suspect-evidence")
+        try:
+            with _reason(PersistenceReason.WAL_SIDECAR_INCONSISTENT):
+                store.validate()
+        finally:
+            journal.unlink()
+
+        with _reason(PersistenceReason.WAL_SIDECAR_INCONSISTENT):
+            persistence._validate_live_root(root)
+        assert attempted_shm_reads == [shared_memory]
+    finally:
+        other.close()
+        store.close()

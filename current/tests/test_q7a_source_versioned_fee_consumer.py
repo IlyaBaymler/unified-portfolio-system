@@ -8,6 +8,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -465,3 +466,34 @@ def test_old_budget_context_readers_do_not_unwrap_v3(exact_case,consumer):
                 with pytest.raises(cl6.CL6Error):cl6.build_portfolio_risk_cash_context(export,reconciliation,withdraw,reservations,availability,
                     fixture._portfolio_evidence(),fixture._risk_evidence(),evaluated_at=fixture.END,identity_key=fixture.KEY,identity_key_id=fixture.KEY_ID)
     finally:y.review.close()
+
+
+def test_open_fee_store_validation_never_raw_reads_live_shm(exact_case, monkeypatch):
+    y = _prepare(exact_case)
+    try:
+        captured = _capture(y)
+        store, _ = _register_and_create(y, captured)
+        shared_memory = store.root / "store.sqlite3-shm"
+        original_read_bytes = Path.read_bytes
+        attempted_shm_reads = []
+
+        def reject_live_shm(path):
+            if path == shared_memory and path.exists():
+                attempted_shm_reads.append(path)
+                raise PermissionError("simulated Windows live SHM denial")
+            return original_read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", reject_live_shm)
+        with store:
+            snapshot = store.snapshot()
+            assert store.snapshot() == snapshot
+            assert store.export_bytes()
+            assert attempted_shm_reads == []
+            with pytest.raises(
+                cl2.PersistenceError,
+                match=f"^{cl2.PersistenceReason.WAL_SIDECAR_INCONSISTENT.value}$",
+            ):
+                cl2._validate_live_root(store.root)
+            assert attempted_shm_reads == [shared_memory]
+    finally:
+        y.review.close()

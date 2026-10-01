@@ -377,7 +377,7 @@ class VersionedFeeCorrectionStore:
 
     def _check(self) -> _Checked:
         _require(not self._closed, "STORE_CLOSED")
-        cl2._validate_live_root(self.root)
+        cl2._validate_open_root(self.root, self._connection)
         return _connection_check(self._connection, self._registry, self._key, self._key_id, self._account)
 
     def export_bytes(self) -> bytes:
