@@ -437,6 +437,7 @@ class VersionedFeeCorrectionStore:
             _call(self._injector, "correction.after_insert")
             self._check()
             _call(self._injector, "correction.before_commit")
+            self._check()
             self._connection.execute("COMMIT")
             _call(self._injector, "correction.after_commit")
             return result

@@ -526,3 +526,66 @@ def test_fee_store_retains_and_enforces_physical_identity(exact_case):
             store._custody._identity = original
             store.close()
         y.review.close()
+
+
+@pytest.mark.parametrize("damage", ["identity_token", "custody_handle"])
+def test_fee_commit_rechecks_custody_after_final_callback(exact_case, damage):
+    y = _prepare(exact_case)
+    store = None
+    custody = None
+    foreign_handle = None
+    try:
+        captured = _capture(y)
+        store, args = _register_and_create(y, captured)
+        custody = store._custody
+        original_identity = custody.identity
+        original_handle = custody._handle
+        before = store.export_bytes()
+        source_before = _snapshot(y.x)
+        hits = []
+        if damage == "custody_handle":
+            foreign_handle = (y.review.root / "store.sqlite3").open("rb", buffering=0)
+
+        def damage_before_commit(point):
+            if point != "correction.before_commit":
+                return
+            hits.append(point)
+            if damage == "identity_token":
+                custody._identity = cl2._DatabaseIdentity(
+                    original_identity.device, original_identity.inode + 1
+                )
+            else:
+                custody._handle = foreign_handle
+
+        store._injector = damage_before_commit
+        try:
+            with pytest.raises(
+                cl2.PersistenceError,
+                match=f"^{cl2.PersistenceReason.PATH_INVALID.value}$",
+            ):
+                store.append_verified_fee_revision(captured.capture, **args)
+        finally:
+            custody._identity = original_identity
+            custody._handle = original_handle
+            store._injector = None
+        assert hits == ["correction.before_commit"]
+        assert not store._connection.in_transaction
+        assert not custody.closed
+        assert store.export_bytes() == before
+        assert store._connection.execute(
+            "SELECT COUNT(*) FROM cl2_version_cash_correction"
+        ).fetchone()[0] == 0
+        assert _snapshot(y.x) == source_before
+
+        result = store.append_verified_fee_revision(captured.capture, **args)
+        assert result.appended_transactions == 2 and not result.replay
+        after = store.export_bytes()
+        assert store.append_verified_fee_revision(captured.capture, **args).replay
+        assert store.export_bytes() == after
+        assert _snapshot(y.x) == source_before
+    finally:
+        if foreign_handle is not None:
+            foreign_handle.close()
+        if store is not None:
+            store.close()
+        y.review.close()
