@@ -142,11 +142,25 @@ def test_mixed_workflow_attempt_rejected(sample, monkeypatch):
 
 
 def test_network_guard_and_secret_environment(sample, monkeypatch):
+    identities = {
+        "LOGNAME": "diagnostic-logname",
+        "USER": "diagnostic-user",
+        "LNAME": "diagnostic-lname",
+        "USERNAME": "diagnostic-username",
+    }
+    for key, value in identities.items():
+        monkeypatch.setenv(key, value)
     monkeypatch.setenv("GITHUB_TOKEN", "SYNTHETIC_DO_NOT_FORWARD")
     monkeypatch.setenv("TBANK_TOKEN", "SYNTHETIC_DO_NOT_FORWARD")
+    monkeypatch.setenv("UNRELATED_DIAGNOSTIC_INPUT", "SYNTHETIC_DO_NOT_FORWARD")
     plan = make_plan(sample, '''import os, socket, pytest
 def test_isolated():
+    assert {key: os.environ.get(key) for key in ("LOGNAME", "USER", "LNAME", "USERNAME")} == {
+        "LOGNAME": "diagnostic-logname", "USER": "diagnostic-user",
+        "LNAME": "diagnostic-lname", "USERNAME": "diagnostic-username",
+    }
     assert "GITHUB_TOKEN" not in os.environ and "TBANK_TOKEN" not in os.environ
+    assert "UNRELATED_DIAGNOSTIC_INPUT" not in os.environ
     assert "MOEX_ROBOT_RUNTIME_DIR" in os.environ
     with pytest.raises(AssertionError, match="in-process network"):
         socket.getaddrinfo("example.invalid", 443)
