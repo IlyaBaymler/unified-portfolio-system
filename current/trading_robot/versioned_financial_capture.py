@@ -6,6 +6,7 @@ the already-reviewed corrected operation, not merely a matching RUB balance.
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace
@@ -24,7 +25,7 @@ from .exact_own_funds import MAX_AGE_NS, timestamp_ns
 from .exact_settlement_closure import _ClosureStore, _config, _owners
 from .portfolio_preflight import PortfolioSnapshotLease
 from .risk import RiskState
-from .runtime_cash_authority import RuntimeCashAuthorityRecord, RuntimeCashAuthorityState
+from .runtime_cash_authority import RuntimeCashAuthorityRecord, RuntimeCashAuthorityState, _transition_pair
 from .versioned_fee_evidence import _canonical, _parse, _sha, evaluate_captured_fee_revision
 from .versioned_financial_readers import (
     VersionedCashProjection, VersionedFinancialContext, VersionedFinancialReadError,
@@ -58,18 +59,36 @@ def capture_versioned_financial_review(adapter: Any, *, recovery: Any,
         raise VersionedFinancialReadError("VERSIONED_READ_CAPTURE_INVALID") from None
 
 
-def _capture(a: Any, r: Any, store: Any, pins: VersionedReadPins) -> VersionedFinancialCapture:
+def _capture(a: Any, r: Any, store: Any, pins: VersionedReadPins, *,
+        _cutover_origin: RuntimeCashAuthorityRecord | None = None,
+        _cutover_held: RuntimeCashAuthorityRecord | None = None,
+        _authority_lock_held: bool = False) -> VersionedFinancialCapture:
     _require(type(store) is journal.VersionedFeeCorrectionStore, "JOURNAL_TYPE_INVALID")
     manager, ledger = a.cash_authority_manager, a.cl7_ledger_store
     transport, own, budget = a.transport, a.cl7_own_funds_policy, manager.buying_budget_policy
     key, key_id, clock, monotonic = a.cl7_identity_key, a.cl7_identity_key_id, a.cl7_clock, a.cl7_monotonic_ns
     _require(type(budget) is buying.OwnBuyingBudgetPolicy and own is not None,
              "OWN_BUDGET_POLICY_REQUIRED")
-    with manager.store.locked():
+    with (nullcontext() if _authority_lock_held else manager.store.locked()):
         config, owners = _config(a, r), _owners(a, r)
         authority = RuntimeCashAuthorityRecord.from_canonical_dict(owners["authority"])
-        _require(authority.state is RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
-                 "DISARMED_SOURCE_REQUIRED")
+        closure_owners = owners
+        if _cutover_origin is not None or _cutover_held is not None:
+            # Private continuation of a persisted, exact source-selection HOLD.
+            # The caller also verifies the immutable cutover plan. This only
+            # permits READS; it never clears a hold or grants financial authority.
+            _require(type(_cutover_origin) is RuntimeCashAuthorityRecord
+                     and type(_cutover_held) is RuntimeCashAuthorityRecord
+                     and authority == _cutover_held
+                     and _cutover_origin.state is RuntimeCashAuthorityState.EXACT_CASH_DISARMED
+                     and _cutover_held.state is RuntimeCashAuthorityState.EXACT_CASH_SOURCE_CUTOVER_PENDING
+                     and _cutover_held.transition_kind == "VERSIONED_SOURCE_CUTOVER_HELD",
+                     "CUTOVER_READ_SCOPE_INVALID")
+            _transition_pair(_cutover_origin, _cutover_held)
+            closure_owners = dict(owners, authority=_cutover_origin.to_canonical_dict())
+        else:
+            _require(authority.state is RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
+                     "DISARMED_SOURCE_REQUIRED")
         scope = authority.account_scope_sha256
         raw = store.export_bytes()
         registry = tuple(store._registry.values())
@@ -81,7 +100,7 @@ def _capture(a: Any, r: Any, store: Any, pins: VersionedReadPins) -> VersionedFi
         cs, ps = _ClosureStore(root, proof, key), _PlanStore(root, proof, key)
         closure, cash_plan = cs.load(), ps.load()
         source = ledger.export_bytes()
-        _require(closure == closed_payload and owners == closure["after"]
+        _require(closure == closed_payload and closure_owners == closure["after"]
                  and config == closure["config_sha256"] and source == checked.graph.base
                  and cash_plan == _parse(original_capture["cash_plan_json_ascii"])["payload"],
                  "SOURCE_CLOSURE_CHANGED")

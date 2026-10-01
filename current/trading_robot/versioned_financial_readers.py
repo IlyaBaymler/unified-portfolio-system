@@ -177,7 +177,8 @@ def _build(raw: bytes, *, pins: VersionedReadPins | OperationalPins, codec_regis
         reservations: cl5.CentralReservationProjection,
         portfolio: cl6.PortfolioIdentityEvidence, risk_guard: cl6.RiskGuardEvidence,
         buying_scope_sha256: str, evaluated_at: str,
-        current_economic_evidence_sha256: str | None = None) -> VersionedFinancialContext:
+        current_economic_evidence_sha256: str | None = None,
+        _locked_view: Any = None) -> VersionedFinancialContext:
     key = versions._key(identity_key)
     key_id = versions._key_id(identity_key_id)
     scope = versions._hash(account_scope_sha256)
@@ -186,8 +187,19 @@ def _build(raw: bytes, *, pins: VersionedReadPins | OperationalPins, codec_regis
     from .versioned_operational_store import OperationalPins, project_operational_cash
     source_version = 4 if type(pins) is OperationalPins else 3
     projector = project_operational_cash if source_version == 4 else project_versioned_cash
-    projection = projector(raw, pins=pins, codec_registry=codec_registry,
-        identity_key=key, identity_key_id=key_id, account_scope_sha256=scope)
+    if _locked_view is None:
+        projection = projector(raw, pins=pins, codec_registry=codec_registry,
+            identity_key=key, identity_key_id=key_id, account_scope_sha256=scope)
+    else:
+        from .versioned_operational_store import LockedOperationalView
+        _require(type(_locked_view) is LockedOperationalView and source_version == 4,
+                 "LIVE_V4_VIEW_REQUIRED")
+        _locked_view.assert_active()
+        _require(_locked_view.pins == pins and _locked_view.export_bytes() == raw
+                 and _locked_view._key == key and _locked_view._key_id == key_id
+                 and _locked_view._account == scope
+                 and _locked_view._registry == versions._registry(codec_registry), "LIVE_V4_VIEW_MISMATCH")
+        projection = _locked_view.project_cash()
     _require(type(broker_cash) is cl4.BrokerCashProof and broker_cash.version == 3,
              "RUB_POSITION_PROOF_REQUIRED")
     cash = cl4._validate_proof(broker_cash, key, evaluated_at=evaluated_at)
@@ -274,7 +286,7 @@ def build_versioned_cash_context(raw: bytes, **kwargs: Any) -> VersionedFinancia
     additionally re-reads and economically matches the full provider window.
     """
     try:
-        _require(kwargs.get("current_economic_evidence_sha256") is None,
+        _require(kwargs.get("current_economic_evidence_sha256") is None and "_locked_view" not in kwargs,
                  "CAPTURE_BINDING_INTERNAL_ONLY")
         return _build(raw, **kwargs)
     except VersionedFinancialReadError:

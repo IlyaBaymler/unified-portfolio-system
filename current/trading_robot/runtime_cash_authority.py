@@ -69,6 +69,14 @@ class RuntimeCashAuthorityState(StrEnum):
     EXACT_CASH_ARMED = "EXACT_CASH_ARMED"
     EXACT_CASH_DISPATCH_PENDING = "EXACT_CASH_DISPATCH_PENDING"
     EXACT_CASH_FEE_ADJUSTMENT_PENDING = "EXACT_CASH_FEE_ADJUSTMENT_PENDING"
+    EXACT_CASH_SOURCE_CUTOVER_PENDING = "EXACT_CASH_SOURCE_CUTOVER_PENDING"
+    EXACT_CASH_VERSIONED_DISARMED = "EXACT_CASH_VERSIONED_DISARMED"
+    EXACT_CASH_VERSIONED_SYNC_PENDING = "EXACT_CASH_VERSIONED_SYNC_PENDING"
+    EXACT_CASH_VERSIONED_OWNER_REFRESH_PENDING = "EXACT_CASH_VERSIONED_OWNER_REFRESH_PENDING"
+    EXACT_CASH_VERSIONED_RISK_RESYNC_PENDING = "EXACT_CASH_VERSIONED_RISK_RESYNC_PENDING"
+    EXACT_CASH_VERSIONED_ADMISSION_PENDING = "EXACT_CASH_VERSIONED_ADMISSION_PENDING"
+    EXACT_CASH_VERSIONED_ARMED = "EXACT_CASH_VERSIONED_ARMED"
+    EXACT_CASH_VERSIONED_DISPATCH_PENDING = "EXACT_CASH_VERSIONED_DISPATCH_PENDING"
 
 
 class RuntimeCashAuthorityOwner(StrEnum):
@@ -510,6 +518,21 @@ _TRANSITION_KINDS = frozenset(
         "FEE_REPLACEMENT_REVIEW_HELD",
         "LATE_FEE_ADJUSTMENT_HELD",
         "LATE_FEE_ADJUSTMENT_CLOSED_DISARMED",
+        "VERSIONED_SOURCE_CUTOVER_HELD",
+        "VERSIONED_SOURCE_SELECTED_DISARMED",
+        "VERSIONED_SELECTED_SYNC_HELD",
+        "VERSIONED_SELECTED_SYNC_COMMITTED",
+        "VERSIONED_SELECTED_SYNC_ABORTED",
+        "VERSIONED_OWNER_REFRESH_HELD",
+        "VERSIONED_OWNER_REFRESH_COMMITTED",
+        "VERSIONED_CASH_FLOW_RESYNC_HELD",
+        "VERSIONED_CASH_FLOW_RESYNC_COMMITTED",
+        "VERSIONED_ORDER_ADMISSION_HELD",
+        "VERSIONED_ORDER_ADMISSION_COMMITTED",
+        "VERSIONED_ORDER_ARMED",
+        "VERSIONED_ORDER_DISARMED",
+        "VERSIONED_ORDER_ATTEMPT_RECORDED",
+        "VERSIONED_FULL_FILL_CLOSED_DISARMED",
         "ROLLBACK_TO_LEGACY",
     }
 )
@@ -640,7 +663,13 @@ class RuntimeCashAuthorityRecord:
                 _fail(CL7RuntimeReason.STATE_INVALID)
         if (self.pending_dispatch_proof_sha256 is not None) != (
             self.state in {RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING,
-                           RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING}
+                           RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING,
+                           RuntimeCashAuthorityState.EXACT_CASH_SOURCE_CUTOVER_PENDING,
+                           RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_SYNC_PENDING,
+                           RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_OWNER_REFRESH_PENDING,
+                           RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_RISK_RESYNC_PENDING,
+                           RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_ADMISSION_PENDING,
+                           RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISPATCH_PENDING}
         ):
             _fail(CL7RuntimeReason.STATE_INVALID)
 
@@ -1178,6 +1207,67 @@ def _transition_pair(
             {RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING},
             RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
         ),
+        "VERSIONED_SOURCE_CUTOVER_HELD": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_SOURCE_CUTOVER_PENDING,
+        ),
+        "VERSIONED_SOURCE_SELECTED_DISARMED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_SOURCE_CUTOVER_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED,
+        ),
+        "VERSIONED_SELECTED_SYNC_HELD": (
+            {RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_SYNC_PENDING,
+        ),
+        "VERSIONED_SELECTED_SYNC_COMMITTED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_SYNC_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED,
+        ),
+        "VERSIONED_SELECTED_SYNC_ABORTED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_SYNC_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED,
+        ),
+        "VERSIONED_OWNER_REFRESH_HELD": (
+            {RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_OWNER_REFRESH_PENDING,
+        ),
+        "VERSIONED_OWNER_REFRESH_COMMITTED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_OWNER_REFRESH_PENDING,
+                           RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_RISK_RESYNC_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED,
+        ),
+        "VERSIONED_CASH_FLOW_RESYNC_HELD": (
+            {RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_RISK_RESYNC_PENDING,
+        ),
+        "VERSIONED_CASH_FLOW_RESYNC_COMMITTED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_RISK_RESYNC_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED,
+        ),
+        "VERSIONED_ORDER_ADMISSION_HELD": (
+            {RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_ADMISSION_PENDING,
+        ),
+        "VERSIONED_ORDER_ADMISSION_COMMITTED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_ADMISSION_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED,
+        ),
+        "VERSIONED_ORDER_ARMED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_ARMED,
+        ),
+        "VERSIONED_ORDER_DISARMED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_ARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED,
+        ),
+        "VERSIONED_FULL_FILL_CLOSED_DISARMED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISPATCH_PENDING},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED,
+        ),
+        "VERSIONED_ORDER_ATTEMPT_RECORDED": (
+            {RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_ARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISPATCH_PENDING,
+        ),
         "ROLLBACK_TO_LEGACY": (
             {RuntimeCashAuthorityState.EXACT_CASH_DISARMED},
             RuntimeCashAuthorityState.LEGACY_ACTIVE,
@@ -1196,7 +1286,7 @@ def _transition_pair(
     if current.cutover_generation != expected_generation:
         _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
     if current.post_attempt_count != previous.post_attempt_count + (
-        current.transition_kind == "DISPATCH_ATTEMPT_RECORDED"
+        current.transition_kind in {"DISPATCH_ATTEMPT_RECORDED", "VERSIONED_ORDER_ATTEMPT_RECORDED"}
     ):
         _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
     if previous.ever_exact_activated and not current.ever_exact_activated:
@@ -1268,8 +1358,68 @@ def _transition_pair(
             "pending_dispatch_proof_sha256", "ledger_head_sha256",
             "ledger_revision", "operations_complete_through",
         },
+        "VERSIONED_SOURCE_CUTOVER_HELD": {"pending_dispatch_proof_sha256"},
+        "VERSIONED_SOURCE_SELECTED_DISARMED": {
+            "pending_dispatch_proof_sha256", "activation_context_sha256",
+            "ledger_head_sha256", "ledger_revision", "operations_complete_through",
+        },
+        "VERSIONED_SELECTED_SYNC_HELD": {"pending_dispatch_proof_sha256"},
+        "VERSIONED_SELECTED_SYNC_COMMITTED": {
+            "pending_dispatch_proof_sha256", "activation_context_sha256",
+            "ledger_head_sha256", "ledger_revision", "operations_complete_through",
+        },
+        "VERSIONED_SELECTED_SYNC_ABORTED": {
+            "pending_dispatch_proof_sha256", "activation_context_sha256",
+        },
+        "VERSIONED_OWNER_REFRESH_HELD": {"pending_dispatch_proof_sha256"},
+        "VERSIONED_OWNER_REFRESH_COMMITTED": {
+            "pending_dispatch_proof_sha256", "activation_context_sha256",
+        },
+        "VERSIONED_CASH_FLOW_RESYNC_HELD": {"pending_dispatch_proof_sha256"},
+        "VERSIONED_CASH_FLOW_RESYNC_COMMITTED": {
+            "pending_dispatch_proof_sha256", "activation_context_sha256",
+        },
+        "VERSIONED_ORDER_ADMISSION_HELD": {"pending_dispatch_proof_sha256"},
+        "VERSIONED_ORDER_ADMISSION_COMMITTED": {
+            "pending_dispatch_proof_sha256", "activation_context_sha256",
+        },
+        "VERSIONED_ORDER_ARMED": {"activation_context_sha256"},
+        "VERSIONED_ORDER_DISARMED": set(),
+        "VERSIONED_ORDER_ATTEMPT_RECORDED": {"pending_dispatch_proof_sha256", "post_attempt_count"},
+        "VERSIONED_FULL_FILL_CLOSED_DISARMED": {
+            "pending_dispatch_proof_sha256", "activation_context_sha256",
+            "ledger_head_sha256", "ledger_revision", "operations_complete_through",
+        },
         "ROLLBACK_TO_LEGACY": set(),
     }
+    if current.transition_kind == "VERSIONED_FULL_FILL_CLOSED_DISARMED":
+        # This is positive full-FILL only: one trade and zero/one fee already
+        # committed to v4. No zero terminal, re-arm or arbitrary pin update.
+        if (previous.transition_kind != "VERSIONED_ORDER_ATTEMPT_RECORDED"
+                or previous.post_attempt_count < 1
+                or previous.pending_dispatch_proof_sha256 is None
+                or current.pending_dispatch_proof_sha256 is not None
+                or current.activation_context_sha256 is None
+                or current.activation_context_sha256 == previous.activation_context_sha256
+                or current.ledger_revision is None or previous.ledger_revision is None
+                or current.ledger_revision - previous.ledger_revision not in {1, 2}
+                or current.ledger_head_sha256 == previous.ledger_head_sha256
+                or previous.operations_complete_through is None
+                or current.operations_complete_through is None
+                or not previous.operations_complete_through < current.operations_complete_through <= current.transition_at
+                or current.transition_at < previous.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "VERSIONED_ORDER_ARMED":
+        if (previous.transition_kind != "VERSIONED_ORDER_ADMISSION_COMMITTED"
+                or current.activation_context_sha256 == previous.activation_context_sha256
+                or current.transition_at < previous.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind in {"VERSIONED_ORDER_DISARMED", "VERSIONED_ORDER_ATTEMPT_RECORDED"}:
+        if (previous.transition_kind != "VERSIONED_ORDER_ARMED"
+                or current.transition_at < previous.transition_at
+                or (current.transition_kind == "VERSIONED_ORDER_ATTEMPT_RECORDED"
+                    and current.pending_dispatch_proof_sha256 is None)):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
     if current.transition_kind == "EXACT_SETTLEMENT_CLOSED_DISARMED":
         if (current.ledger_revision is None or previous.ledger_revision is None
                 or current.ledger_revision <= previous.ledger_revision
@@ -1337,6 +1487,71 @@ def _transition_pair(
                 or current.operations_complete_through is None
                 or previous.operations_complete_through is None
                 or not previous.operations_complete_through < current.operations_complete_through <= current.transition_at
+                or current.transition_at < previous.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "VERSIONED_SOURCE_CUTOVER_HELD":
+        if (current.pending_dispatch_proof_sha256 is None
+                or current.transition_at < previous.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "VERSIONED_SOURCE_SELECTED_DISARMED":
+        # Source selection is NOT arm. Only the first verified same-ID fee
+        # correction (one ledger revision) may enter this parked v4 state.
+        if (previous.transition_kind != "VERSIONED_SOURCE_CUTOVER_HELD"
+                or current.activation_context_sha256 != previous.pending_dispatch_proof_sha256
+                or current.pending_dispatch_proof_sha256 is not None
+                or previous.ledger_revision is None or current.ledger_revision != previous.ledger_revision + 1
+                or current.ledger_head_sha256 == previous.ledger_head_sha256
+                or current.operations_complete_through is None
+                or previous.operations_complete_through is None
+                or not previous.operations_complete_through <= current.operations_complete_through <= current.transition_at
+                or current.transition_at < previous.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "VERSIONED_SELECTED_SYNC_HELD":
+        if (current.pending_dispatch_proof_sha256 is None
+                or current.transition_at < previous.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind in {
+        "VERSIONED_SELECTED_SYNC_COMMITTED", "VERSIONED_SELECTED_SYNC_ABORTED",
+    }:
+        if (previous.transition_kind != "VERSIONED_SELECTED_SYNC_HELD"
+                or current.pending_dispatch_proof_sha256 is not None
+                or current.activation_context_sha256 == previous.activation_context_sha256
+                or current.transition_at < previous.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+        if current.transition_kind == "VERSIONED_SELECTED_SYNC_COMMITTED":
+            if (previous.ledger_revision is None or current.ledger_revision is None
+                    or not 0 <= current.ledger_revision - previous.ledger_revision <= 128
+                    or (current.ledger_head_sha256 == previous.ledger_head_sha256)
+                       != (current.ledger_revision == previous.ledger_revision)
+                    or previous.operations_complete_through is None
+                    or current.operations_complete_through is None
+                    or not previous.operations_complete_through <= current.operations_complete_through <= current.transition_at):
+                _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "VERSIONED_OWNER_REFRESH_HELD":
+        if current.pending_dispatch_proof_sha256 is None or current.transition_at < previous.transition_at:
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "VERSIONED_OWNER_REFRESH_COMMITTED":
+        if (previous.transition_kind != "VERSIONED_OWNER_REFRESH_HELD"
+                or current.pending_dispatch_proof_sha256 is not None
+                or current.activation_context_sha256 == previous.activation_context_sha256
+                or current.transition_at < previous.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "VERSIONED_CASH_FLOW_RESYNC_HELD":
+        if current.pending_dispatch_proof_sha256 is None or current.transition_at < previous.transition_at:
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "VERSIONED_CASH_FLOW_RESYNC_COMMITTED":
+        if (previous.transition_kind != "VERSIONED_CASH_FLOW_RESYNC_HELD"
+                or current.pending_dispatch_proof_sha256 is not None
+                or current.activation_context_sha256 == previous.activation_context_sha256
+                or current.transition_at < previous.transition_at):
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "VERSIONED_ORDER_ADMISSION_HELD":
+        if current.pending_dispatch_proof_sha256 is None or current.transition_at < previous.transition_at:
+            _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "VERSIONED_ORDER_ADMISSION_COMMITTED":
+        if (previous.transition_kind != "VERSIONED_ORDER_ADMISSION_HELD"
+                or current.pending_dispatch_proof_sha256 is not None
+                or current.activation_context_sha256 == previous.activation_context_sha256
                 or current.transition_at < previous.transition_at):
             _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
     always = {

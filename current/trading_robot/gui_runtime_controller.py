@@ -636,6 +636,7 @@ class GuiRuntimeController:
         metadata_guard: Callable[[], None] | None = None,
     ) -> None:
         self.metadata_guard = metadata_guard
+        self._versioned_route = None
         self._cycle_outcomes: dict[str, GuiCycleOutcome] = {}
         self._execution_observation_blocked = False
         self.profile_store = profile_store
@@ -959,6 +960,8 @@ class GuiRuntimeController:
         latest_closed_candles: Mapping[str, datetime | None],
         hooks: GuiStrategyHooks,
     ) -> SchedulerTickResult:
+        if getattr(self, "_versioned_route", None) is not None:
+            return self._service_versioned_route(now)
         if not self.connected:
             raise GuiRuntimeBlockedError("PROVIDER_DISCONNECTED")
         if self.market_state != "OPEN":
@@ -990,6 +993,8 @@ class GuiRuntimeController:
         return self._composition_blocker is None and self.cycle_source is not None
 
     def run_cycle(self) -> SchedulerTickResult:
+        if getattr(self, "_versioned_route", None) is not None:
+            return self._service_versioned_route(self.cycle_source.clock())
         self.require_execution_observable()
         self.validate_metadata_binding()
         if self.cycle_source is None:
@@ -1004,6 +1009,47 @@ class GuiRuntimeController:
             latest_closed_candles=candles,
             hooks=hooks,
         )
+
+    def bind_versioned_runtime(self, *, target_root: object, selection_sha256: str,
+                               expected_authority_sha256: str, instrument_id: str):
+        """Explicit source/checkpoint attachment; never migrate, arm or send.
+
+        No automatic path search or trust in current snapshot().pins. After a
+        partial failure/restart the caller supplies a trusted authority anchor
+        again; the underlying financial API validates the recovery prefix.
+        """
+        from .versioned_runtime_route import VersionedRuntimeRoute
+        prior = getattr(self, "_versioned_route", None)
+        if prior is not None and prior._busy.locked():
+            raise GuiRuntimeBlockedError("VERSIONED_ROUTE_BUSY")
+        route = VersionedRuntimeRoute(self, target_root=target_root,
+            selection_sha256=selection_sha256, expected_authority_sha256=expected_authority_sha256,
+            instrument_id=instrument_id)
+        self._versioned_route = route
+        return route
+
+    def _service_versioned_route(self, now: datetime) -> SchedulerTickResult:
+        from .global_scheduler import SchedulerActionResult
+        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+            raise GuiRuntimeBlockedError("CYCLE_CLOCK_INVALID")
+        route = self._versioned_route
+        result = route.tick()
+        runtime = route._configured()
+        if self.journal is not None:
+            try:
+                self.journal.record(JournalEvent(
+                    category="gui_runtime", event_type="GUI_VERSIONED_FINANCIAL_TICK",
+                    session_id=self.session_id, mode="SANDBOX_EXECUTION", status=result.status,
+                    action=result.action, timestamp_utc=now.astimezone(timezone.utc).isoformat(),
+                    payload=result.public_summary(),
+                ))
+            except Exception:
+                self._execution_observation_blocked = True
+                raise GuiRuntimeBlockedError("VERSIONED_TICK_AUDIT_UNAVAILABLE") from None
+        return SchedulerTickResult(serviced_at=now, actions=(SchedulerActionResult(
+            runtime_key=runtime.runtime_key, ticker=runtime.config.ticker,
+            action=result.action, status=result.status,
+        ),))
 
     def _service_desktop_fill_recovery(self, now: datetime) -> SchedulerTickResult:
         from .desktop_fill_recovery import DesktopFillRecovery
@@ -1359,6 +1405,17 @@ class GuiRuntimeController:
     def _recovery_required(self) -> bool:
         central = self.central_order_coordinator.manager.state()
         authority = self._authority_record()
+        if authority.state in {
+            RuntimeCashAuthorityState.EXACT_CASH_SOURCE_CUTOVER_PENDING,
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISARMED,
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_SYNC_PENDING,
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_OWNER_REFRESH_PENDING,
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_RISK_RESYNC_PENDING,
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_ADMISSION_PENDING,
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_ARMED,
+            RuntimeCashAuthorityState.EXACT_CASH_VERSIONED_DISPATCH_PENDING,
+        }:
+            raise GuiRuntimeBlockedError("VERSIONED_CASH_ROUTE_NOT_ACTIVE")
         return self._central_recovery_required(central) or (
             authority.state is RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
             or authority.pending_dispatch_proof_sha256 is not None

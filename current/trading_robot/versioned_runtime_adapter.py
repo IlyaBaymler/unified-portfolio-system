@@ -127,91 +127,16 @@ class VersionedRuntimeStoreAdapter:
         """
         try:
             self._check_view(view)
-            versions._hash(expected_intent_sha256)
-            _require(intent_fingerprint(intent) == expected_intent_sha256, "INTENT_CHANGED")
-            _require(type(central_state) is CentralOrderState, "CENTRAL_INVALID")
-            central = CentralOrderState.from_dict(central_state.to_dict())
-            candidate = intent.candidate
-            _require(central.account_id == candidate.account_id and intent.status == "QUEUED"
-                and central.blocking_intent is None and bool(central.queued)
-                and central.queued[0] == intent, "QUEUE_HEAD_MISMATCH")
-            _require(type(own_policy) is LockedOwnFundsPolicy
-                and own_policy.account_id == candidate.account_id, "OWN_POLICY_INVALID")
-            own_policy.binding_guard()
-            row = own_policy.instruments.get(candidate.instrument_id)
-            _require(row is not None and row.lot_size == candidate.lot_size,
-                     "METADATA_MISMATCH")
-            _require(type(own_funds) is OwnFundsEvidence, "OWN_FUNDS_INVALID")
-            own = OwnFundsEvidence.from_canonical_dict(own_funds.to_canonical_dict())
-            own.check_age(evaluated_at)
-            _require(own.request_sha256 == digest({"domain": "CL7_OWN_FUNDS_REQUEST_V1",
-                "intent_id": intent.intent_id, "candidate": candidate.to_dict(), "get_max_lots_price": None}),
-                "OWN_REQUEST_MISMATCH")
-            _require(own.metadata_sha256 == digest({"instrument_id": candidate.instrument_id,
-                "currency": row.currency, "asset_class": row.asset_class, "lot_size": row.lot_size}),
-                "OWN_METADATA_MISMATCH")
-            _require((own.direction, own.order_type, own.time_in_force, own.requested_lots,
-                       own.lot_size, own.estimated_price_kopecks) == (
-                       candidate.direction, candidate.order_type, candidate.time_in_force,
-                       candidate.requested_lots, candidate.lot_size, candidate.estimated_price_kopecks),
-                       "OWN_REQUEST_MISMATCH")
-            queued = sum(i.reserved_cash_kopecks * 10**7 for i in central.queued)
-            _require(own.all_local_reservations_nano == queued
-                and own.own_reservation_nano == intent.reserved_cash_kopecks * 10**7,
-                "RESERVATIONS_MISMATCH")
-            if candidate.direction == "SELL":
-                _require(candidate.requested_lots <= candidate.current_lots, "SHORT_FORBIDDEN")
-            common = dict(identity_key=self.store._key, identity_key_id=self.store._key_id,
-                          account_scope_sha256=self.store._account)
-            reservations = cl5.project_central_reservations(central, evaluated_at=evaluated_at,
-                                environment=BrokerEnvironment.SANDBOX, **common)
-            context = readers.build_versioned_cash_context(view.export_bytes(), pins=self.pins,
-                codec_registry=tuple(self.store._registry.values()), broker_cash=broker_cash,
-                own_buying=own_buying, reservations=reservations, portfolio=portfolio,
-                risk_guard=risk_guard, buying_scope_sha256=buying_scope_sha256,
-                evaluated_at=evaluated_at, **common)
-            body = _parse(context.payload_bytes)
-            _require(body["status"] == "CONSISTENT_REVIEW_ONLY", "CONTEXT_BLOCKED")
-            authorization = intent.authorization
-            _require(authorization.portfolio_revision == portfolio.portfolio_revision
-                and authorization.portfolio_document_checksum == portfolio.portfolio_document_checksum
-                and authorization.portfolio_decision_checksum == portfolio.portfolio_decision_checksum
-                and authorization.risk_policy_hash == risk_guard.risk_policy_hash
-                and authorization.risk_state_guard_hash == risk_guard.risk_state_guard_hash,
-                "AUTHORIZATION_OWNER_MISMATCH")
-            from datetime import datetime, timezone
-            approved = datetime.fromisoformat(authorization.authorized_at.replace("Z", "+00:00"))
-            _require(approved.tzinfo is not None and approved.utcoffset() is not None,
-                     "AUTHORIZATION_STALE")
-            utc = approved.astimezone(timezone.utc)
-            approved_stamp = utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc.microsecond:06d}000Z"
-            _require(0 <= timestamp_ns(evaluated_at) - timestamp_ns(approved_stamp) <= MAX_AGE_NS,
-                     "AUTHORIZATION_STALE")
-            _require(own.positions_sha256 == broker_cash.response_canonical_sha256,
-                     "OWN_CASH_RESPONSE_MISMATCH")
-            _require(own.rub_position_nano == int(body["expected_cash_nano"])
-                and own.broker_blocked_nano == 0, "OWN_CASH_MISMATCH")
-            # Never subtract the selected request reserve twice. Each source's
-            # available amount already includes the same complete queued set.
-            free = int(body["free_cash_nano"])
-            if candidate.direction == "BUY":
-                free = min(free, own.free_after_reservations_nano)
-            issued = timestamp_ns(evaluated_at)
-            own_policy.binding_guard()
+            result = _derive_request_binding(source_export=view.export_bytes(), pins=self.pins,
+                identity_key=self.store._key, identity_key_id=self.store._key_id,
+                account_scope_sha256=self.store._account,
+                codec_registry=tuple(self.store._registry.values()), lease_id=view._lease_id,
+                intent=intent, central_state=central_state, expected_intent_sha256=expected_intent_sha256,
+                own_policy=own_policy, own_funds=own_funds, broker_cash=broker_cash,
+                own_buying=own_buying, portfolio=portfolio, risk_guard=risk_guard,
+                buying_scope_sha256=buying_scope_sha256, evaluated_at=evaluated_at, _locked_view=view)
             self._check_view(view)
-            payload = _canonical({"domain": DOMAIN, "version": 1, "source_export_version": 4,
-                "lease_id": view._lease_id, "pins": self.pins.to_dict(),
-                "account_scope_sha256": self.store._account, "identity_key_id": self.store._key_id,
-                "intent_sha256": expected_intent_sha256, "candidate_sha256": _sha(_canonical(candidate.to_dict())),
-                "central_state_sha256": _sha(_canonical(central.to_dict())),
-                "context_json_ascii": context.canonical_bytes.decode("ascii"),
-                "context_sha256": context.sha256, "own_funds": own.to_canonical_dict(),
-                "evaluated_at": evaluated_at, "expires_at_ns": str(min(issued,
-                    timestamp_ns(own.started_at)) + MAX_AGE_NS),
-                "free_cash_nano": str(free), "reserved_cash_nano": str(own.own_reservation_nano),
-                "status": "REQUEST_BOUND_CUTOVER_REQUIRED", "risk_admission_performed": False,
-                "runtime_authority_granted": False, "runtime_cutover_performed": False})
-            return VersionedRequestBinding(payload, hmac.new(self.store._key, payload, hashlib.sha256).hexdigest())
+            return result
         except VersionedRuntimeBindingError:
             raise
         except Exception:
@@ -250,3 +175,108 @@ class VersionedRuntimeStoreAdapter:
 
     def require_runtime_authority(self, *_: object, **__: object) -> None:
         raise VersionedRuntimeBindingError("V4_BINDING_CL7_CUTOVER_REQUIRED")
+
+
+def _derive_request_binding(*, source_export: bytes, pins: operational.OperationalPins,
+        identity_key: bytes, identity_key_id: str, account_scope_sha256: str,
+        codec_registry: tuple, lease_id: str, intent: CentralOrderIntent,
+        central_state: CentralOrderState, expected_intent_sha256: str,
+        own_policy: LockedOwnFundsPolicy, own_funds: OwnFundsEvidence, broker_cash,
+        own_buying, portfolio, risk_guard, buying_scope_sha256: str,
+        evaluated_at: str, _locked_view: operational.LockedOperationalView | None = None) -> VersionedRequestBinding:
+    """Deterministically reproduce an audit binding, never create a live lease.
+
+    Kept private. A valid signature from this pure function grants no dispatch
+    authority. Live callers must still enforce their view before and after it.
+    """
+    try:
+        versions._hash(expected_intent_sha256)
+        _require(intent_fingerprint(intent) == expected_intent_sha256, "INTENT_CHANGED")
+        _require(type(central_state) is CentralOrderState, "CENTRAL_INVALID")
+        central = CentralOrderState.from_dict(central_state.to_dict())
+        candidate = intent.candidate
+        _require(central.account_id == candidate.account_id and intent.status == "QUEUED"
+            and central.blocking_intent is None and bool(central.queued)
+            and central.queued[0] == intent, "QUEUE_HEAD_MISMATCH")
+        _require(type(own_policy) is LockedOwnFundsPolicy
+            and own_policy.account_id == candidate.account_id, "OWN_POLICY_INVALID")
+        own_policy.binding_guard()
+        row = own_policy.instruments.get(candidate.instrument_id)
+        _require(row is not None and row.lot_size == candidate.lot_size,
+                 "METADATA_MISMATCH")
+        _require(type(own_funds) is OwnFundsEvidence, "OWN_FUNDS_INVALID")
+        own = OwnFundsEvidence.from_canonical_dict(own_funds.to_canonical_dict())
+        own.check_age(evaluated_at)
+        _require(own.request_sha256 == digest({"domain": "CL7_OWN_FUNDS_REQUEST_V1",
+            "intent_id": intent.intent_id, "candidate": candidate.to_dict(), "get_max_lots_price": None}),
+            "OWN_REQUEST_MISMATCH")
+        _require(own.metadata_sha256 == digest({"instrument_id": candidate.instrument_id,
+            "currency": row.currency, "asset_class": row.asset_class, "lot_size": row.lot_size}),
+            "OWN_METADATA_MISMATCH")
+        _require((own.direction, own.order_type, own.time_in_force, own.requested_lots,
+                   own.lot_size, own.estimated_price_kopecks) == (
+                   candidate.direction, candidate.order_type, candidate.time_in_force,
+                   candidate.requested_lots, candidate.lot_size, candidate.estimated_price_kopecks),
+                   "OWN_REQUEST_MISMATCH")
+        queued = sum(i.reserved_cash_kopecks * 10**7 for i in central.queued)
+        _require(own.all_local_reservations_nano == queued
+            and own.own_reservation_nano == intent.reserved_cash_kopecks * 10**7,
+            "RESERVATIONS_MISMATCH")
+        if candidate.direction == "SELL":
+            _require(candidate.requested_lots <= candidate.current_lots, "SHORT_FORBIDDEN")
+        common = dict(identity_key=identity_key, identity_key_id=identity_key_id,
+                      account_scope_sha256=account_scope_sha256)
+        reservations = cl5.project_central_reservations(central, evaluated_at=evaluated_at,
+                            environment=BrokerEnvironment.SANDBOX, **common)
+        context_builder = readers.build_versioned_cash_context if _locked_view is None else readers._build
+        lease_input = {} if _locked_view is None else {"_locked_view": _locked_view}
+        context = context_builder(source_export, pins=pins,
+            codec_registry=codec_registry, broker_cash=broker_cash,
+            own_buying=own_buying, reservations=reservations, portfolio=portfolio,
+            risk_guard=risk_guard, buying_scope_sha256=buying_scope_sha256,
+            evaluated_at=evaluated_at, **common, **lease_input)
+        body = _parse(context.payload_bytes)
+        _require(body["status"] == "CONSISTENT_REVIEW_ONLY", "CONTEXT_BLOCKED")
+        authorization = intent.authorization
+        _require(authorization.portfolio_revision == portfolio.portfolio_revision
+            and authorization.portfolio_document_checksum == portfolio.portfolio_document_checksum
+            and authorization.portfolio_decision_checksum == portfolio.portfolio_decision_checksum
+            and authorization.risk_policy_hash == risk_guard.risk_policy_hash
+            and authorization.risk_state_guard_hash == risk_guard.risk_state_guard_hash,
+            "AUTHORIZATION_OWNER_MISMATCH")
+        from datetime import datetime, timezone
+        approved = datetime.fromisoformat(authorization.authorized_at.replace("Z", "+00:00"))
+        _require(approved.tzinfo is not None and approved.utcoffset() is not None,
+                 "AUTHORIZATION_STALE")
+        utc = approved.astimezone(timezone.utc)
+        approved_stamp = utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc.microsecond:06d}000Z"
+        _require(0 <= timestamp_ns(evaluated_at) - timestamp_ns(approved_stamp) <= MAX_AGE_NS,
+                 "AUTHORIZATION_STALE")
+        _require(own.positions_sha256 == broker_cash.response_canonical_sha256,
+                 "OWN_CASH_RESPONSE_MISMATCH")
+        _require(own.rub_position_nano == int(body["expected_cash_nano"])
+            and own.broker_blocked_nano == 0, "OWN_CASH_MISMATCH")
+        # Never subtract the selected request reserve twice. Each source's
+        # available amount already includes the same complete queued set.
+        free = int(body["free_cash_nano"])
+        if candidate.direction == "BUY":
+            free = min(free, own.free_after_reservations_nano)
+        issued = timestamp_ns(evaluated_at)
+        own_policy.binding_guard()
+        payload = _canonical({"domain": DOMAIN, "version": 1, "source_export_version": 4,
+            "lease_id": lease_id, "pins": pins.to_dict(),
+            "account_scope_sha256": account_scope_sha256, "identity_key_id": identity_key_id,
+            "intent_sha256": expected_intent_sha256, "candidate_sha256": _sha(_canonical(candidate.to_dict())),
+            "central_state_sha256": _sha(_canonical(central.to_dict())),
+            "context_json_ascii": context.canonical_bytes.decode("ascii"),
+            "context_sha256": context.sha256, "own_funds": own.to_canonical_dict(),
+            "evaluated_at": evaluated_at, "expires_at_ns": str(min(issued,
+                timestamp_ns(own.started_at)) + MAX_AGE_NS),
+            "free_cash_nano": str(free), "reserved_cash_nano": str(own.own_reservation_nano),
+            "status": "REQUEST_BOUND_CUTOVER_REQUIRED", "risk_admission_performed": False,
+            "runtime_authority_granted": False, "runtime_cutover_performed": False})
+        return VersionedRequestBinding(payload, hmac.new(identity_key, payload, hashlib.sha256).hexdigest())
+    except VersionedRuntimeBindingError:
+        raise
+    except Exception:
+        raise VersionedRuntimeBindingError("V4_BINDING_EVIDENCE_OR_LEASE_INVALID") from None

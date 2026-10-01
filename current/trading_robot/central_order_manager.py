@@ -1207,6 +1207,23 @@ class CentralOrderIntent:
         object.__setattr__(self, "broker_order_id", broker_id)
 
     @property
+    def versioned_dispatch_plan_sha256(self) -> str | None:
+        """Reference to the distinct v4 dispatch plan, never a v1 proof.
+
+        The v4 consumer authenticates the referenced plan. Generic reconciliation
+        must refuse any intent carrying this marker, including a malformed marker.
+        """
+        prefix = "CL7_VERSIONED_DISPATCH_PLAN="
+        matches = [t for t in self.transitions if t.detail.startswith(prefix)]
+        if not matches:
+            return None
+        value = matches[0].detail[len(prefix):]
+        if (len(matches) != 1 or matches[0].status != "IN_FLIGHT"
+                or len(value) != 64 or any(c not in "0123456789abcdef" for c in value)):
+            raise CentralOrderStateError("Versioned dispatch plan custody is invalid.")
+        return value
+
+    @property
     def cl7_locked_dispatch_proof(self) -> Mapping[str, Any] | None:
         """Return proof custody embedded in the immutable transition chain.
 
@@ -1728,6 +1745,8 @@ class CentralOrderStore:
         self,
         expected_account_id: str,
         operation: Callable[[CentralOrderState], tuple[CentralOrderState, T]],
+        *,
+        before_commit: Callable[[CentralOrderState, CentralOrderState], None] | None = None,
     ) -> tuple[CentralOrderState, T]:
         try:
             with InterProcessFileLock(
@@ -1756,6 +1775,11 @@ class CentralOrderStore:
                         revision=current.revision + 1,
                         updated_at=_now(),
                     )
+                    if before_commit is not None:
+                        before_commit(current, candidate)
+                        # Callback may write other owners, never silently replace Central.
+                        if self._load_unlocked(expected_account_id=expected_account_id) != current:
+                            raise CentralOrderConflictError("Central changed in admission prepare callback.")
                     self._save_unlocked(candidate)
                 return candidate, result
         except (LockUnavailableError, StatePersistenceError) as exc:
@@ -2111,6 +2135,7 @@ class CentralOrderManager:
         ],
         *,
         cash_buffer_bps: int = 100,
+        prepare_commit: Callable[[CentralOrderState, CentralOrderState], None] | None = None,
     ) -> EnqueueResult:
         """Evaluate and reserve one M4 candidate under the Central lock.
 
@@ -2317,6 +2342,7 @@ class CentralOrderManager:
         state, (intent, idempotent, reauthorized, replaced_id) = self.store.mutate(
             self.account_id,
             operation,
+            before_commit=prepare_commit,
         )
         if reauthorized:
             self._record("CENTRAL_ORDER_REAUTHORIZED", intent)
@@ -2629,7 +2655,8 @@ class CentralOrderManager:
                 raise CentralOrderConflictError(f"Unknown intent {selected}.")
             # This API has no exact cash-settlement evidence parameter. Do not
             # retire reservations or record Risk from position proof alone.
-            if observed.cl7_locked_dispatch_proof is not None:
+            if (observed.cl7_locked_dispatch_proof is not None
+                    or observed.versioned_dispatch_plan_sha256 is not None):
                 raise CentralOrderConflictError("EXACT_SETTLEMENT_REQUIRED")
             if expected_intent is not None and observed != expected_intent:
                 raise CentralOrderConflictError("Exact reconciliation intent changed.")

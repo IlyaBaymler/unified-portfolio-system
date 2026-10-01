@@ -126,7 +126,7 @@ _TIMESTAMP_RE = _re.compile(
 _PORTFOLIO_TIMESTAMP_RE = _re.compile(
     r"([0-9]{4})-([0-9]{2})-([0-9]{2})T"
     r"([0-9]{2}):([0-9]{2}):([0-9]{2})"
-    r"(?:\.([0-9]{1,6}))?(Z|[+-][0-9]{2}:[0-9]{2})",
+    r"(?:\.([0-9]{1,9}))?(Z|[+-][0-9]{2}:[0-9]{2})",
     _re.ASCII,
 )
 _NONE_TYPE = type(None)
@@ -374,7 +374,8 @@ def _normalize_portfolio_timestamp(value: object) -> tuple[str, int]:
     year, month, day, hour, minute, second = map(int, match.groups()[:6])
     fraction = match.group(7) or ""
     offset = match.group(8)
-    microsecond = int(fraction.ljust(6, "0")) if fraction else 0
+    nanosecond = int(fraction.ljust(9, "0")) if fraction else 0
+    microsecond = nanosecond // 1000
     if hour > 23 or minute > 59 or second > 59:
         _fail(CL6Reason.PORTFOLIO_EVIDENCE_INVALID)
     if offset == "Z":
@@ -397,7 +398,7 @@ def _normalize_portfolio_timestamp(value: object) -> tuple[str, int]:
         _fail(CL6Reason.PORTFOLIO_EVIDENCE_INVALID)
     utc = parsed.astimezone(_timezone.utc)
     normalized = utc.strftime("%Y-%m-%dT%H:%M:%S")
-    normalized += f".{utc.microsecond * 1000:09d}Z"
+    normalized += f".{utc.microsecond * 1000 + nanosecond % 1000:09d}Z"
     return normalized, _timestamp_ns(normalized)
 
 

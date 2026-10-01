@@ -270,7 +270,8 @@ def _seed_graph(data: dict[str, Any], registry: Any, key: bytes, key_id: str, ac
 
 def _decode_capture(raw: bytes, key: bytes, key_id: str, account: str) -> tuple[Any, list[Any], dict[str, Any]]:
     c = _parse(raw)
-    _require(type(c) is dict and frozenset(c) == _CAPTURE_FIELDS, "CAPTURE_FIELDS_INVALID")
+    _require(type(c) is dict and frozenset(c) in
+             (_CAPTURE_FIELDS, _CAPTURE_FIELDS | {"bound_full_fill"}), "CAPTURE_FIELDS_INVALID")
     for name, maximum in (("limit", MAX_ITEMS), ("max_items", MAX_ITEMS), ("max_pages", MAX_PAGES)):
         _require(type(c[name]) is int and 1 <= c[name] <= maximum, "READ_BOUNDS_INVALID")
     start, end = versions._time(c["from_inclusive"]), versions._time(c["to_exclusive"])
@@ -306,6 +307,36 @@ def _derive(graph: _Graph, capture: bytes, recorded_at: str, key: bytes,
     recorded_at = versions._time(recorded_at)
     _require(recorded_at >= max(graph.recorded_at, c["to_exclusive"]), "REGISTRATION_TIME_INVALID")
     _require(len(graph.record_bodies) < MAX_BATCHES, "BATCH_CAPACITY_EXCEEDED")
+    # A tagged receipt profile supplements, never weakens, generic CL3.
+    bound = c.get("bound_full_fill")
+    overrides = {}
+    if "bound_full_fill" in c:
+        from .versioned_fill_evidence import fill_transactions, decode_bound_fill
+        _, _, receipt = decode_bound_fill(bound, key=key, key_id=key_id, account_scope=account)
+        _require(c["to_exclusive"] == bound["observed_at"], "FILL_CAPTURE_TIME_MISMATCH")
+        selected = [(row, decision) for row, decision in zip(rows, batch.decisions, strict=True)
+                    if _stable_id(row, key, account) not in graph.known]
+        _require(bool(selected), "FILL_COMPONENTS_ALREADY_RECORDED")
+        new_rows = [row for row, _ in selected]
+        selected_batch = replace(batch, decisions=tuple(d for _, d in selected))
+        overrides = fill_transactions(bound, selected_batch, new_rows,
+                                      key=key, key_id=key_id, account_scope=account)
+        current_trade_ids = {stage["tradeId"] for stage in bound["order_state"]["stages"]}
+        previous_ids = set()
+        seed_capture = _parse(graph.seed_checked.record["capture_json_ascii"])
+        histories = [seed_capture["operation_responses"]]
+        for old_body in graph.record_bodies:
+            old_capture = _parse(old_body["capture_json_ascii"])
+            if "bound_full_fill" in old_capture:
+                _require(old_capture["bound_full_fill"]["dispatch_plan_sha256"]
+                         != bound["dispatch_plan_sha256"], "FILL_ATTEMPT_ALREADY_RECORDED")
+            histories.append(old_capture["responses"])
+        for pages in histories:
+            for page in pages:
+                for row in page.get("items", []):
+                    for trade in row.get("tradesInfo", {}).get("trades", []):
+                        previous_ids.add(trade["num"])
+        _require(not current_trade_ids & previous_ids, "FILL_TRADE_ID_ALREADY_OBSERVED")
     seen = set()
     new = []
     signatures = {v["signature"] for v in graph.known.values()}
@@ -321,7 +352,9 @@ def _derive(graph: _Graph, capture: bytes, recorded_at: str, key: bytes,
         _require(observed["signature"] not in signatures, "POSSIBLE_ALIAS_REVIEW_REQUIRED")
         _require(observed["effective_at"] >= graph.seed_until, "PRE_CUTOVER_OPERATION_REVIEW_REQUIRED")
         _require(row["type"] in _ALLOWED_TYPES, "OPERATION_PROFILE_UNSUPPORTED")
-        if decision.kind is cl3.BrokerDecisionKind.NOT_LEDGER_RELEVANT:
+        if decision.observation.sha256 in overrides:
+            _require(bound is not None, "FILL_BINDING_REQUIRED")
+        elif decision.kind is cl3.BrokerDecisionKind.NOT_LEDGER_RELEVANT:
             # Generic CL3 marks canceled rows nonledger without proving zero fill.
             _require(row["quantityDone"] == "0" and cl3.money_value_to_money(row["payment"]).minor_units == 0
                 and cl3.money_value_to_money(row["commission"]).minor_units == 0
@@ -339,7 +372,7 @@ def _derive(graph: _Graph, capture: bytes, recorded_at: str, key: bytes,
     ledger_rev, ledger_head = graph.ledger_revision, graph.ledger_head
     count, delta, entries = graph.transaction_count, 0, []
     for row, d, source_id, observed in new:
-        tx = d.transaction_proposal
+        tx = overrides.get(d.observation.sha256, d.transaction_proposal)
         head = None
         if tx is not None:
             _require(tx.sha256 not in graph.transactions, "DUPLICATE_TRANSACTION")
@@ -435,19 +468,24 @@ def validate_operational_export(raw: bytes, *, codec_registry: object, identity_
         raise OperationalStoreError("V4_EXPORT_INVALID") from None
 
 
+def _project_validated_graph(g: _Graph, identity_key_id: str, account_scope_sha256: str) -> OperationalCashProjection:
+    """Internal projection from the full graph checked in the same call/lease."""
+    delta = sum(_effect(LedgerTransaction.from_canonical_dict(_parse(e["transaction_json_ascii"])))
+        for b in g.record_bodies for e in b["entries"] if e["transaction_json_ascii"] is not None)
+    _require(g.seed_projection.expected_cash_nano + delta == g.cash_nano, "CASH_SUM_MISMATCH")
+    return OperationalCashProjection(g.snapshot().pins, account_scope_sha256, identity_key_id,
+        g.seed_projection.baseline_cash_nano, g.seed_projection.correction_delta_nano, delta,
+        g.cash_nano, g.transaction_count, _sha(_canonical([e["provenance"]
+            for b in g.record_bodies for e in b["entries"]] + [g.seed_projection.provenance_sha256])),
+        g.covered_until)
+
+
 def project_operational_cash(raw: bytes, *, pins: OperationalPins, codec_registry: object,
         identity_key: bytes, identity_key_id: str, account_scope_sha256: str) -> OperationalCashProjection:
     try:
         g = _validate(raw, versions._registry(codec_registry), versions._key(identity_key),
             versions._key_id(identity_key_id), versions._hash(account_scope_sha256), pins)
-        delta = sum(_effect(LedgerTransaction.from_canonical_dict(_parse(e["transaction_json_ascii"])))
-            for b in g.record_bodies for e in b["entries"] if e["transaction_json_ascii"] is not None)
-        _require(g.seed_projection.expected_cash_nano + delta == g.cash_nano, "CASH_SUM_MISMATCH")
-        return OperationalCashProjection(pins, account_scope_sha256, identity_key_id,
-            g.seed_projection.baseline_cash_nano, g.seed_projection.correction_delta_nano, delta,
-            g.cash_nano, g.transaction_count, _sha(_canonical([e["provenance"]
-                for b in g.record_bodies for e in b["entries"]] + [g.seed_projection.provenance_sha256])),
-            g.covered_until)
+        return _project_validated_graph(g, identity_key_id, account_scope_sha256)
     except OperationalStoreError:
         raise
     except Exception:
@@ -542,10 +580,11 @@ class LockedOperationalView:
     boundary is rejected. Full export is private financial history.
     """
     __slots__ = ("_connection", "_raw", "_snapshot", "_active", "_thread", "_root",
-                 "_file_identity", "_lease_id", "_started", "_clock", "_registry", "_key", "_key_id", "_account")
+                 "_file_identity", "_lease_id", "_started", "_clock", "_registry", "_key", "_key_id", "_account",
+                 "_projection", "_total_changes", "_transaction_ended")
 
     def __init__(self, token: object, *, connection: sqlite3.Connection, raw: bytes,
-                 snapshot: OperationalSnapshot, root: Path, started: int,
+                 snapshot: OperationalSnapshot, projection: OperationalCashProjection, root: Path, started: int,
                  clock: Callable[[], int], registry: Any, key: bytes, key_id: str, account: str):
         _require(token is _LOCKED_VIEW_TOKEN, "VIEW_CONSTRUCTION_FORBIDDEN")
         self._connection, self._raw, self._snapshot = connection, raw, snapshot
@@ -555,10 +594,24 @@ class LockedOperationalView:
         self._file_identity = (st.st_dev, st.st_ino)
         self._started, self._clock = started, clock
         self._registry, self._key, self._key_id, self._account = registry, key, key_id, account
+        self._projection = projection
+        self._total_changes = connection.total_changes
+        self._transaction_ended = False
+        # This connection is owned solely by locked_snapshot. Detect a caller
+        # ending/restarting its transaction even when the final bytes match.
+        def trace(statement: str) -> None:
+            import re
+            cleaned = re.sub(r"/\*.*?\*/|--[^\n]*(?:\n|$)", " ", statement, flags=re.S).strip()
+            cleaned = cleaned.lstrip("; \t\r\n")
+            first = cleaned.split(None, 1)[0].upper() if cleaned else ""
+            if first in {"COMMIT", "END", "ROLLBACK", "BEGIN"}:
+                self._transaction_ended = True
+        connection.set_trace_callback(trace)
 
     def assert_active(self) -> None:
         _require(self._active and threading.get_ident() == self._thread, "VIEW_NOT_ACTIVE")
-        _require(self._connection.in_transaction, "VIEW_TRANSACTION_LOST")
+        _require(self._connection.in_transaction and not self._transaction_ended, "VIEW_TRANSACTION_LOST")
+        _require(self._connection.total_changes == self._total_changes, "VIEW_CHANGED")
         tick = self._clock()
         _require(type(tick) is int and 0 <= tick - self._started <= MAX_AGE_NS, "VIEW_EXPIRED")
         db = cl2._validate_live_root(self._root)
@@ -566,6 +619,8 @@ class LockedOperationalView:
         _require((st.st_dev, st.st_ino) == self._file_identity, "VIEW_DATABASE_REPLACED")
         _check_connection(self._connection)
         _require(_export(self._connection) == self._raw, "VIEW_CHANGED")
+        end = self._clock()
+        _require(type(end) is int and tick <= end and end - self._started <= MAX_AGE_NS, "VIEW_EXPIRED")
 
     @property
     def pins(self) -> OperationalPins:
@@ -582,9 +637,9 @@ class LockedOperationalView:
 
     def project_cash(self) -> OperationalCashProjection:
         self.assert_active()
-        result = project_operational_cash(self._raw, pins=self._snapshot.pins,
-            codec_registry=tuple(self._registry.values()), identity_key=self._key,
-            identity_key_id=self._key_id, account_scope_sha256=self._account)
+        # Never reuse across views. Full graph was validated before this view
+        # was issued; assert_active still checks exact DB bytes/schema each time.
+        result = self._projection
         self.assert_active()
         return result
 
@@ -679,7 +734,8 @@ class VersionedOperationalStore:
             raw = _export(conn)
             graph = _validate(raw, self._registry, self._key, self._key_id, self._account, expected_pins)
             view = LockedOperationalView(_LOCKED_VIEW_TOKEN, connection=conn, raw=raw,
-                snapshot=graph.snapshot(), root=self.root, started=begin, clock=monotonic_ns,
+                snapshot=graph.snapshot(), projection=_project_validated_graph(graph, self._key_id, self._account),
+                root=self.root, started=begin, clock=monotonic_ns,
                 registry=self._registry, key=self._key, key_id=self._key_id, account=self._account)
             view.assert_active()
             yield view
@@ -698,12 +754,17 @@ class VersionedOperationalStore:
 
     def sync_tbank_operations(self, request: cl3.BrokerReadRequest, *, expected_pins: OperationalPins,
                              recorded_at: str,
-                             read_rub_positions: Callable[[str], Any]) -> OperationalSyncResult:
+                             read_rub_positions: Callable[[str], Any],
+                             prepare_commit: Callable[[bytes, bytes], None] | None = None,
+                             bound_full_fill: dict | None = None) -> OperationalSyncResult:
         """Read a complete bounded CL3 window, then atomically append with CAS.
 
         recorded_at is caller-supplied; acceptance bounds monotonic elapsed time.
         No orders, authority writes, retries or local fallback cash are added.
         A failed collection never writes a prefix or advances a watermark.
+        Optional prepare_commit durably pins the exact before/after export
+        before INSERT. It grants no monetary authority and cannot alter the
+        derived batch. It is not called for a no-write replay.
         """
         try:
             _require(type(request) is cl3.BrokerReadRequest and request.environment is cl3.BrokerEnvironment.SANDBOX
@@ -712,6 +773,7 @@ class VersionedOperationalStore:
             _require(request.retry_policy.max_attempts == 1 and request.limit <= MAX_ITEMS
                 and request.max_items <= MAX_ITEMS and request.max_pages <= MAX_PAGES, "READ_BOUNDS_INVALID")
             _require(callable(read_rub_positions), "CASH_READER_REQUIRED")
+            _require(prepare_commit is None or callable(prepare_commit), "COMMIT_OBSERVER_INVALID")
             versions._time(recorded_at)
             _require(recorded_at >= request.to_exclusive, "REGISTRATION_TIME_INVALID")
             self.snapshot(pins=expected_pins)
@@ -733,19 +795,25 @@ class VersionedOperationalStore:
                 "requests": payloads, "responses": responses,
                 "rub_positions": deepcopy(read_rub_positions(request.raw_account_id))})
 
+            if bound_full_fill is not None:
+                captured = _parse(raw)
+                captured["bound_full_fill"] = _parse(_canonical(bound_full_fill))
+                raw = _canonical(captured)
+
             def timely() -> None:
                 now = request.monotonic_ns()
                 _require(type(now) is int and start <= now < deadline, "DEADLINE_EXCEEDED")
 
             timely()
-            return self._append_capture(raw, expected_pins, recorded_at, timely)
+            return self._append_capture(raw, expected_pins, recorded_at, timely, prepare_commit)
         except OperationalStoreError:
             raise
         except Exception:
             raise OperationalStoreError("V4_SYNC_FAILED") from None
 
     def _append_capture(self, capture: bytes, expected: OperationalPins, recorded_at: str,
-                        timely: Callable[[], None]) -> OperationalSyncResult:
+                        timely: Callable[[], None],
+                        prepare_commit: Callable[[bytes, bytes], None] | None = None) -> OperationalSyncResult:
         _require(not self._closed and not self._connection.in_transaction, "STORE_NOT_IDLE")
         conn = self._connection
         try:
@@ -760,6 +828,19 @@ class VersionedOperationalStore:
                     return OperationalSyncResult(row["sha256"], digest, 0, 0, 0, True, g.snapshot().pins)
             body = _derive(g, capture, recorded_at, self._key, self._key_id, self._account)
             signed = _sealed(body, self._key)
+            if prepare_commit is not None:
+                proposed = deepcopy(g.data)
+                proposed["batches"].append({"sha256": _sha(signed),
+                                            "canonical_json_ascii": signed.decode("ascii")})
+                proposed_raw = _canonical(proposed)
+                _validate(proposed_raw, self._registry, self._key, self._key_id, self._account)
+                timely()
+                prepare_commit(raw, proposed_raw)
+                # A callback is bookkeeping, not a way to replace the checked
+                # batch or mutate this connection before its atomic INSERT.
+                _require(conn.in_transaction and _export(conn) == raw, "PREPARE_CHANGED_SOURCE")
+                _check_connection(conn)
+                timely()
             _call(self._injector, "append.before_insert")
             conn.execute("INSERT INTO cl2_v4_batch VALUES(?,?,?)", (body["sequence"], signed, _sha(signed)))
             _call(self._injector, "append.after_insert")

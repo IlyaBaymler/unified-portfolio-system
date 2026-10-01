@@ -230,6 +230,21 @@ def decode_exact_order_receipt(
     """
     proof = validate_exact_receipt_binding(intent, account_id=account_id,
         identity_key=identity_key, identity_key_id=identity_key_id, instrument=instrument)
+    return _decode_bound_order_receipt(raw, intent, account_id=account_id,
+        identity_key=identity_key, proof_sha256=proof.sha256,
+        account_scope_sha256=proof.account_scope_sha256,
+        proof_evaluated_at=proof.evaluated_at, observed_at=observed_at)
+
+
+def _decode_bound_order_receipt(raw: Any, intent: CentralOrderIntent, *, account_id: str,
+        identity_key: bytes, proof_sha256: str, account_scope_sha256: str,
+        proof_evaluated_at: str, observed_at: str) -> ExactOrderReceipt:
+    """Pure receipt economics after a caller validates its own dispatch binding.
+
+    Private shared decoder, never execution/settlement authority. The v1 public
+    entry retains its proof validation. The separate versioned consumer proves
+    the immutable v4 request before using this arithmetic; no v1 proof is forged.
+    """
     c = intent.candidate
     _require(type(raw) is dict, "PAYLOAD_INVALID")
     _canonical(raw)
@@ -257,7 +272,7 @@ def decode_exact_order_receipt(
     attempts = [t for t in intent.transitions if t.status == "IN_FLIGHT"]
     _require(len(attempts) == 1, "ATTEMPT_LINEAGE_INVALID")
     earliest, now = _time(attempts[0].at), _time(observed_at)
-    _require(_time(proof.evaluated_at) <= earliest <= now, "ATTEMPT_TIME_INVALID")
+    _require(_time(proof_evaluated_at) <= earliest <= now, "ATTEMPT_TIME_INVALID")
     raw_stages = raw.get("stages", [])
     _require(type(raw_stages) is list and len(raw_stages) <= 128, "STAGES_INVALID")
     seen: set[str] = set()
@@ -272,7 +287,7 @@ def decode_exact_order_receipt(
         at = _time(stage.get("executionTime"))
         _require(earliest <= at <= now, "TRADE_TIME_INVALID")
         trade_scope = _keyed(identity_key, {"domain": _DOMAIN + "_TRADE",
-            "account_scope_sha256": proof.account_scope_sha256, "trade_id": trade})
+            "account_scope_sha256": account_scope_sha256, "trade_id": trade})
         stages.append(ExactReceiptStage(trade_scope, lots, price, at))
     _require(sum(s.lots for s in stages) == executed, "STAGE_COVERAGE_MISMATCH")
     gross = sum(s.price_nano * s.lots * c.lot_size for s in stages)
@@ -294,14 +309,14 @@ def decode_exact_order_receipt(
     if commission is not None:
         _require(gross + commission <= _MAX_NANO, "MONEY_OUT_OF_SCOPE")
     order_scope = _keyed(identity_key, {"domain": _DOMAIN + "_ORDER",
-        "account_scope_sha256": proof.account_scope_sha256, "order_id": exchange})
+        "account_scope_sha256": account_scope_sha256, "order_id": exchange})
     stages_tuple = tuple(sorted(stages, key=lambda s: s.trade_scope_sha256))
     # Receipt identity is stable across a later identical observation and stage
     # permutation; timing of the read remains explicit outside that identity.
-    identity = _keyed(identity_key, {"domain": _DOMAIN, "proof_sha256": proof.sha256,
+    identity = _keyed(identity_key, {"domain": _DOMAIN, "proof_sha256": proof_sha256,
         "order_scope_sha256": order_scope, "provider_status": status,
         "stages": [s.to_dict() for s in stages_tuple], "commission": commission,
         "service_commission": service})
-    return ExactOrderReceipt(proof.sha256, proof.account_scope_sha256, order_scope,
+    return ExactOrderReceipt(proof_sha256, account_scope_sha256, order_scope,
         c.direction, status, requested, executed, c.lot_size, stages_tuple,
         commission, service, now, identity)

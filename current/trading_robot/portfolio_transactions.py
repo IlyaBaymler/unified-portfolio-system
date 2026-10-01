@@ -19,6 +19,7 @@ from .portfolio_repository import (
     PortfolioRepository,
     PortfolioRepositoryError,
     PortfolioRevisionConflictError,
+    portfolio_document_checksum,
 )
 from .state_persistence import atomic_write_json
 
@@ -110,6 +111,7 @@ class PortfolioTransactionCoordinator:
         transform: Callable[[PortfolioState], PortfolioState],
         *,
         expected_revision: int | None = None,
+        expected_document_checksum: str | None = None,
         transaction_id: str | None = None,
         account_id: str | None = None,
         instrument_id: str | None = None,
@@ -136,6 +138,9 @@ class PortfolioTransactionCoordinator:
             raise PortfolioRevisionConflictError(
                 f"Portfolio revision conflict: expected {expected_revision}, current {old_revision}."
             )
+        if (expected_document_checksum is not None
+                and portfolio_document_checksum(current) != expected_document_checksum):
+            raise PortfolioRevisionConflictError("Portfolio document checksum conflict.")
         self._record(
             "CANONICAL_TRANSACTION_STARTED",
             account_id=account_id or current.account_id,
@@ -174,11 +179,13 @@ class PortfolioTransactionCoordinator:
             self.repository.save(
                 candidate,
                 expected_revision=old_revision,
+                expected_document_checksum=portfolio_document_checksum(current),
                 allow_equal_revision=True,
             )
             if self.shadow_writer is not None:
                 shadow_status = self.shadow_writer.write(candidate)
                 if shadow_status != candidate.migration.compatibility_shadow_status:
+                    saved_checksum = portfolio_document_checksum(candidate)
                     candidate = replace(
                         candidate,
                         migration=PortfolioMigrationMetadata.completed(
@@ -192,6 +199,7 @@ class PortfolioTransactionCoordinator:
                     self.repository.save(
                         candidate,
                         expected_revision=new_revision,
+                        expected_document_checksum=saved_checksum,
                         allow_equal_revision=True,
                     )
                     self._record(

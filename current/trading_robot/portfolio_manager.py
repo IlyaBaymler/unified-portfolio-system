@@ -31,7 +31,9 @@ from .portfolio_model import (
     SnapshotFreshness,
 )
 from .portfolio_reconciler import PortfolioReconciler, ReconciliationContext
-from .portfolio_repository import PortfolioRepository, PortfolioRepositoryError
+from .portfolio_repository import (
+    PortfolioRepository, PortfolioRepositoryError, portfolio_document_checksum,
+)
 from .portfolio_snapshot import PortfolioSnapshotBuilder
 from .portfolio_observation import PortfolioObservationPolicy
 from .portfolio_cash_observation import (
@@ -790,6 +792,7 @@ class CanonicalPortfolioManager:
                 portfolio_source="CANONICAL",
             ),
             expected_revision=previous.revision,
+            expected_document_checksum=portfolio_document_checksum(previous),
             account_id=self.account_id,
         )
         state = result.state

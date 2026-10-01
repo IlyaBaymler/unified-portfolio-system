@@ -195,16 +195,21 @@ def _compose_production_gui_runtime(
     secret_provider: SecretProvider | None = None,
     transport_factory: Callable[..., Any] = TBankSandboxClient,
     execution_order_type: str = "BESTPRICE",
+    require_new: bool = False,
 ) -> GuiRuntimeController:
-    """Build the shipped account-level owner graph once, without provider calls."""
+    """Build the shipped owner graph; exclusive CLI callers may not borrow it."""
 
     global _PRODUCTION_COMPOSITION
+    if type(require_new) is not bool:
+        raise GuiRuntimeBlockedError("GUI_COMPOSITION_OWNERSHIP_INVALID")
     if type(execution_order_type) is not str or execution_order_type not in {"MARKET", "BESTPRICE"}:
         raise GuiRuntimeBlockedError("EXECUTION_ORDER_TYPE_INVALID")
     root = Path(runtime_dir).resolve()
     with _PRODUCTION_COMPOSITION_LOCK:
         if _PRODUCTION_COMPOSITION is not None:
             previous_root, controller = _PRODUCTION_COMPOSITION
+            if require_new or getattr(controller, "_exclusive_cli_composition", False):
+                raise GuiRuntimeBlockedError("GUI_COMPOSITION_IN_USE")
             if previous_root != root or (
                 controller._composition_blocker is None
                 and controller.central_order_coordinator.execution_order_type != execution_order_type
@@ -370,6 +375,8 @@ def _compose_production_gui_runtime(
                 except Exception:
                     pass
             raise
+        if require_new:
+            controller._exclusive_cli_composition = True
         _PRODUCTION_COMPOSITION = (root, controller)
         return controller
 

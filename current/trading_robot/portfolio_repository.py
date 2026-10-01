@@ -22,6 +22,15 @@ from .runtime_integrity import FileIntegrityReport, inspect_json_file
 from .state_persistence import StatePersistenceError, StateSaveResult, atomic_write_json
 
 
+def portfolio_document_checksum(state: PortfolioState) -> str:
+    """Hash the full semantic document, using the existing lease convention."""
+    if not isinstance(state, PortfolioState):
+        raise TypeError("state must be PortfolioState")
+    raw = json.dumps(state.to_dict(), ensure_ascii=False, sort_keys=True,
+                     separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
 class PortfolioRepositoryError(RuntimeError):
     pass
 
@@ -180,9 +189,16 @@ class PortfolioRepository:
         allow_account_initialization: bool = True,
         expected_revision: int | None = None,
         allow_equal_revision: bool = True,
+        expected_document_checksum: str | None = None,
     ) -> StateSaveResult:
         if not isinstance(state, PortfolioState):
             raise TypeError("state must be PortfolioState")
+        if expected_document_checksum is not None and (
+            type(expected_document_checksum) is not str
+            or len(expected_document_checksum) != 64
+            or any(c not in "0123456789abcdef" for c in expected_document_checksum)
+        ):
+            raise ValueError("expected_document_checksum must be a lowercase SHA-256")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             lock = InterProcessFileLock(
@@ -197,6 +213,9 @@ class PortfolioRepository:
         try:
             if self.path.exists():
                 current = self.load()
+                if (expected_document_checksum is not None
+                        and portfolio_document_checksum(current) != expected_document_checksum):
+                    raise PortfolioRevisionConflictError("Portfolio document checksum conflict.")
                 if (
                     current.account_id
                     and state.account_id
@@ -233,6 +252,8 @@ class PortfolioRepository:
                     raise PortfolioRevisionConflictError(
                         f"Portfolio revision {state.revision} was already committed."
                     )
+            if not self.path.exists() and expected_document_checksum is not None:
+                raise PortfolioRevisionConflictError("Expected portfolio document is missing.")
             try:
                 return atomic_write_json(
                     self.path,
