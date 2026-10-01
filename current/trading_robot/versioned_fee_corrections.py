@@ -333,9 +333,11 @@ def restore_fee_correction_export(raw: bytes, target_root: object, *, codec_regi
 class VersionedFeeCorrectionStore:
     """One verified version-bound bundle; not a subtype of a trading CashLedgerStore."""
     def __init__(self, root: Path, conn: sqlite3.Connection, registry: Any, key: bytes,
-                 key_id: str, account: str, injector: Callable[[str], None] | None):
+                 key_id: str, account: str, injector: Callable[[str], None] | None,
+                 custody: cl2._DatabaseCustody):
         self.root, self._connection, self._registry = root, conn, registry
         self._key, self._key_id, self._account, self._injector = key, key_id, account, injector
+        self._custody = custody
         self._closed = False
 
     @classmethod
@@ -343,25 +345,31 @@ class VersionedFeeCorrectionStore:
              identity_key_id: str, account_scope_sha256: str,
              expected_correction_head_sha256: str | None = None,
              fault_injector: Callable[[str], None] | None = None) -> Self:
-        path = cl2._path_from(root); db = cl2._validate_live_root(path)
+        path = cl2._path_from(root); db, identity = cl2._validate_live_root_identity(path)
         registry, key = versions._registry(codec_registry), versions._key(identity_key)
         key_id, account = versions._key_id(identity_key_id), versions._hash(account_scope_sha256)
-        ro = versions._read_connection(db)
+        custody = cl2._open_database_custody(db, identity)
         try:
-            ro.execute("BEGIN")
-            _connection_check(ro, registry, key, key_id, account)
-        finally:
-            ro.close()
-        conn = cl2._connect(db, 0)
-        try:
-            conn.execute("BEGIN")
-            checked = _connection_check(conn, registry, key, key_id, account)
-            if expected_correction_head_sha256 is not None:
-                _require(checked.snapshot.correction_head_sha256 == versions._hash(expected_correction_head_sha256), "CORRECTION_PIN_MISMATCH")
-            conn.execute("COMMIT")
-            return cls(path, conn, registry, key, key_id, account, fault_injector)
+            ro = versions._read_connection(db)
+            try:
+                cl2._validate_open_root(path, ro, custody)
+                ro.execute("BEGIN")
+                _connection_check(ro, registry, key, key_id, account)
+            finally:
+                ro.close()
+            conn = cl2._connect(db, 0)
+            try:
+                cl2._validate_open_root(path, conn, custody)
+                conn.execute("BEGIN")
+                checked = _connection_check(conn, registry, key, key_id, account)
+                if expected_correction_head_sha256 is not None:
+                    _require(checked.snapshot.correction_head_sha256 == versions._hash(expected_correction_head_sha256), "CORRECTION_PIN_MISMATCH")
+                conn.execute("COMMIT")
+                return cls(path, conn, registry, key, key_id, account, fault_injector, custody)
+            except BaseException:
+                conn.close(); raise
         except BaseException:
-            conn.close(); raise
+            custody.close(); raise
 
     def __enter__(self) -> Self:
         return self
@@ -371,13 +379,18 @@ class VersionedFeeCorrectionStore:
 
     def close(self) -> None:
         if not self._closed:
-            if self._connection.in_transaction:
-                self._connection.execute("ROLLBACK")
-            self._connection.close(); self._closed = True
+            try:
+                try:
+                    if self._connection.in_transaction:
+                        self._connection.execute("ROLLBACK")
+                finally:
+                    self._connection.close()
+            finally:
+                self._custody.close(); self._closed = True
 
     def _check(self) -> _Checked:
         _require(not self._closed, "STORE_CLOSED")
-        cl2._validate_open_root(self.root, self._connection)
+        cl2._validate_open_root(self.root, self._connection, self._custody)
         return _connection_check(self._connection, self._registry, self._key, self._key_id, self._account)
 
     def export_bytes(self) -> bytes:

@@ -580,18 +580,18 @@ class LockedOperationalView:
     boundary is rejected. Full export is private financial history.
     """
     __slots__ = ("_connection", "_raw", "_snapshot", "_active", "_thread", "_root",
-                 "_file_identity", "_lease_id", "_started", "_clock", "_registry", "_key", "_key_id", "_account",
+                 "_custody", "_lease_id", "_started", "_clock", "_registry", "_key", "_key_id", "_account",
                  "_projection", "_total_changes", "_transaction_ended")
 
     def __init__(self, token: object, *, connection: sqlite3.Connection, raw: bytes,
                  snapshot: OperationalSnapshot, projection: OperationalCashProjection, root: Path, started: int,
-                 clock: Callable[[], int], registry: Any, key: bytes, key_id: str, account: str):
+                 clock: Callable[[], int], registry: Any, key: bytes, key_id: str, account: str,
+                 custody: cl2._DatabaseCustody):
         _require(token is _LOCKED_VIEW_TOKEN, "VIEW_CONSTRUCTION_FORBIDDEN")
         self._connection, self._raw, self._snapshot = connection, raw, snapshot
         self._active, self._thread, self._root = True, threading.get_ident(), root
         self._lease_id = secrets.token_hex(32)
-        st = (root / "store.sqlite3").stat()
-        self._file_identity = (st.st_dev, st.st_ino)
+        self._custody = custody
         self._started, self._clock = started, clock
         self._registry, self._key, self._key_id, self._account = registry, key, key_id, account
         self._projection = projection
@@ -614,9 +614,7 @@ class LockedOperationalView:
         _require(self._connection.total_changes == self._total_changes, "VIEW_CHANGED")
         tick = self._clock()
         _require(type(tick) is int and 0 <= tick - self._started <= MAX_AGE_NS, "VIEW_EXPIRED")
-        db = cl2._validate_open_root(self._root, self._connection)
-        st = db.stat()
-        _require((st.st_dev, st.st_ino) == self._file_identity, "VIEW_DATABASE_REPLACED")
+        cl2._validate_open_root(self._root, self._connection, self._custody)
         _check_connection(self._connection)
         _require(_export(self._connection) == self._raw, "VIEW_CHANGED")
         end = self._clock()
@@ -654,31 +652,39 @@ class VersionedOperationalStore:
     transaction amount. Every stored batch is re-decoded on open/read/replay.
     """
     def __init__(self, root: Path, conn: sqlite3.Connection, registry: Any, key: bytes,
-                 key_id: str, account: str, injector: Callable[[str], None] | None):
+                 key_id: str, account: str, injector: Callable[[str], None] | None,
+                 custody: cl2._DatabaseCustody):
         self.root, self._connection, self._registry = root, conn, registry
         self._key, self._key_id, self._account, self._injector = key, key_id, account, injector
+        self._custody = custody
         self._closed = False
 
     @classmethod
     def open(cls, root: object, *, codec_registry: object, identity_key: bytes,
              identity_key_id: str, account_scope_sha256: str, pins: OperationalPins | None = None,
              fault_injector: Callable[[str], None] | None = None) -> Self:
-        path = cl2._path_from(root); db = cl2._validate_live_root(path)
+        path = cl2._path_from(root); db, identity = cl2._validate_live_root_identity(path)
         registry, key = versions._registry(codec_registry), versions._key(identity_key)
         key_id, account = versions._key_id(identity_key_id), versions._hash(account_scope_sha256)
-        ro = versions._read_connection(db)
+        custody = cl2._open_database_custody(db, identity)
         try:
-            ro.execute("BEGIN"); _check_connection(ro)
-            _validate(_export(ro), registry, key, key_id, account, pins)
-        finally:
-            ro.close()
-        conn = cl2._connect(db, 0)
-        obj = cls(path, conn, registry, key, key_id, account, fault_injector)
-        try:
-            obj.snapshot(pins=pins)
-            return obj
+            ro = versions._read_connection(db)
+            try:
+                cl2._validate_open_root(path, ro, custody)
+                ro.execute("BEGIN"); _check_connection(ro)
+                _validate(_export(ro), registry, key, key_id, account, pins)
+            finally:
+                ro.close()
+            conn = cl2._connect(db, 0)
+            try:
+                obj = cls(path, conn, registry, key, key_id, account, fault_injector, custody)
+                cl2._validate_open_root(path, conn, custody)
+                obj.snapshot(pins=pins)
+                return obj
+            except BaseException:
+                conn.close(); raise
         except BaseException:
-            conn.close(); raise
+            custody.close(); raise
 
     def __enter__(self) -> Self:
         return self
@@ -688,14 +694,19 @@ class VersionedOperationalStore:
 
     def close(self) -> None:
         if not self._closed:
-            self._connection.close(); self._closed = True
+            try:
+                self._connection.close()
+            finally:
+                self._custody.close(); self._closed = True
 
     def export_bytes(self) -> bytes:
         _require(not self._closed and not self._connection.in_transaction, "STORE_NOT_IDLE")
+        cl2._validate_open_root(self.root, self._connection, self._custody)
         try:
             self._connection.execute("BEGIN"); _check_connection(self._connection)
             raw = _export(self._connection)
             _validate(raw, self._registry, self._key, self._key_id, self._account)
+            cl2._validate_open_root(self.root, self._connection, self._custody)
             self._connection.execute("COMMIT")
             return raw
         except BaseException:
@@ -719,38 +730,41 @@ class VersionedOperationalStore:
         _require(type(expected_pins) is OperationalPins and callable(monotonic_ns), "PIN_INVALID")
         begin = monotonic_ns()
         _require(type(begin) is int and begin >= 0, "CLOCK_INVALID")
-        db = cl2._validate_open_root(self.root, self._connection)
-        identity = db.stat()
+        db = cl2._validate_open_root(self.root, self._connection, self._custody)
+        view_custody = cl2._open_database_custody(db, self._custody.identity)
         conn = None
         view = None
         try:
             conn = sqlite3.connect(db.resolve().as_uri() + "?mode=rw", uri=True,
                                    timeout=0, isolation_level=None)
             conn.execute("PRAGMA busy_timeout=0")
+            cl2._validate_open_root(self.root, conn, view_custody)
             conn.execute("BEGIN IMMEDIATE")
             _check_connection(conn)
-            st = db.stat()
-            _require((st.st_dev, st.st_ino) == (identity.st_dev, identity.st_ino), "VIEW_DATABASE_REPLACED")
             raw = _export(conn)
             graph = _validate(raw, self._registry, self._key, self._key_id, self._account, expected_pins)
             view = LockedOperationalView(_LOCKED_VIEW_TOKEN, connection=conn, raw=raw,
                 snapshot=graph.snapshot(), projection=_project_validated_graph(graph, self._key_id, self._account),
                 root=self.root, started=begin, clock=monotonic_ns,
-                registry=self._registry, key=self._key, key_id=self._key_id, account=self._account)
+                registry=self._registry, key=self._key, key_id=self._key_id, account=self._account,
+                custody=view_custody)
             view.assert_active()
             yield view
             view.assert_active()
         except sqlite3.Error:
             raise OperationalStoreError("V4_VIEW_LOCK_OR_DATABASE_UNAVAILABLE") from None
         finally:
-            if view is not None:
-                view._active = False
-            if conn is not None:
-                try:
-                    if conn.in_transaction:
-                        conn.execute("ROLLBACK")
-                finally:
-                    conn.close()
+            try:
+                if view is not None:
+                    view._active = False
+                if conn is not None:
+                    try:
+                        if conn.in_transaction:
+                            conn.execute("ROLLBACK")
+                    finally:
+                        conn.close()
+            finally:
+                view_custody.close()
 
     def sync_tbank_operations(self, request: cl3.BrokerReadRequest, *, expected_pins: OperationalPins,
                              recorded_at: str,
@@ -816,6 +830,7 @@ class VersionedOperationalStore:
                         prepare_commit: Callable[[bytes, bytes], None] | None = None) -> OperationalSyncResult:
         _require(not self._closed and not self._connection.in_transaction, "STORE_NOT_IDLE")
         conn = self._connection
+        cl2._validate_open_root(self.root, conn, self._custody)
         try:
             conn.execute("BEGIN IMMEDIATE"); _check_connection(conn)
             raw = _export(conn)
@@ -824,7 +839,7 @@ class VersionedOperationalStore:
             for body, row in zip(g.record_bodies, g.data["batches"], strict=True):
                 if body["capture_sha256"] == digest:
                     _require(body["capture_json_ascii"].encode("ascii") == capture, "CAPTURE_CONFLICT")
-                    timely(); conn.execute("COMMIT")
+                    timely(); cl2._validate_open_root(self.root, conn, self._custody); conn.execute("COMMIT")
                     return OperationalSyncResult(row["sha256"], digest, 0, 0, 0, True, g.snapshot().pins)
             body = _derive(g, capture, recorded_at, self._key, self._key_id, self._account)
             signed = _sealed(body, self._key)
@@ -845,7 +860,8 @@ class VersionedOperationalStore:
             conn.execute("INSERT INTO cl2_v4_batch VALUES(?,?,?)", (body["sequence"], signed, _sha(signed)))
             _call(self._injector, "append.after_insert")
             after = _validate(_export(conn), self._registry, self._key, self._key_id, self._account)
-            _call(self._injector, "append.before_commit"); timely(); conn.execute("COMMIT")
+            _call(self._injector, "append.before_commit"); timely()
+            cl2._validate_open_root(self.root, conn, self._custody); conn.execute("COMMIT")
             _call(self._injector, "append.after_commit")
             return OperationalSyncResult(_sha(signed), digest, len(body["entries"]),
                 sum(e["transaction_sha256"] is not None for e in body["entries"]),

@@ -1553,7 +1553,7 @@ def test_v310_cl2_29_open_validation_never_raw_reads_live_shm(
         assert attempted_shm_reads == []
 
         with _reason(PersistenceReason.PATH_INVALID):
-            persistence._validate_open_root(root, other._connection)
+            persistence._validate_open_root(root, other._connection, other._custody)
 
         store._connection.execute("ATTACH DATABASE ':memory:' AS unexpected")
         try:
@@ -1576,3 +1576,154 @@ def test_v310_cl2_29_open_validation_never_raw_reads_live_shm(
     finally:
         other.close()
         store.close()
+
+
+def _replace_open_database_or_skip(
+    root: Path,
+    replacement_root: Path,
+    displaced: Path,
+) -> None:
+    database = root / "store.sqlite3"
+    try:
+        os.replace(database, displaced)
+    except PermissionError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 32:
+            pytest.skip("Windows protects the open SQLite file with WinError 32")
+        raise
+    os.replace(replacement_root / "store.sqlite3", database)
+
+
+def _restore_replaced_database(root: Path, displaced: Path) -> None:
+    database = root / "store.sqlite3"
+    if displaced.exists():
+        if database.exists():
+            database.unlink()
+        os.replace(displaced, database)
+
+
+def test_v310_cl2_30_live_identity_rejects_real_path_replacement(
+    tmp_path: Path,
+    descriptor: CodecDescriptor,
+) -> None:
+    root = tmp_path / "live-store"
+    replacement_root = tmp_path / "replacement-store"
+    store = CashLedgerStore.create(root, [descriptor])
+    replacement = CashLedgerStore.create(replacement_root, [descriptor])
+    replacement.close()
+    displaced = tmp_path / "displaced-original.sqlite3"
+    before = store.export_bytes()
+    try:
+        _replace_open_database_or_skip(root, replacement_root, displaced)
+        reported = Path(store._connection.execute("PRAGMA database_list").fetchone()[2])
+        assert reported.resolve(strict=True) == (root / "store.sqlite3").resolve(strict=True)
+        with _reason(PersistenceReason.PATH_INVALID):
+            store.validate()
+        _restore_replaced_database(root, displaced)
+        assert store.export_bytes() == before
+    finally:
+        _restore_replaced_database(root, displaced)
+        store.close()
+
+
+def test_v310_cl2_31_backup_rechecks_retained_source_identity_before_promote(
+    tmp_path: Path,
+    descriptor: CodecDescriptor,
+) -> None:
+    root = tmp_path / "live-store"
+    replacement_root = tmp_path / "replacement-store"
+    displaced = tmp_path / "displaced-original.sqlite3"
+    replacement = CashLedgerStore.create(replacement_root, [descriptor])
+    replacement.close()
+
+    def replace_before_promote(point: str) -> None:
+        if point == "backup.before_promote":
+            _replace_open_database_or_skip(root, replacement_root, displaced)
+
+    store = CashLedgerStore.create(root, [descriptor], fault_injector=replace_before_promote)
+    before = store.export_bytes()
+    target = tmp_path / "backup"
+    try:
+        with _reason(PersistenceReason.PATH_INVALID):
+            store.backup(target)
+        assert not target.exists()
+        _restore_replaced_database(root, displaced)
+        assert store.export_bytes() == before
+    finally:
+        _restore_replaced_database(root, displaced)
+        store.close()
+
+
+def test_v310_cl2_32_same_path_rejects_identity_token_and_handle_mismatch(
+    tmp_path: Path,
+    descriptor: CodecDescriptor,
+) -> None:
+    store = CashLedgerStore.create(tmp_path / "store", [descriptor])
+    other = CashLedgerStore.create(tmp_path / "other", [descriptor])
+    original_identity = store._custody._identity
+    original_handle = store._custody._handle
+    foreign_handle = (other.root / "store.sqlite3").open("rb", buffering=0)
+    try:
+        reported = Path(store._connection.execute("PRAGMA database_list").fetchone()[2])
+        assert reported.resolve(strict=True) == (store.root / "store.sqlite3").resolve(strict=True)
+        store._custody._identity = persistence._DatabaseIdentity(
+            device=original_identity.device,
+            inode=original_identity.inode + 1,
+        )
+        with _reason(PersistenceReason.PATH_INVALID):
+            store.validate()
+        store._custody._identity = original_identity
+
+        store._custody._handle = foreign_handle
+        with _reason(PersistenceReason.PATH_INVALID):
+            store.validate()
+    finally:
+        store._custody._handle = original_handle
+        store._custody._identity = original_identity
+        foreign_handle.close()
+        other.close()
+        store.close()
+
+
+def test_v310_cl2_33_custody_handle_lifetime_and_failed_open_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    vectors: dict[str, dict[str, object]],
+    descriptor: CodecDescriptor,
+) -> None:
+    root = tmp_path / "store"
+    store = CashLedgerStore.create(root, [descriptor])
+    identity = store._custody.identity
+    custody = store._custody
+    assert not custody.closed
+    store.append_observation(
+        _observation(vectors, descriptor, "observation-original"),
+        expected_store_revision=0,
+    )
+    assert custody.identity == identity
+    custody.validate(root / "store.sqlite3")
+    store.close()
+    assert custody.closed
+
+    closed_custodies = []
+    for _ in range(8):
+        reopened = CashLedgerStore.open(root, [descriptor])
+        closed_custodies.append(reopened._custody)
+        reopened.close()
+    assert all(item.closed for item in closed_custodies)
+
+    captured = []
+    real_open_custody = persistence._open_database_custody
+
+    def capture_custody(database, expected_identity):
+        result = real_open_custody(database, expected_identity)
+        captured.append(result)
+        return result
+
+    def reject_live_open(*_args, **_kwargs):
+        raise PersistenceError(PersistenceReason.PATH_INVALID)
+
+    monkeypatch.setattr(persistence, "_open_database_custody", capture_custody)
+    monkeypatch.setattr(persistence, "_validate_open_root", reject_live_open)
+    with _reason(PersistenceReason.PATH_INVALID):
+        CashLedgerStore.open(root, [descriptor])
+    assert len(captured) == 1 and captured[0].closed

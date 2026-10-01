@@ -393,3 +393,21 @@ def test_cutover_open_store_identities_never_raw_read_live_shm(cut_case, monkeyp
     ):
         cl2._validate_live_root(c.a.cl7_ledger_store.root)
     assert attempted_shm_reads == [source_shared_memory]
+
+
+def test_cutover_physical_identity_uses_retained_custody_token(cut_case):
+    c = cut_case
+    store = c.journal
+    original = store._custody._identity
+    physical = c.m._physical(store.root, store._connection, store._custody)
+    assert physical["device"] == str(original.device)
+    assert physical["inode"] == str(original.inode)
+    store._custody._identity = cl2._DatabaseIdentity(original.device, original.inode + 1)
+    try:
+        with pytest.raises(
+            cl2.PersistenceError,
+            match=f"^{cl2.PersistenceReason.PATH_INVALID.value}$",
+        ):
+            c.m._physical(store.root, store._connection, store._custody)
+    finally:
+        store._custody._identity = original

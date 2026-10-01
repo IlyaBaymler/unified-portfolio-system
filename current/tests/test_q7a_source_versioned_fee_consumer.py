@@ -497,3 +497,32 @@ def test_open_fee_store_validation_never_raw_reads_live_shm(exact_case, monkeypa
             assert attempted_shm_reads == [shared_memory]
     finally:
         y.review.close()
+
+
+def test_fee_store_retains_and_enforces_physical_identity(exact_case):
+    y = _prepare(exact_case)
+    store = None
+    try:
+        captured = _capture(y)
+        store, _ = _register_and_create(y, captured)
+        custody = store._custody
+        original = custody._identity
+        assert not custody.closed
+        assert store.snapshot()
+        assert custody.identity == original
+        custody._identity = cl2._DatabaseIdentity(original.device, original.inode + 1)
+        with pytest.raises(
+            cl2.PersistenceError,
+            match=f"^{cl2.PersistenceReason.PATH_INVALID.value}$",
+        ):
+            store.snapshot()
+        custody._identity = original
+        assert store.snapshot()
+        store.close()
+        assert custody.closed
+        store = None
+    finally:
+        if store is not None:
+            store._custody._identity = original
+            store.close()
+        y.review.close()

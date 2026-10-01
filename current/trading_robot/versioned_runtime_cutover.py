@@ -66,10 +66,11 @@ def _point(fault: Callable[[str], None] | None, point: str) -> None:
         fault(point)
 
 
-def _physical(root: Path, connection: Any) -> dict[str, str]:
-    db = cl2._validate_open_root(root, connection)
-    st = db.stat()
-    return {"root": str(root.resolve(strict=True)), "device": str(st.st_dev), "inode": str(st.st_ino)}
+def _physical(root: Path, connection: Any, custody: cl2._DatabaseCustody) -> dict[str, str]:
+    cl2._validate_open_root(root, connection, custody)
+    identity = custody.identity
+    return {"root": str(root.resolve(strict=True)), "device": str(identity.device),
+            "inode": str(identity.inode)}
 
 
 def _identity(a: Any, r: Any) -> dict[str, Any]:
@@ -78,7 +79,11 @@ def _identity(a: Any, r: Any) -> dict[str, Any]:
     return {"account_scope_sha256": a.cash_authority_manager.store._load_unlocked(
                 allow_missing_legacy=False).account_scope_sha256,
         "key_id": a.cl7_identity_key_id,
-        "source": _physical(a.cl7_ledger_store.root, a.cl7_ledger_store._connection),
+        "source": _physical(
+            a.cl7_ledger_store.root,
+            a.cl7_ledger_store._connection,
+            a.cl7_ledger_store._custody,
+        ),
         "authority_path": str(a.cash_authority_manager.store.path.resolve(strict=True)),
         "portfolio_lock": str(r.manager.repository.lock_path.resolve()),
         "risk_lock": str(r.risk.state_store.lock_path.resolve()),
@@ -227,7 +232,7 @@ def prepare_versioned_cutover(a: Any, *, recovery: Any, candidate: v4.VersionedO
                     "target_root": str(root.resolve()), "runtime_identity": identity,
                     "owners_before": owners, "config_sha256": config,
                     "source_export_sha256": source_sha, "journal_identity": _physical(
-                        journal_store.root, journal_store._connection
+                        journal_store.root, journal_store._connection, journal_store._custody
                     ),
                     "journal_pins": {name: getattr(journal_pins, name) for name in journal_pins.__dataclass_fields__},
                     "candidate_pins": candidate_pins.to_dict(), "target_identity": _source_identity(target),
@@ -327,7 +332,7 @@ def confirm_versioned_cutover(a: Any, *, recovery: Any, target_root: object,
     with a.cash_authority_manager.store.locked():
         p = _load_prepared(a, r, root, expected_plan_sha256)
         _require(
-            _physical(journal_store.root, journal_store._connection)
+            _physical(journal_store.root, journal_store._connection, journal_store._custody)
             == p["journal_identity"],
             "JOURNAL_CHANGED",
         )

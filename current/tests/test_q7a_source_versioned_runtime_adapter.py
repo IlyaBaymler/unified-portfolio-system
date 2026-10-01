@@ -356,3 +356,34 @@ def test_locked_view_validation_never_raw_reads_live_shm(op_case, monkeypatch):
     ):
         cl2._validate_live_root(x.store.root)
     assert attempted_shm_reads == [shared_memory]
+
+
+def test_operational_store_and_locked_view_retain_physical_identity(op_case):
+    from trading_robot import versioned_source_binding as source_binding
+
+    store = op_case.store
+    original = store._custody._identity
+    assert not store._custody.closed
+    assert source_binding._source_identity(store)["inode"] == str(original.inode)
+    store._custody._identity = cl2._DatabaseIdentity(original.device, original.inode + 1)
+    try:
+        with pytest.raises(
+            cl2.PersistenceError,
+            match=f"^{cl2.PersistenceReason.PATH_INVALID.value}$",
+        ):
+            store.export_bytes()
+        with pytest.raises(
+            cl2.PersistenceError,
+            match=f"^{cl2.PersistenceReason.PATH_INVALID.value}$",
+        ):
+            source_binding._source_identity(store)
+    finally:
+        store._custody._identity = original
+
+    pins = store.snapshot().pins
+    with store.locked_snapshot(expected_pins=pins) as view:
+        view_custody = view._custody
+        assert not view_custody.closed
+        assert view_custody.identity == original
+        assert view.snapshot().pins == pins
+    assert view_custody.closed

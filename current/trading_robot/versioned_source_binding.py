@@ -91,9 +91,10 @@ def _unseal(raw: bytes, key: bytes, fields: set[str]) -> dict[str, Any]:
 
 def _source_identity(store: v4.VersionedOperationalStore) -> dict[str, Any]:
     _require(type(store) is v4.VersionedOperationalStore and not store._closed, "SOURCE_INVALID")
-    db = cl2._validate_open_root(store.root, store._connection)
-    st = db.stat()
-    return {"root": str(store.root.resolve(strict=True)), "device": str(st.st_dev), "inode": str(st.st_ino),
+    cl2._validate_open_root(store.root, store._connection, store._custody)
+    identity = store._custody.identity
+    return {"root": str(store.root.resolve(strict=True)), "device": str(identity.device),
+            "inode": str(identity.inode),
             "account_scope_sha256": store._account, "identity_key_id": store._key_id,
             "codec_registry_sha256": versions._registry_sha(store._registry),
             "schema_version": 4}
