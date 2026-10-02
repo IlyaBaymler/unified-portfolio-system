@@ -21,6 +21,12 @@ from pathlib import Path
 from typing import BinaryIO
 
 
+# FILE_READ_DATA for files / FILE_LIST_DIRECTORY for directories, plus
+# FILE_READ_ATTRIBUTES. MS-FSA 2.1.5.1.2.2 ignores metadata-only opens when
+# evaluating sharing conflicts; 0x80 alone cannot establish a deny-delete lease.
+_WINDOWS_LEASE_ACCESS = 0x00000081
+
+
 class ContinuityError(OSError):
     """Finite refusal; never includes a private path."""
 
@@ -129,9 +135,12 @@ class PathContinuityGuard:
         invalid = ctypes.c_void_p(-1).value
         # Root-to-leaf leases protect the complete path, not merely the leaf.
         for path in (*reversed(database.parents), database):
-            # FILE_READ_ATTRIBUTES; SHARE_READ | SHARE_WRITE, explicitly NOT
-            # SHARE_DELETE. OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT.
-            handle = api.CreateFileW(str(path), 0x80, 0x3, None, 3, 0x02200000, None)
+            # Request data/list access so this handle participates in sharing
+            # checks. SHARE_READ | SHARE_WRITE, explicitly NOT SHARE_DELETE.
+            # No write/delete access is requested. A permission failure remains
+            # fail-closed; never retry using weaker metadata-only access.
+            handle = api.CreateFileW(str(path), _WINDOWS_LEASE_ACCESS, 0x3,
+                                     None, 3, 0x02200000, None)
             if handle in (None, invalid):
                 raise ContinuityError("SQLITE_PATH_CONTINUITY_UNAVAILABLE")
             self._win_handles.append(handle)
