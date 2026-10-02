@@ -588,6 +588,7 @@ class LockedOperationalView:
                  clock: Callable[[], int], registry: Any, key: bytes, key_id: str, account: str,
                  custody: cl2._DatabaseCustody):
         _require(token is _LOCKED_VIEW_TOKEN, "VIEW_CONSTRUCTION_FORBIDDEN")
+        custody.seal_open(root, connection)
         self._connection, self._raw, self._snapshot = connection, raw, snapshot
         self._active, self._thread, self._root = True, threading.get_ident(), root
         self._lease_id = secrets.token_hex(32)
@@ -654,6 +655,7 @@ class VersionedOperationalStore:
     def __init__(self, root: Path, conn: sqlite3.Connection, registry: Any, key: bytes,
                  key_id: str, account: str, injector: Callable[[str], None] | None,
                  custody: cl2._DatabaseCustody):
+        custody.seal_open(root, conn)
         self.root, self._connection, self._registry = root, conn, registry
         self._key, self._key_id, self._account, self._injector = key, key_id, account, injector
         self._custody = custody

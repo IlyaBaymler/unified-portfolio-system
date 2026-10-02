@@ -6,6 +6,11 @@ import json
 import sys
 from pathlib import Path
 
+try:
+    from .release_safety import has_financial_capture_path, private_capture_file, validate_member_inventory
+except ImportError:  # direct script execution
+    from release_safety import has_financial_capture_path, private_capture_file, validate_member_inventory
+
 REQUIRED_DIRS = ("app", "runtime", "backups", "reports", "logs", "support")
 STRUCTURAL_FIXTURE_LAUNCHER = """@echo off
 echo Qualification-only structural fixture: executable was not built.
@@ -88,6 +93,9 @@ def verify_layout(
     minimum_risk_state_schema: int | None = None,
     allow_structural_fixture: bool = False,
 ) -> list[str]:
+    if Path(root).is_symlink() or (Path(root).exists() and
+            getattr(Path(root).lstat(), "st_file_attributes", 0) & 0x400):
+        return ["Portable root is a symbolic link"]
     base = Path(root).resolve()
     errors: list[str] = []
     if not base.is_dir():
@@ -188,10 +196,22 @@ def verify_layout(
                     "Mutable package directory is not empty: "
                     + path.relative_to(base).as_posix()
                 )
+    inventory = []
     for path in base.rglob("*"):
+        relative = path.relative_to(base)
+        if (path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & 0x400):
+            errors.append("Symbolic link or reparse point in package: " + relative.as_posix())
+            continue
+        inventory.append(relative.as_posix() + ("/" if path.is_dir() else ""))
+        if has_financial_capture_path(relative.parts):
+            errors.append("Private financial capture in package: " + relative.as_posix())
         if not path.is_file():
             continue
-        relative = path.relative_to(base)
+        try:
+            if private_capture_file(path):
+                errors.append("Private financial protocol document in package: " + relative.as_posix())
+        except OSError:
+            errors.append("Unreadable package file: " + relative.as_posix())
         if _private_runtime_name(path.name) or any(
             part.lower() in FORBIDDEN_RUNTIME_DIRECTORIES
             for part in relative.parts[:-1]
@@ -199,6 +219,10 @@ def verify_layout(
             errors.append(
                 "Private runtime file leaked into package: " + relative.as_posix()
             )
+    try:
+        validate_member_inventory(inventory)
+    except RuntimeError as exc:
+        errors.append(str(exc))
     return errors
 
 

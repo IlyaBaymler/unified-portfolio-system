@@ -16,6 +16,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, BinaryIO, Self
 
+from trading_robot.sqlite_open_custody import PathContinuityGuard
+
 from trading_robot.cash_ledger_domain import (
     IdentityRelation,
     LedgerClassification,
@@ -1330,13 +1332,16 @@ def _database_identity_from_path(database: Path) -> _DatabaseIdentity:
 
 
 class _DatabaseCustody:
-    """Retained handle and immutable identity for one live SQLite database."""
+    """Retained identity plus a guarded, explicitly sealed SQLite open boundary."""
 
-    __slots__ = ("_handle", "_identity")
+    __slots__ = ("_handle", "_identity", "_continuity", "_bound_connection")
 
-    def __init__(self, handle: BinaryIO, identity: _DatabaseIdentity) -> None:
+    def __init__(self, handle: BinaryIO, identity: _DatabaseIdentity,
+                 continuity: PathContinuityGuard) -> None:
         self._handle = handle
         self._identity = identity
+        self._continuity: PathContinuityGuard | None = continuity
+        self._bound_connection: sqlite3.Connection | None = None
 
     @property
     def identity(self) -> _DatabaseIdentity:
@@ -1346,8 +1351,26 @@ class _DatabaseCustody:
     def closed(self) -> bool:
         return self._handle.closed
 
+    def seal_open(self, root: Path, connection: sqlite3.Connection) -> None:
+        # All read-only and writable open probes remain inside the same guarded
+        # interval. Only the final live connection is sealed. A failed interval
+        # is never re-baselined. Once bound to A, restoring A after a later
+        # rejected rename is safe: this connection cannot silently reopen as B.
+        if self._continuity is None or self._bound_connection is not None:
+            _fail(PersistenceReason.PATH_INVALID)
+        _validate_open_root(root, connection, self)
+        self._bound_connection = connection
+        self._continuity.close()
+        self._continuity = None
+
+    def validate_connection(self, connection: sqlite3.Connection) -> None:
+        if self._continuity is None and connection is not self._bound_connection:
+            _fail(PersistenceReason.PATH_INVALID)
+
     def validate(self, database: Path) -> None:
         try:
+            if self._continuity is not None:
+                self._continuity.validate()
             if self._handle.closed:
                 _fail(PersistenceReason.PATH_INVALID)
             handle_identity = _database_identity_from_stat(
@@ -1362,8 +1385,13 @@ class _DatabaseCustody:
             _fail(PersistenceReason.PATH_INVALID)
 
     def close(self) -> None:
-        if not self._handle.closed:
-            self._handle.close()
+        try:
+            if not self._handle.closed:
+                self._handle.close()
+        finally:
+            if self._continuity is not None:
+                self._continuity.close()
+            self._bound_connection = None
 
 
 def _open_database_custody(
@@ -1371,22 +1399,38 @@ def _open_database_custody(
     expected_identity: _DatabaseIdentity,
 ) -> _DatabaseCustody:
     handle: BinaryIO | None = None
+    continuity: PathContinuityGuard | None = None
     try:
         handle = database.open("rb", buffering=0)
         identity = _database_identity_from_stat(os.fstat(handle.fileno()))
         if identity != expected_identity:
             _fail(PersistenceReason.PATH_INVALID)
-        custody = _DatabaseCustody(handle, identity)
+        # Installed before any SQLite open; records A->B->A transitions even
+        # when fstat(custody) and stat(path) match again at return.
+        continuity = PathContinuityGuard(database, handle)
+        custody = _DatabaseCustody(handle, identity, continuity)
         custody.validate(database)
         return custody
     except PersistenceError:
+        if continuity is not None:
+            continuity.close()
         if handle is not None:
             handle.close()
         raise
     except (OSError, ValueError) as exc:
+        if continuity is not None:
+            continuity.close()
         if handle is not None:
             handle.close()
         raise PersistenceError(PersistenceReason.PATH_INVALID) from exc
+
+
+    except BaseException:
+        if continuity is not None:
+            continuity.close()
+        if handle is not None:
+            handle.close()
+        raise
 
 
 def _validate_store_layout(root: Path) -> tuple[Path, Path, Path]:
@@ -1458,6 +1502,7 @@ def _validate_open_root(
     database, _, _ = _validate_store_layout(root)
     if not isinstance(custody, _DatabaseCustody):
         _fail(PersistenceReason.TYPE_INVALID)
+    custody.validate_connection(connection)
     custody.validate(database)
     try:
         databases = connection.execute("PRAGMA database_list").fetchall()
@@ -1616,6 +1661,7 @@ class CashLedgerStore:
         busy_timeout_ms: int,
         fault_injector: Callable[[str], None] | None,
     ) -> None:
+        custody.seal_open(root, connection)
         self._root = root
         self._connection = connection
         self._custody = custody

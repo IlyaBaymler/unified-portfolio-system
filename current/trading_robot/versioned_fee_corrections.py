@@ -335,6 +335,7 @@ class VersionedFeeCorrectionStore:
     def __init__(self, root: Path, conn: sqlite3.Connection, registry: Any, key: bytes,
                  key_id: str, account: str, injector: Callable[[str], None] | None,
                  custody: cl2._DatabaseCustody):
+        custody.seal_open(root, conn)
         self.root, self._connection, self._registry = root, conn, registry
         self._key, self._key_id, self._account, self._injector = key, key_id, account, injector
         self._custody = custody

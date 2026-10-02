@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import os
 import sys
 import zipfile
@@ -20,6 +21,18 @@ except ImportError:  # direct script execution
         PRIVATE_RUNTIME_DIRECTORIES,
         RUNTIME_NAMES,
         find_legacy_files,
+    )
+
+
+try:
+    from .release_safety import (
+        has_financial_capture_body, has_financial_capture_path, private_capture_file,
+        safe_parts, validate_member_inventory, validate_zip_metadata,
+    )
+except ImportError:  # direct script execution
+    from release_safety import (
+        has_financial_capture_body, has_financial_capture_path, private_capture_file,
+        safe_parts, validate_member_inventory, validate_zip_metadata,
     )
 
 
@@ -93,6 +106,8 @@ def collect_release_files(
     *,
     secret_canaries: Iterable[str] = (),
 ) -> list[Path]:
+    if root.is_symlink() or getattr(root.lstat(), "st_file_attributes", 0) & 0x400:
+        raise RuntimeError("Release root is a symlink or reparse point")
     legacy = find_legacy_files(root)
     if legacy:
         names = ", ".join(path.name for path in legacy)
@@ -101,7 +116,8 @@ def collect_release_files(
     output_resolved = output.resolve() if output is not None else None
     files: list[Path] = []
     for path in root.rglob("*"):
-        if path.is_symlink():
+        if (path.is_symlink()
+                or getattr(path.lstat(), "st_file_attributes", 0) & 0x400):
             raise RuntimeError(
                 "Release tree contains a symbolic link: "
                 + path.relative_to(root).as_posix()
@@ -109,13 +125,18 @@ def collect_release_files(
         if not path.is_file():
             continue
         relative = path.relative_to(root)
-        if any(part in EXCLUDED_DIR_NAMES for part in relative.parts[:-1]):
+        if (any(part.casefold() in {n.casefold() for n in EXCLUDED_DIR_NAMES}
+                for part in relative.parts[:-1])
+                or has_financial_capture_path(relative.parts)):
             continue
-        if path.name in EXCLUDED_FILE_NAMES:
+        if path.name.casefold() in {n.casefold() for n in EXCLUDED_FILE_NAMES}:
             continue
         if path.suffix.lower() in EXCLUDED_SUFFIXES:
             continue
         if output_resolved is not None and path.resolve() == output_resolved:
+            continue
+        safe_parts(relative.as_posix())
+        if private_capture_file(path):
             continue
         files.append(path)
     files = sorted(files, key=lambda item: item.relative_to(root).as_posix())
@@ -131,10 +152,12 @@ def build_zip(
     secret_canaries: Iterable[str] = (),
     required_empty_directories: Iterable[str] = (),
 ) -> list[str]:
+    safe_parts(archive_root, allow_empty=True)
+    if root.is_symlink() or getattr(root.lstat(), "st_file_attributes", 0) & 0x400:
+        raise RuntimeError("Release root is a symbolic link")
     root = root.resolve()
     output = output.resolve()
     files = collect_release_files(root, output, secret_canaries=secret_canaries)
-    output.parent.mkdir(parents=True, exist_ok=True)
     members: list[str] = []
 
     def write_bytes(archive: zipfile.ZipFile, member: str, data: bytes) -> None:
@@ -154,12 +177,10 @@ def build_zip(
         info.create_system = 3
         archive.writestr(info, b"", compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
 
-    prefix = archive_root.strip("/")
+    prefix = archive_root
     directory_members: list[str] = []
     for value in required_empty_directories:
-        relative = Path(str(value).replace("\\", "/"))
-        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
-            raise RuntimeError(f"Unsafe required empty directory: {value!r}")
+        relative = Path(*safe_parts(value))
         selected = root.joinpath(*relative.parts)
         if not selected.is_dir() or any(selected.iterdir()):
             raise RuntimeError(
@@ -180,7 +201,10 @@ def build_zip(
         for path in files
     ]
     payload_members = sorted([*directory_members, *file_members])
+    manifest_member = f"{prefix}/ZIP_CONTENTS.txt" if prefix else "ZIP_CONTENTS.txt"
+    validate_member_inventory([*payload_members, manifest_member])
     file_by_member = dict(zip(file_members, files, strict=True))
+    output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f"{output.name}.{uuid4().hex}.tmp")
     temporary.unlink(missing_ok=True)
     try:
@@ -190,7 +214,12 @@ def build_zip(
                 if path is None:
                     write_directory(archive, member)
                 else:
-                    write_bytes(archive, member, path.read_bytes())
+                    # Recheck the bytes actually written, not only collection-time
+                    # JSON. A same-path capture appearing later cannot enter ZIP.
+                    raw = path.read_bytes()
+                    if path.suffix.casefold() == ".json" and has_financial_capture_body(raw):
+                        raise RuntimeError("Financial capture appeared during packaging")
+                    write_bytes(archive, member, raw)
                 members.append(member)
             manifest_member = (
                 f"{prefix}/ZIP_CONTENTS.txt" if prefix else "ZIP_CONTENTS.txt"
@@ -204,6 +233,7 @@ def build_zip(
         with zipfile.ZipFile(temporary, "r") as completed:
             if completed.namelist() != members or completed.testzip() is not None:
                 raise RuntimeError("Completed release ZIP verification failed.")
+        zip_identity(temporary)
         os.replace(temporary, output)
     finally:
         temporary.unlink(missing_ok=True)
@@ -215,7 +245,10 @@ def zip_identity(path: str | Path) -> dict[str, object]:
 
     selected = Path(path)
     raw = selected.read_bytes()
-    with zipfile.ZipFile(selected, "r") as archive:
+    with zipfile.ZipFile(io.BytesIO(raw), "r") as archive:
+        validate_member_inventory(archive.namelist())
+        for info in archive.infolist():
+            validate_zip_metadata(info)
         if archive.testzip() is not None:
             raise RuntimeError("ZIP CRC validation failed.")
         members = archive.namelist()
@@ -223,10 +256,18 @@ def zip_identity(path: str | Path) -> dict[str, object]:
         manifest_member = members[-1] if members else ""
         if (
             payload_members != sorted(payload_members)
-            or not manifest_member.endswith("ZIP_CONTENTS.txt")
+            or manifest_member.split("/")[-1] != "ZIP_CONTENTS.txt"
             or len(members) != len(set(members))
         ):
             raise RuntimeError("ZIP members are not unique and sorted.")
+        prefix = manifest_member[:-len("ZIP_CONTENTS.txt")]
+        if prefix and any(not n.startswith(prefix) for n in payload_members):
+            raise RuntimeError("ZIP member escapes the declared archive root")
+        for name in payload_members:
+            if has_financial_capture_path(safe_parts(name, directory=name.endswith("/"))):
+                raise RuntimeError("Financial capture archive member")
+            if name.casefold().endswith(".json") and has_financial_capture_body(archive.read(name)):
+                raise RuntimeError("Financial capture protocol document in archive")
         expected_contents = ("\n".join(members) + "\n").encode("utf-8")
         if archive.read(manifest_member) != expected_contents:
             raise RuntimeError("ZIP_CONTENTS.txt does not match archive members.")
