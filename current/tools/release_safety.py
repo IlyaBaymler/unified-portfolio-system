@@ -72,7 +72,7 @@ def safe_parts(value: str, *, directory: bool = False, allow_empty: bool = False
                 or part.endswith((".", " ")) or "~" in part
                 or unicodedata.normalize("NFC", part) != part
                 or any(c in '\\:<>"|?*' or unicodedata.category(c).startswith("C") for c in part)
-                or normalized.split(".", 1)[0] in _DEVICES
+                or normalized.split(".", 1)[0].rstrip(" ") in _DEVICES
                 or normalized in {".", ".."} or "~" in normalized
                 or any(c in '/\\:<>"|?*' for c in normalized)
                 or normalized.endswith((".", " "))):

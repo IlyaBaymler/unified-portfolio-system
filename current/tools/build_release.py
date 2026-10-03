@@ -5,10 +5,10 @@ import hashlib
 import io
 import os
 import sys
+import tempfile
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
-from uuid import uuid4
 
 try:
     from .release_cleanup import (
@@ -34,6 +34,12 @@ except ImportError:  # direct script execution
         has_financial_capture_body, has_financial_capture_path, private_capture_file,
         safe_parts, validate_member_inventory, validate_zip_metadata,
     )
+
+
+try:
+    from .release_payload import ReleaseSource
+except ImportError:  # direct script execution
+    from release_payload import ReleaseSource
 
 
 EXCLUDED_DIR_NAMES = {
@@ -73,6 +79,16 @@ EXCLUDED_FILE_NAMES = {
 EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".tmp", ".bak", ".lock"}
 
 
+def _freeze_canaries(canaries: Iterable[str]) -> tuple[str, ...]:
+    return tuple(text for item in canaries if (text := str(item)))
+
+
+def _scan_payload(raw: bytes, needles: tuple[bytes, ...]) -> None:
+    if any(needle in raw for needle in needles):
+        # Do not put secret values or payload content in diagnostics.
+        raise RuntimeError("Release secret canary detected in payload")
+
+
 def scan_release_files_for_canaries(
     files: Iterable[Path],
     *,
@@ -85,7 +101,7 @@ def scan_release_files_for_canaries(
     regular expressions with synthetic token-shaped strings.
     """
 
-    needles = [str(item).encode("utf-8") for item in canaries if str(item)]
+    needles = [item.encode("utf-8") for item in _freeze_canaries(canaries)]
     if not needles:
         return
     findings: list[str] = []
@@ -152,12 +168,29 @@ def build_zip(
     secret_canaries: Iterable[str] = (),
     required_empty_directories: Iterable[str] = (),
 ) -> list[str]:
+    canaries = _freeze_canaries(secret_canaries)
+    safe_parts(archive_root, allow_empty=True)
+    try:
+        with ReleaseSource(root) as source:
+            return _build_checked_zip(source, output, archive_root, canaries,
+                                      required_empty_directories)
+    except OSError as exc:
+        raise RuntimeError("Release build filesystem boundary failed") from exc
+
+
+def _build_checked_zip(
+    source: ReleaseSource, output: Path, archive_root: str,
+    canaries: tuple[str, ...], required_empty_directories: Iterable[str],
+) -> list[str]:
+    root = source.root
+    needles = tuple(value.encode("utf-8") for value in canaries)
     safe_parts(archive_root, allow_empty=True)
     if root.is_symlink() or getattr(root.lstat(), "st_file_attributes", 0) & 0x400:
         raise RuntimeError("Release root is a symbolic link")
-    root = root.resolve()
-    output = output.resolve()
-    files = collect_release_files(root, output, secret_canaries=secret_canaries)
+    output = output.absolute()
+    if output.is_symlink() or (output.exists() and getattr(output.lstat(), "st_file_attributes", 0) & 0x400):
+        raise RuntimeError("Release destination is a link or reparse point")
+    files = collect_release_files(root, output, secret_canaries=canaries)
     members: list[str] = []
 
     def write_bytes(archive: zipfile.ZipFile, member: str, data: bytes) -> None:
@@ -205,18 +238,20 @@ def build_zip(
     validate_member_inventory([*payload_members, manifest_member])
     file_by_member = dict(zip(file_members, files, strict=True))
     output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(f"{output.name}.{uuid4().hex}.tmp")
-    temporary.unlink(missing_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=output.name + ".", suffix=".tmp", dir=output.parent)
+    temporary = Path(temporary_name)
     try:
-        with zipfile.ZipFile(temporary, mode="w") as archive:
+        with os.fdopen(fd, "w+b") as temporary_stream, zipfile.ZipFile(temporary_stream, mode="w") as archive:
             for member in payload_members:
                 path = file_by_member.get(member)
                 if path is None:
                     write_directory(archive, member)
                 else:
-                    # Recheck the bytes actually written, not only collection-time
-                    # JSON. A same-path capture appearing later cannot enter ZIP.
-                    raw = path.read_bytes()
+                    # Scan the same immutable buffer sent to writestr. The earlier
+                    # collector scan is advisory; never authorises a later read.
+                    raw = source.read(path)
+                    _scan_payload(raw, needles)
+                    _scan_payload(member.encode("utf-8"), needles)
                     if path.suffix.casefold() == ".json" and has_financial_capture_body(raw):
                         raise RuntimeError("Financial capture appeared during packaging")
                     write_bytes(archive, member, raw)
@@ -224,11 +259,9 @@ def build_zip(
             manifest_member = (
                 f"{prefix}/ZIP_CONTENTS.txt" if prefix else "ZIP_CONTENTS.txt"
             )
-            write_bytes(
-                archive,
-                manifest_member,
-                ("\n".join(members + [manifest_member]) + "\n").encode("utf-8"),
-            )
+            manifest_raw = ("\n".join(members + [manifest_member]) + "\n").encode("utf-8")
+            _scan_payload(manifest_raw, needles)
+            write_bytes(archive, manifest_member, manifest_raw)
             members.append(manifest_member)
         with zipfile.ZipFile(temporary, "r") as completed:
             if completed.namelist() != members or completed.testzip() is not None:
