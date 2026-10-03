@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 import os
+import errno
+import json
+import subprocess
+import sys
+import time
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -209,6 +215,9 @@ def test_windows_payload_lease_requests_share_checked_read_rights(tmp_path, dire
     source._ctypes = SimpleNamespace(c_void_p=lambda value: SimpleNamespace(value=-1))
     source._api = SimpleNamespace(CreateFileW=lambda *args: calls.append(args) or 42,
                                   CloseHandle=lambda handle: closed.append(handle))
+    metadata = payload._WindowsInfo((7, 11), 0x10 if directory else 0x20, 1, 4, 1, 2, 3)
+    source._snapshot = lambda path, directory: metadata
+    source._metadata = lambda handle, directory: metadata
     source._final_path = lambda handle: os.path.normcase(os.path.normpath(str(path)))
     handle, _ = source._open(path, directory)
     assert handle == 42 and closed == []
@@ -234,13 +243,192 @@ def test_native_windows_payload_lease_prevents_mutation_during_read(tmp_path, mo
             elif operation == "rename_file": os.rename(notes, parent / "renamed.txt")
             else: os.rename(parent, root / "renamed")
         except OSError as exc:
-            assert exc.winerror in {5, 32, 33}
+            assert (getattr(exc, "winerror", None) in {5, 32, 33}
+                    or (operation == "overwrite" and isinstance(exc, PermissionError)
+                        and exc.errno == errno.EACCES and getattr(exc, "winerror", None) is None))
+            assert notes.read_bytes() == b"safe"
             blocked.append(True)
         else: pytest.fail("Native Windows payload read lease did not block mutation")
         return original(stream, size)
     monkeypatch.setattr(payload, "_read_buffer", read_with_attempt)
     with payload.ReleaseSource(root) as source:
         assert source.read(notes) == b"safe"
+        assert notes.read_bytes() == b"safe"
     assert blocked == [True]
     notes.write_text("after close")
     assert notes.read_text() == "after close"
+
+
+def test_r4_advisory_content_decisions_use_checked_reads(tmp_path, monkeypatch):
+    root = tmp_path / "source"; root.mkdir()
+    private = root / "renamed.json"
+    private.write_bytes(b'{"payload":{"domain":"CL7_EXACT_CASH_COMPONENTS_V1"}}')
+    safe = root / "safe.txt"; safe.write_bytes(CANARY.encode())
+    original = payload.ReleaseSource.read
+    reads = []
+
+    def checked(source, path):
+        raw = original(source, path)
+        reads.append(path)
+        return raw
+
+    def unchecked(path):
+        raise AssertionError("Advisory content decisions must not call Path.read_bytes")
+
+    monkeypatch.setattr(payload.ReleaseSource, "read", checked)
+    monkeypatch.setattr(Path, "read_bytes", unchecked)
+    assert build.private_capture_file(private)
+    assert build.collect_release_files(root) == [safe]
+    with pytest.raises(RuntimeError, match="canary"):
+        build.scan_release_files_for_canaries([safe], canaries=[CANARY])
+    assert reads.count(private) == 2 and reads.count(safe) == 1
+
+
+def test_r4_fdopen_constructor_failure_closes_fd_and_removes_temp(tmp_path, monkeypatch):
+    root = tmp_path / "source"; root.mkdir(); (root / "safe").write_bytes(b"safe")
+    output = tmp_path / "output.zip"; output.write_bytes(b"previous")
+    original_mkstemp, original_fdopen = build.tempfile.mkstemp, os.fdopen
+    captured = []
+
+    def make_temp(*args, **kwargs):
+        result = original_mkstemp(*args, **kwargs)
+        captured.append(result)
+        return result
+
+    def fail_stream(fd, mode, *args, **kwargs):
+        if mode == "w+b":
+            raise OSError("Synthetic stream constructor failure")
+        return original_fdopen(fd, mode, *args, **kwargs)
+
+    monkeypatch.setattr(build.tempfile, "mkstemp", make_temp)
+    monkeypatch.setattr(os, "fdopen", fail_stream)
+    with pytest.raises(RuntimeError, match="filesystem boundary"):
+        build.build_zip(root, output, "")
+    assert len(captured) == 1
+    with pytest.raises(OSError) as error:
+        os.fstat(captured[0][0])
+    assert error.value.errno == errno.EBADF
+    assert not Path(captured[0][1]).exists()
+    assert output.read_bytes() == b"previous"
+    assert not list(tmp_path.glob("output.zip.*.tmp"))
+
+
+def test_r4_real_audit_policy_failure_closes_fd_and_removes_temp(tmp_path):
+    # Irreversible process-local audit hooks stay in a short-lived child. This
+    # exercises real FileIO construction, without mocking fdopen or system policy.
+    script = r'''
+import errno, json, os, sys
+from pathlib import Path
+from tools import build_release as build
+root = Path(sys.argv[1]); root.mkdir(); (root / "safe.txt").write_bytes(b"safe")
+out = root.parent / "output.zip"; out.write_bytes(b"previous")
+captured = []
+def policy(event, args):
+    if event == "open" and isinstance(args[0], int) and str(args[1]).startswith("w"):
+        captured.append(args[0])
+        raise OSError("Synthetic process-local audit-policy denial")
+sys.addaudithook(policy)
+try:
+    build.build_zip(root, out, "")
+except RuntimeError:
+    rejected = True
+else:
+    rejected = False
+closed = []
+for fd in captured:
+    try:
+        os.fstat(fd)
+    except OSError as error:
+        closed.append(error.errno == errno.EBADF)
+    else:
+        closed.append(False)
+result = dict(rejected=rejected, captured=len(captured), closed=closed,
+              temporary_files=[p.name for p in out.parent.glob("output.zip.*.tmp")],
+              destination_preserved=out.read_bytes() == b"previous",
+              builtin_fdopen_mocked=False)
+print(json.dumps(result))
+'''
+    child = subprocess.run([sys.executable, "-B", "-c", script, str(tmp_path / "source")],
+                           capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0, child.stderr
+    result = json.loads(child.stdout)
+    assert result == {"rejected": True, "captured": 1, "closed": [True],
+                      "temporary_files": [], "destination_preserved": True,
+                      "builtin_fdopen_mocked": False}
+
+
+def test_r4_verified_output_promoted_only_after_all_source_leases_close(tmp_path, monkeypatch):
+    root = tmp_path / "source"; root.mkdir(); (root / "safe.txt").write_bytes(b"safe")
+    output = tmp_path / "trusted" / "output.zip"
+    output.parent.mkdir(); output.write_bytes(b"previous")
+    original_source, original_replace = build.ReleaseSource, os.replace
+    sources, promotions = [], []
+
+    class TrackedSource(original_source):
+        def __init__(self, selected):
+            super().__init__(selected)
+            sources.append(self)
+
+    def promote(temporary, destination):
+        assert sources and all(source._closed for source in sources)
+        assert build.zip_identity(temporary)["members"] == ["safe.txt", "ZIP_CONTENTS.txt"]
+        promotions.append((temporary, destination))
+        return original_replace(temporary, destination)
+
+    monkeypatch.setattr(build, "ReleaseSource", TrackedSource)
+    monkeypatch.setattr(os, "replace", promote)
+    assert build.build_zip(root, output, "") == ["safe.txt", "ZIP_CONTENTS.txt"]
+    assert len(promotions) == 1
+    with zipfile.ZipFile(output) as archive:
+        assert archive.read("safe.txt") == b"safe"
+    assert not list(output.parent.glob("output.zip.*.tmp"))
+
+
+@pytest.mark.parametrize("name", ["BUILD_RELEASE.bat", "launcher.cmd", "placeholder.exe", "README.md"])
+@pytest.mark.parametrize("rewritten", [False, True])
+def test_r4_ordinary_payload_names_and_completed_prelease_rewrite(tmp_path, monkeypatch, name, rewritten):
+    root = tmp_path / "source"; root.mkdir()
+    path = root / name; path.write_bytes(b"before")
+    expected = b"before"
+    if rewritten:
+        time.sleep(0.025)
+        expected = b"legitimate rewrite completed before lease"
+        path.write_bytes(expected)
+    if os.name == "nt":
+        def incompatible(value):
+            raise AssertionError("Native Windows must not compare CPython stat fingerprints")
+        monkeypatch.setattr(payload, "_fingerprint", incompatible)
+    with payload.ReleaseSource(root) as source:
+        assert source.read(path) == expected
+    assert path.read_bytes() == expected
+
+
+@pytest.mark.parametrize("field", ["identity", "attributes", "links", "size", "creation", "write", "change"])
+def test_r4_windows_native_metadata_change_before_lease_fails_closed(tmp_path, field):
+    from types import SimpleNamespace
+    path = tmp_path / "safe.txt"
+    initial = payload._WindowsInfo((7, 11), 0x20, 1, 4, 1, 2, 3)
+    changed = replace(initial, **{field: (7, 12) if field == "identity" else getattr(initial, field) + 1})
+    source = object.__new__(payload._WindowsSource)
+    source._ctypes = SimpleNamespace(c_void_p=lambda value: SimpleNamespace(value=-1))
+    closed = []
+    source._api = SimpleNamespace(CreateFileW=lambda *args: 42,
+                                  CloseHandle=lambda handle: closed.append(handle))
+    source._snapshot = lambda path, directory: initial
+    source._metadata = lambda handle, directory: changed
+    source._final_path = lambda handle: os.path.normcase(os.path.normpath(str(path)))
+    with pytest.raises(RuntimeError, match="changed"):
+        source._open(path, False)
+    assert closed == [42]
+
+
+def test_r4_unavailable_native_metadata_never_falls_back_to_path_reads():
+    import ctypes
+    from types import SimpleNamespace
+    source = object.__new__(payload._WindowsSource)
+    source._ctypes = ctypes
+    source._basic_info = source._standard_info = source._id_info = ctypes.c_int
+    source._api = SimpleNamespace(GetFileType=lambda handle: 1,
+                                  GetFileInformationByHandleEx=lambda *args: 0)
+    with pytest.raises(RuntimeError, match="metadata is unavailable"):
+        source._metadata(42, False)

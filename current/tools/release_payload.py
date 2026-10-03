@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import stat
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
@@ -120,6 +121,17 @@ class _PosixSource:
             return raw
 
 
+@dataclass(frozen=True)
+class _WindowsInfo:
+    identity: tuple[int, int]
+    attributes: int
+    links: int
+    size: int
+    creation: int
+    write: int
+    change: int
+
+
 class _WindowsSource:
     """Native sharing leases; no metadata-only or unchecked-read fallback."""
     def __init__(self, root: Path, stack: ExitStack) -> None:
@@ -136,12 +148,77 @@ class _WindowsSource:
         self._api.GetFinalPathNameByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR,
                                                        wintypes.DWORD, wintypes.DWORD]
         self._api.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+        self._api.GetFileType.argtypes = [wintypes.HANDLE]
+        self._api.GetFileType.restype = wintypes.DWORD
+        self._api.GetFileInformationByHandleEx.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+        ]
+        self._api.GetFileInformationByHandleEx.restype = wintypes.BOOL
+
+        class BasicInfo(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_longlong) for name in
+                        ("creation", "access", "write", "change")] + [
+                            ("attributes", wintypes.DWORD)]
+
+        class StandardInfo(ctypes.Structure):
+            _fields_ = [("allocation", ctypes.c_longlong),
+                        ("size", ctypes.c_longlong), ("links", wintypes.DWORD),
+                        ("delete_pending", ctypes.c_ubyte),
+                        ("directory", ctypes.c_ubyte)]
+
+        class IdInfo(ctypes.Structure):
+            _fields_ = [("volume", ctypes.c_ulonglong),
+                        ("file_id", ctypes.c_ubyte * 16)]
+
+        self._basic_info, self._standard_info, self._id_info = BasicInfo, StandardInfo, IdInfo
         self._root = root
         self._held: list[tuple[Path, int, tuple[int, int]]] = []
         for path in (*reversed(root.parents), root):
             handle, value = self._open(path, True)
             stack.callback(self._api.CloseHandle, handle)
-            self._held.append((path, handle, _identity(value)))
+            self._held.append((path, handle, value.identity))
+
+    def _metadata(self, handle: int, directory: bool) -> _WindowsInfo:
+        # Use the SAME native representation for named metadata controls and
+        # the actual CRT-owned read handle. CPython lstat/fstat mode/ctime are
+        # intentionally not mixed here (suffix bits and birth/change time).
+        if self._api.GetFileType(handle) != 1:  # FILE_TYPE_DISK only
+            raise RuntimeError("Release source handle is not a disk file")
+        basic, standard, identity = self._basic_info(), self._standard_info(), self._id_info()
+        for kind, value in [(0, basic), (1, standard), (18, identity)]:
+            if not self._api.GetFileInformationByHandleEx(
+                handle, kind, self._ctypes.byref(value), self._ctypes.sizeof(value),
+            ):
+                raise RuntimeError("Native release source metadata is unavailable")
+        file_id = int.from_bytes(bytes(identity.file_id), "little")
+        if (not file_id or basic.attributes & 0x400
+                or bool(basic.attributes & 0x10) != directory
+                or bool(standard.directory) != directory
+                or standard.delete_pending or standard.size < 0
+                or (not directory and standard.links != 1)):
+            raise RuntimeError("Release source is a link, reparse point or special file")
+        return _WindowsInfo((int(identity.volume), file_id), int(basic.attributes),
+                            int(standard.links), int(standard.size), int(basic.creation),
+                            int(basic.write), int(basic.change))
+
+    def _handle(self, path: Path, directory: bool, access: int, share: int) -> int:
+        handle = self._api.CreateFileW(str(path), access, share, None, 3,
+                                      0x00200000 | (0x02000000 if directory else 0), None)
+        if handle == self._ctypes.c_void_p(-1).value:
+            raise RuntimeError("Cannot acquire release source read lease")
+        return handle
+
+    def _snapshot(self, path: Path, directory: bool) -> _WindowsInfo:
+        # Metadata-only control, NOT a payload read or fallback. OPEN_REPARSE
+        # and actual type checks apply before any file content can be read.
+        handle = self._handle(path, directory, 0x80, 0x7)
+        try:
+            value = self._metadata(handle, directory)
+            if self._final_path(handle) != os.path.normcase(os.path.normpath(str(path))):
+                raise RuntimeError("Release source control pathname changed")
+            return value
+        finally:
+            self._api.CloseHandle(handle)
 
     def _final_path(self, handle: int) -> str:
         buffer = self._ctypes.create_unicode_buffer(32768)
@@ -155,19 +232,14 @@ class _WindowsSource:
             name = name[4:]
         return os.path.normcase(os.path.normpath(name))
 
-    def _open(self, path: Path, directory: bool) -> tuple[int, os.stat_result]:
-        before = path.lstat()
-        _require_type(before, directory)
+    def _open(self, path: Path, directory: bool) -> tuple[int, _WindowsInfo]:
+        before = self._snapshot(path, directory)
         # FILE_READ_DATA / FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES. Share
         # READ only: no write/delete/reparse mutation while this lease is held.
-        handle = self._api.CreateFileW(str(path), 0x81, 0x1, None, 3,
-                                      0x00200000 | (0x02000000 if directory else 0), None)
-        if handle == self._ctypes.c_void_p(-1).value:
-            raise RuntimeError("Cannot acquire release source read lease")
+        handle = self._handle(path, directory, 0x81, 0x1)
         try:
-            after = path.lstat()
-            _require_type(after, directory)
-            if (_identity(before) != _identity(after)
+            after = self._metadata(handle, directory)
+            if ((before.identity != after.identity if directory else before != after)
                     or self._final_path(handle) != os.path.normcase(os.path.normpath(str(path)))):
                 raise RuntimeError("Release source pathname changed while opening")
             return handle, after
@@ -177,9 +249,8 @@ class _WindowsSource:
 
     def validate(self) -> None:
         for path, handle, identity in self._held:
-            value = path.lstat()
-            _require_type(value, True)
-            if (_identity(value) != identity
+            value = self._snapshot(path, True)
+            if (value.identity != identity or self._metadata(handle, True).identity != identity
                     or self._final_path(handle) != os.path.normcase(os.path.normpath(str(path)))):
                 raise RuntimeError("Release source ancestry changed")
 
@@ -189,10 +260,12 @@ class _WindowsSource:
         self.validate()
         with ExitStack() as stack:
             path = self._root
+            held = []
             for name in parts[:-1]:
                 path /= name
-                handle, _ = self._open(path, True)
+                handle, value = self._open(path, True)
                 stack.callback(self._api.CloseHandle, handle)
+                held.append((path, handle, value.identity))
             path /= parts[-1]
             handle, before = self._open(path, False)
             try:
@@ -201,14 +274,23 @@ class _WindowsSource:
                 self._api.CloseHandle(handle)
                 raise
             stack.callback(os.close, fd)  # CRT now owns the native handle.
-            actual = os.fstat(fd)
-            _require_type(actual, False)
-            if _fingerprint(actual) != _fingerprint(before):
+            owned_handle = msvcrt.get_osfhandle(fd)
+            if owned_handle != handle:
+                self._api.CloseHandle(handle)
+                raise RuntimeError("Release file handle ownership changed")
+            actual = self._metadata(owned_handle, False)
+            if actual != before:
                 raise RuntimeError("Release file identity disagrees with read handle")
             with os.fdopen(fd, "rb", buffering=0, closefd=False) as stream:
-                raw = _read_buffer(stream, actual.st_size)
-            if _fingerprint(os.fstat(fd)) != _fingerprint(actual):
+                raw = _read_buffer(stream, actual.size)
+            if (self._metadata(owned_handle, False) != actual
+                    or self._snapshot(path, False) != actual):
                 raise RuntimeError("Release file changed while reading")
+            for named, handle, identity in held:
+                if (self._snapshot(named, True).identity != identity
+                        or self._metadata(handle, True).identity != identity
+                        or self._final_path(handle) != os.path.normcase(os.path.normpath(str(named)))):
+                    raise RuntimeError("Release file ancestry changed")
             self.validate()
             return raw
 

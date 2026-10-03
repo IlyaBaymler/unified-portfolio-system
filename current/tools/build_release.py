@@ -8,6 +8,7 @@ import sys
 import tempfile
 import zipfile
 from collections.abc import Iterable
+from contextlib import ExitStack
 from pathlib import Path
 
 try:
@@ -107,7 +108,8 @@ def scan_release_files_for_canaries(
     findings: list[str] = []
     for path in files:
         try:
-            data = path.read_bytes()
+            with ReleaseSource(path.parent) as source:
+                data = source.read(path)
         except OSError as exc:
             raise RuntimeError(f"Cannot scan release file {path}: {exc}") from exc
         if any(needle in data for needle in needles):
@@ -171,9 +173,16 @@ def build_zip(
     canaries = _freeze_canaries(secret_canaries)
     safe_parts(archive_root, allow_empty=True)
     try:
-        with ReleaseSource(root) as source:
-            return _build_checked_zip(source, output, archive_root, canaries,
-                                      required_empty_directories)
+        # Output cleanup outlives source leases. Only a completely verified ZIP
+        # crosses this boundary; no source is reopened after releasing leases.
+        with ExitStack() as output_cleanup:
+            with ReleaseSource(root) as source:
+                members, temporary = _build_checked_zip(
+                    source, output, archive_root, canaries,
+                    required_empty_directories, output_cleanup,
+                )
+            os.replace(temporary, output.absolute())
+            return members
     except OSError as exc:
         raise RuntimeError("Release build filesystem boundary failed") from exc
 
@@ -181,7 +190,8 @@ def build_zip(
 def _build_checked_zip(
     source: ReleaseSource, output: Path, archive_root: str,
     canaries: tuple[str, ...], required_empty_directories: Iterable[str],
-) -> list[str]:
+    output_cleanup: ExitStack,
+) -> tuple[list[str], Path]:
     root = source.root
     needles = tuple(value.encode("utf-8") for value in canaries)
     safe_parts(archive_root, allow_empty=True)
@@ -238,17 +248,21 @@ def _build_checked_zip(
     validate_member_inventory([*payload_members, manifest_member])
     file_by_member = dict(zip(file_members, files, strict=True))
     output.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary_name = tempfile.mkstemp(prefix=output.name + ".", suffix=".tmp", dir=output.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(fd, "w+b") as temporary_stream, zipfile.ZipFile(temporary_stream, mode="w") as archive:
+    with ExitStack() as fd_owner:
+        fd, temporary_name = tempfile.mkstemp(prefix=output.name + ".", suffix=".tmp", dir=output.parent)
+        # Register ownership immediately, before any stream constructor/audit
+        # call. The CRT stream borrows the fd; fd_owner always closes it first.
+        fd_owner.callback(os.close, fd)
+        temporary = Path(temporary_name)
+        output_cleanup.callback(temporary.unlink, missing_ok=True)
+        with os.fdopen(fd, "w+b", closefd=False) as temporary_stream, zipfile.ZipFile(temporary_stream, mode="w") as archive:
             for member in payload_members:
                 path = file_by_member.get(member)
                 if path is None:
                     write_directory(archive, member)
                 else:
-                    # Scan the same immutable buffer sent to writestr. The earlier
-                    # collector scan is advisory; never authorises a later read.
+                    # Scan the same immutable buffer sent to writestr. Earlier
+                    # checked advisory reads never authorise a later read.
                     raw = source.read(path)
                     _scan_payload(raw, needles)
                     _scan_payload(member.encode("utf-8"), needles)
@@ -263,14 +277,11 @@ def _build_checked_zip(
             _scan_payload(manifest_raw, needles)
             write_bytes(archive, manifest_member, manifest_raw)
             members.append(manifest_member)
-        with zipfile.ZipFile(temporary, "r") as completed:
-            if completed.namelist() != members or completed.testzip() is not None:
-                raise RuntimeError("Completed release ZIP verification failed.")
-        zip_identity(temporary)
-        os.replace(temporary, output)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return members
+    with zipfile.ZipFile(temporary, "r") as completed:
+        if completed.namelist() != members or completed.testzip() is not None:
+            raise RuntimeError("Completed release ZIP verification failed.")
+    zip_identity(temporary)
+    return members, temporary
 
 
 def zip_identity(path: str | Path) -> dict[str, object]:

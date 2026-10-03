@@ -7,6 +7,11 @@ import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 
+try:
+    from .release_payload import ReleaseSource
+except ImportError:  # direct script execution
+    from release_payload import ReleaseSource
+
 # Actual output namespaces of the current exact/versioned financial protocols.
 # Match whole components, at any depth and case, not source module prefixes.
 FINANCIAL_CAPTURE_DIRECTORIES = frozenset({
@@ -52,7 +57,12 @@ def has_financial_capture_body(raw: bytes) -> bool:
 
 def private_capture_file(path: Path) -> bool:
     # Only JSON protocol captures; do not rewrite/filter legitimate Python code.
-    return path.suffix.casefold() == ".json" and has_financial_capture_body(path.read_bytes())
+    if path.suffix.casefold() != ".json":
+        return False
+    # Advisory/privacy decisions have the same no-follow, type, identity and
+    # bounded-read boundary as final payload reads. Never reopen by pathname.
+    with ReleaseSource(path.parent) as source:
+        return has_financial_capture_body(source.read(path))
 
 
 def safe_parts(value: str, *, directory: bool = False, allow_empty: bool = False) -> tuple[str, ...]:
