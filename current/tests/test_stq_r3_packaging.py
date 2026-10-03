@@ -15,6 +15,7 @@ import pytest
 
 from tools import build_release as build
 from tools import release_payload as payload
+from tools import release_safety as safety
 from tools.release_safety import safe_parts
 
 CANARY = "SYNTHETIC_R3_EXPLICIT_CANARY_NEVER_DISTRIBUTE"
@@ -34,8 +35,8 @@ def test_late_source_substitution_never_commits_archive(tmp_path, monkeypatch, k
     scan = build.scan_release_files_for_canaries
     hits = []
 
-    def after_scan(files, *, canaries=()):
-        scan(files, canaries=canaries)
+    def after_scan(files, *, canaries=(), source=None):
+        scan(files, canaries=canaries, source=source)
         hits.append(True)
         if kind == "overwrite": notes.write_text(CANARY)
         elif kind == "parent_link":
@@ -64,8 +65,8 @@ def test_one_shot_canary_iterable_is_retained_after_early_scan(tmp_path, monkeyp
         yielded.append(True)
         yield CANARY
 
-    def late(files, *, canaries=()):
-        scan(files, canaries=canaries)
+    def late(files, *, canaries=(), source=None):
+        scan(files, canaries=canaries, source=source)
         notes.write_text(CANARY)
 
     monkeypatch.setattr(build, "scan_release_files_for_canaries", late)
@@ -432,3 +433,163 @@ def test_r4_unavailable_native_metadata_never_falls_back_to_path_reads():
                                   GetFileInformationByHandleEx=lambda *args: 0)
     with pytest.raises(RuntimeError, match="metadata is unavailable"):
         source._metadata(42, False)
+
+
+def test_r4q_c1_privacy_root_aba_never_reads_foreign_bytes(tmp_path, monkeypatch):
+    root = tmp_path / "source"
+    root.mkdir()
+    safe = root / "safe.json"
+    original_raw = b'{"description":"safe original synthetic payload"}'
+    foreign_raw = b'{"payload":{"domain":"CL7_EXACT_CASH_COMPONENTS_V1"}}'
+    safe.write_bytes(original_raw)
+    donor = tmp_path / "foreign"
+    donor.mkdir()
+    (donor / safe.name).write_bytes(foreign_raw)
+    displaced = tmp_path / "displaced"
+    original_identity = (root.stat().st_dev, root.stat().st_ino)
+    donor_identity = (donor.stat().st_dev, donor.stat().st_ino)
+    assert original_identity != donor_identity
+    assert not build.has_financial_capture_body(original_raw)
+    assert build.has_financial_capture_body(foreign_raw)
+    output = tmp_path / "output.zip"
+    prior = b"previous release must remain intact"
+    output.write_bytes(prior)
+    owners, reads, decisions, attacks = [], [], [], []
+    source_type = payload.ReleaseSource
+    private, read_buffer = build.private_capture_file, payload._read_buffer
+
+    class TrackedSource(source_type):
+        def __init__(self, selected):
+            super().__init__(selected)
+            owners.append(self)
+
+    def observe_buffer(stream, size):
+        raw = read_buffer(stream, size)
+        reads.append(raw)
+        return raw
+
+    def during_privacy(path, *, source=None):
+        assert source is owners[0] and source.root == root
+        assert path == safe
+        try:
+            os.rename(root, displaced)
+        except OSError as error:
+            # Windows ancestry leases block the real rename. POSIX must reach
+            # the original ordinary-directory ABA, not a simulated replacement.
+            assert os.name == "nt" and error.winerror in {5, 32, 33}
+            attacks.append("native_windows_root_rename_blocked")
+            result = private(path, source=source)
+        else:
+            try:
+                os.rename(donor, root)
+                attacks.append("native_posix_root_aba")
+                assert os.name == "posix"
+                assert (root.stat().st_dev, root.stat().st_ino) == donor_identity
+                result = private(path, source=source)
+            finally:
+                if root.exists():
+                    os.rename(root, donor)
+                os.rename(displaced, root)
+        decisions.append(result)
+        return result
+
+    monkeypatch.setattr(build, "ReleaseSource", TrackedSource)
+    monkeypatch.setattr(safety, "ReleaseSource", TrackedSource)
+    monkeypatch.setattr(payload, "_read_buffer", observe_buffer)
+    monkeypatch.setattr(build, "private_capture_file", during_privacy)
+    try:
+        members = build.build_zip(root, output, "")
+    except RuntimeError:
+        outcome = "fail_closed_before_promotion"
+        assert output.read_bytes() == prior
+    else:
+        outcome = "original_owner_bytes_preserved"
+        assert "safe.json" in members
+        with zipfile.ZipFile(output) as archive:
+            assert archive.read("safe.json") == original_raw
+    assert len(owners) == 1 and owners[0]._closed
+    assert foreign_raw not in reads and True not in decisions
+    assert attacks == (["native_posix_root_aba"] if os.name == "posix"
+                       else ["native_windows_root_rename_blocked"])
+    assert (root.stat().st_dev, root.stat().st_ino) == original_identity
+    assert safe.read_bytes() == original_raw
+    assert (donor / safe.name).read_bytes() == foreign_raw
+    assert not list(tmp_path.glob("output.zip.*.tmp"))
+    print("C1_ROOT_ABA=" + json.dumps({"outcome": outcome, "attack": attacks[0],
+          "foreign_read_count": reads.count(foreign_raw), "privacy_decisions": decisions,
+          "owner_count": len(owners), "original_root_restored": True}))
+
+
+@pytest.mark.parametrize("contains_canary", [False, True])
+def test_r4q_c1_build_content_custody_uses_one_original_owner(
+    tmp_path, monkeypatch, contains_canary,
+):
+    root = tmp_path / "source"
+    root.mkdir()
+    safe_json = root / "safe.json"
+    safe_raw = b'{"description":"safe original synthetic payload"}'
+    safe_json.write_bytes(safe_raw)
+    notes = root / "notes.txt"
+    notes_raw = CANARY.encode() if contains_canary else b"ordinary safe text"
+    notes.write_bytes(notes_raw)
+    output = tmp_path / "output.zip"
+    owners, reads, privacy_owners, canary_owners, final_buffers = [], [], [], [], []
+    source_type = payload.ReleaseSource
+    private = build.private_capture_file
+    scanner = build.scan_release_files_for_canaries
+    final_scan, path_read = build._scan_payload, Path.read_bytes
+
+    class TrackedSource(source_type):
+        def __init__(self, selected):
+            super().__init__(selected)
+            owners.append(self)
+
+        def read(self, path):
+            raw = super().read(path)
+            reads.append((self, path, raw))
+            return raw
+
+    def privacy(path, *, source=None):
+        privacy_owners.append(source)
+        return private(path, source=source)
+
+    def early_canary(files, *, canaries=(), source=None):
+        canary_owners.append(source)
+        return scanner(files, canaries=canaries, source=source)
+
+    def immutable_scan(raw, needles):
+        final_scan(raw, needles)
+        final_buffers.append(raw)
+
+    def no_unchecked_source_read(path):
+        assert not path.absolute().is_relative_to(root), "Unchecked release-source read"
+        return path_read(path)  # Completed immutable ZIP verification only.
+
+    monkeypatch.setattr(build, "ReleaseSource", TrackedSource)
+    monkeypatch.setattr(safety, "ReleaseSource", TrackedSource)
+    monkeypatch.setattr(build, "private_capture_file", privacy)
+    monkeypatch.setattr(build, "scan_release_files_for_canaries", early_canary)
+    monkeypatch.setattr(build, "_scan_payload", immutable_scan)
+    monkeypatch.setattr(Path, "read_bytes", no_unchecked_source_read)
+    if contains_canary:
+        with pytest.raises(RuntimeError, match="canary"):
+            build.build_zip(root, output, "", secret_canaries=[CANARY])
+        assert not output.exists() and final_buffers == []
+    else:
+        assert build.build_zip(root, output, "", secret_canaries=[CANARY]) == [
+            "notes.txt", "safe.json", "ZIP_CONTENTS.txt",
+        ]
+        assert safe_raw in final_buffers and notes_raw in final_buffers
+        with zipfile.ZipFile(output) as archive:
+            assert archive.read("safe.json") == safe_raw
+            assert archive.read("notes.txt") == notes_raw
+    assert len(owners) == 1 and owners[0]._closed
+    assert privacy_owners == [owners[0], owners[0]]
+    assert canary_owners == [owners[0]]
+    assert reads and all(owner is owners[0] for owner, _, _ in reads)
+    assert not list(tmp_path.glob("output.zip.*.tmp"))
+    print("C1_OWNER_CUSTODY=" + json.dumps({"owner_count": len(owners),
+          "privacy_original_owner": True, "canary_original_owner": True,
+          "all_release_content_reads_original_owner": True, "content_read_count": len(reads),
+          "explicit_canary_enforced": contains_canary,
+          "final_immutable_payload_scan_retained": not contains_canary}))

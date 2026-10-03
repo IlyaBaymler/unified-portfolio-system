@@ -102,6 +102,7 @@ def scan_release_files_for_canaries(
     files: Iterable[Path],
     *,
     canaries: Iterable[str] = (),
+    source: ReleaseSource | None = None,
 ) -> None:
     """Fail the build when a known secret canary is present in release files.
 
@@ -116,7 +117,11 @@ def scan_release_files_for_canaries(
     findings: list[str] = []
     for path in files:
         try:
-            with ReleaseSource(path.parent) as source:
+            if source is None:
+                # Independent standalone operation, not a read within a build.
+                with ReleaseSource(path.parent) as standalone_source:
+                    data = standalone_source.read(path)
+            else:
                 data = source.read(path)
         except OSError as exc:
             raise RuntimeError(f"Cannot scan release file {path}: {exc}") from exc
@@ -131,6 +136,7 @@ def collect_release_files(
     output: Path | None = None,
     *,
     secret_canaries: Iterable[str] = (),
+    source: ReleaseSource | None = None,
 ) -> list[Path]:
     if root.is_symlink() or getattr(root.lstat(), "st_file_attributes", 0) & 0x400:
         raise RuntimeError("Release root is a symlink or reparse point")
@@ -162,11 +168,11 @@ def collect_release_files(
         if output_resolved is not None and path.resolve() == output_resolved:
             continue
         safe_parts(relative.as_posix())
-        if private_capture_file(path):
+        if private_capture_file(path, source=source):
             continue
         files.append(path)
     files = sorted(files, key=lambda item: item.relative_to(root).as_posix())
-    scan_release_files_for_canaries(files, canaries=secret_canaries)
+    scan_release_files_for_canaries(files, canaries=secret_canaries, source=source)
     return files
 
 
@@ -208,7 +214,7 @@ def _build_checked_zip(
     output = output.absolute()
     if output.is_symlink() or (output.exists() and getattr(output.lstat(), "st_file_attributes", 0) & 0x400):
         raise RuntimeError("Release destination is a link or reparse point")
-    files = collect_release_files(root, output, secret_canaries=canaries)
+    files = collect_release_files(root, output, secret_canaries=canaries, source=source)
     members: list[str] = []
 
     def write_bytes(archive: zipfile.ZipFile, member: str, data: bytes) -> None:

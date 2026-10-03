@@ -55,14 +55,16 @@ def has_financial_capture_body(raw: bytes) -> bool:
     return False
 
 
-def private_capture_file(path: Path) -> bool:
+def private_capture_file(path: Path, *, source: ReleaseSource | None = None) -> bool:
     # Only JSON protocol captures; do not rewrite/filter legitimate Python code.
     if path.suffix.casefold() != ".json":
         return False
-    # Advisory/privacy decisions have the same no-follow, type, identity and
-    # bounded-read boundary as final payload reads. Never reopen by pathname.
-    with ReleaseSource(path.parent) as source:
+    # During a build, custody belongs to its original checked root owner.
+    if source is not None:
         return has_financial_capture_body(source.read(path))
+    # Preserve independent standalone verification with a checked boundary.
+    with ReleaseSource(path.parent) as standalone_source:
+        return has_financial_capture_body(standalone_source.read(path))
 
 
 def safe_parts(value: str, *, directory: bool = False, allow_empty: bool = False) -> tuple[str, ...]:
