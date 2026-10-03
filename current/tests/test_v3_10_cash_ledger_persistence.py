@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
 from trading_robot import cash_ledger_persistence as persistence
 from trading_robot.cash_ledger_domain import (
     LedgerCorrectionBundle,
@@ -46,6 +47,7 @@ MODULE_PATH = CURRENT / "trading_robot" / "cash_ledger_persistence.py"
 FIXTURE_PATH = CURRENT / "tests" / "fixtures" / "v3_10_cash_ledger_persistence_vectors.json"
 ACCEPTED_CONTRACT_HEAD = "f3b0ab7db1889695eb1b56264133ac895b7ed52d"
 CL1_PREDECESSOR = "095a24a0d8ad2487f09ec0c5f3473a6c65a84710"
+CL2_ACCEPTED_IMPLEMENTATION_HEAD = "d684186c0628d27ed452ce4f11311155fdf7a44e"
 
 
 @pytest.fixture(scope="module")
@@ -1443,80 +1445,94 @@ def test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files() -> None:
         "docs/project/V3_10_CL2_APPEND_ONLY_PERSISTENCE_CONTRACT_RU.md",
         *allowed,
     }
-    base_object_exit, _ = _git_output(
-        "cat-file", "-e", f"{ACCEPTED_CONTRACT_HEAD}^{{commit}}"
+    # Custody belongs to the accepted historical implementation, not a later
+    # successor's cumulative delta. Missing history is a failure, never a PR
+    # metadata substitute, skip, or request to fetch from inside pytest.
+    replacement_exit, replacement_refs = _git_output(
+        "for-each-ref", "--format=%(refname)", "refs/replace"
     )
-    if base_object_exit == 0:
-        diff_exit, diff_text = _git_output(
-            "diff", "--name-only", f"{ACCEPTED_CONTRACT_HEAD}..HEAD"
-        )
-        assert diff_exit == 0
-        changed = {line.replace("\\", "/") for line in diff_text.splitlines()}
-        assert changed == allowed
-        ancestry_exit, ancestry_text = _git_output(
-            "rev-list",
-            "--left-right",
-            "--count",
-            f"{ACCEPTED_CONTRACT_HEAD}...HEAD",
-        )
-        assert ancestry_exit == 0
-        assert ancestry_text.split() == ["0", "5"]
-        accepted_merge_exit, accepted_merge_base = _git_output(
-            "merge-base", ACCEPTED_CONTRACT_HEAD, "HEAD"
-        )
-        assert accepted_merge_exit == 0
-        assert accepted_merge_base.strip() == ACCEPTED_CONTRACT_HEAD
-    else:
-        assert os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
-        event_path = os.environ.get("GITHUB_EVENT_PATH")
-        assert event_path is not None
-        event = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))
-        pull_request = event["pull_request"]
-        assert pull_request["base"]["ref"] == "program/v3-10-v4-stable-line"
-        assert pull_request["base"]["sha"] == CL1_PREDECESSOR
-        assert pull_request["head"]["ref"] == "agent/v3-10-clean-cl2-implementation"
-        assert pull_request["head"]["repo"]["full_name"] == (
-            "baimleriv/unified-portfolio-system"
-        )
-        assert pull_request["commits"] == 7
-        assert pull_request["changed_files"] == len(cumulative_allowed)
-        current_exit, current_head = _git_output("rev-parse", "HEAD")
-        commit_exit, commit_text = _git_output("cat-file", "-p", "HEAD")
-        assert current_exit == commit_exit == 0
-        assert current_head.strip() == os.environ.get("GITHUB_SHA")
-        parents = [
-            line.removeprefix("parent ")
-            for line in commit_text.splitlines()
-            if line.startswith("parent ")
-        ]
-        assert parents == [
-            CL1_PREDECESSOR,
-            pull_request["head"]["sha"],
-        ]
-        assert all((ROOT / path).is_file() for path in cumulative_allowed)
+    assert replacement_exit == 0 and not replacement_refs.strip()
+    graft_exit, graft_path = _git_output(
+        "rev-parse", "--path-format=absolute", "--git-path", "info/grafts"
+    )
+    assert graft_exit == 0 and not Path(graft_path.strip()).exists()
+    for anchor in (
+        ACCEPTED_CONTRACT_HEAD,
+        CL1_PREDECESSOR,
+        CL2_ACCEPTED_IMPLEMENTATION_HEAD,
+    ):
+        anchor_exit, _ = _git_output("cat-file", "-e", f"{anchor}^{{commit}}")
+        assert anchor_exit == 0, f"Historical CL2 custody requires commit {anchor}"
+
+    diff_exit, diff_text = _git_output(
+        "diff",
+        "--name-only",
+        ACCEPTED_CONTRACT_HEAD,
+        CL2_ACCEPTED_IMPLEMENTATION_HEAD,
+    )
+    assert diff_exit == 0
+    assert {line.replace("\\", "/") for line in diff_text.splitlines()} == allowed
+    ancestry_exit, ancestry_text = _git_output(
+        "rev-list",
+        "--left-right",
+        "--count",
+        f"{ACCEPTED_CONTRACT_HEAD}...{CL2_ACCEPTED_IMPLEMENTATION_HEAD}",
+    )
+    assert ancestry_exit == 0
+    assert ancestry_text.split() == ["0", "5"]
+    accepted_merge_exit, accepted_merge_base = _git_output(
+        "merge-base", ACCEPTED_CONTRACT_HEAD, CL2_ACCEPTED_IMPLEMENTATION_HEAD
+    )
+    assert accepted_merge_exit == 0
+    assert accepted_merge_base.strip() == ACCEPTED_CONTRACT_HEAD
+
     for path in (
         "docs/project/V3_10_CL2_APPEND_ONLY_PERSISTENCE_CONTRACT_RU.md",
         "current/trading_robot/cash_ledger_domain.py",
         "current/tests/test_v3_10_cash_ledger_domain.py",
         "current/tests/fixtures/v3_10_cash_ledger_vectors.json",
     ):
-        if base_object_exit == 0:
-            result, _ = _git_output(
-                "diff", "--quiet", ACCEPTED_CONTRACT_HEAD, "--", path
+        for anchor in (ACCEPTED_CONTRACT_HEAD, CL2_ACCEPTED_IMPLEMENTATION_HEAD):
+            blob_exit, _ = _git_output(
+                "cat-file", "-e", f"{anchor}:{path}"
             )
-            assert result == 0
-    if base_object_exit == 0:
-        merge_exit, merge_base = _git_output("merge-base", CL1_PREDECESSOR, "HEAD")
-        assert merge_exit == 0
-        merge_base = merge_base.strip()
-        assert merge_base == CL1_PREDECESSOR
-        cumulative_exit, cumulative_text = _git_output(
-            "diff", "--name-only", f"{CL1_PREDECESSOR}..HEAD"
+            assert blob_exit == 0
+        result, _ = _git_output(
+            "diff", "--quiet", ACCEPTED_CONTRACT_HEAD,
+            CL2_ACCEPTED_IMPLEMENTATION_HEAD, "--", path
         )
-        assert cumulative_exit == 0
-        assert {
-            line.replace("\\", "/") for line in cumulative_text.splitlines()
-        } == cumulative_allowed
+        assert result == 0
+
+    merge_exit, merge_base = _git_output(
+        "merge-base", CL1_PREDECESSOR, CL2_ACCEPTED_IMPLEMENTATION_HEAD
+    )
+    assert merge_exit == 0
+    assert merge_base.strip() == CL1_PREDECESSOR
+    cumulative_exit, cumulative_text = _git_output(
+        "diff", "--name-only", CL1_PREDECESSOR, CL2_ACCEPTED_IMPLEMENTATION_HEAD
+    )
+    assert cumulative_exit == 0
+    assert {
+        line.replace("\\", "/") for line in cumulative_text.splitlines()
+    } == cumulative_allowed
+    for path in cumulative_allowed:
+        historical_file_exit, _ = _git_output(
+            "cat-file", "-e", f"{CL2_ACCEPTED_IMPLEMENTATION_HEAD}:{path}"
+        )
+        assert historical_file_exit == 0
+    cumulative_count_exit, cumulative_count = _git_output(
+        "rev-list", "--left-right", "--count",
+        f"{CL1_PREDECESSOR}...{CL2_ACCEPTED_IMPLEMENTATION_HEAD}",
+    )
+    assert cumulative_count_exit == 0
+    assert cumulative_count.split() == ["0", "7"]
+
+    # Contemporary successors must retain the exact frozen implementation in
+    # their ancestry; matching trees or unrelated reconstructed histories fail.
+    successor_exit, _ = _git_output(
+        "merge-base", "--is-ancestor", CL2_ACCEPTED_IMPLEMENTATION_HEAD, "HEAD"
+    )
+    assert successor_exit == 0
 
 
 def test_v310_cl2_29_open_validation_never_raw_reads_live_shm(
