@@ -13,7 +13,7 @@ import stat
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Self
 
 
 def _identity(value: os.stat_result) -> tuple[int, int]:
@@ -314,7 +314,7 @@ class ReleaseSource:
             raise
         self._closed = False
 
-    def __enter__(self) -> ReleaseSource:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:

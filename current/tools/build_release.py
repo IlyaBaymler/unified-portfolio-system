@@ -27,13 +27,21 @@ except ImportError:  # direct script execution
 
 try:
     from .release_safety import (
-        has_financial_capture_body, has_financial_capture_path, private_capture_file,
-        safe_parts, validate_member_inventory, validate_zip_metadata,
+        has_financial_capture_body,
+        has_financial_capture_path,
+        private_capture_file,
+        safe_parts,
+        validate_member_inventory,
+        validate_zip_metadata,
     )
 except ImportError:  # direct script execution
     from release_safety import (
-        has_financial_capture_body, has_financial_capture_path, private_capture_file,
-        safe_parts, validate_member_inventory, validate_zip_metadata,
+        has_financial_capture_body,
+        has_financial_capture_path,
+        private_capture_file,
+        safe_parts,
+        validate_member_inventory,
+        validate_zip_metadata,
     )
 
 

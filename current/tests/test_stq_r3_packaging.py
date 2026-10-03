@@ -1,9 +1,9 @@
 """STQ-R2-IR-001/002: byte-bound scanning, read custody and device stems."""
 from __future__ import annotations
 
-import os
 import errno
 import json
+import os
 import subprocess
 import sys
 import time
@@ -349,7 +349,7 @@ result = dict(rejected=rejected, captured=len(captured), closed=closed,
 print(json.dumps(result))
 '''
     child = subprocess.run([sys.executable, "-B", "-c", script, str(tmp_path / "source")],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30, check=False)
     assert child.returncode == 0, child.stderr
     result = json.loads(child.stdout)
     assert result == {"rejected": True, "captured": 1, "closed": [True],
