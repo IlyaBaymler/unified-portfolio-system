@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import os
 import sys
+import tempfile
 import zipfile
 from collections.abc import Iterable
+from contextlib import ExitStack
 from pathlib import Path
-from uuid import uuid4
 
 try:
     from .release_cleanup import (
@@ -21,6 +23,32 @@ except ImportError:  # direct script execution
         RUNTIME_NAMES,
         find_legacy_files,
     )
+
+
+try:
+    from .release_safety import (
+        has_financial_capture_body,
+        has_financial_capture_path,
+        private_capture_file,
+        safe_parts,
+        validate_member_inventory,
+        validate_zip_metadata,
+    )
+except ImportError:  # direct script execution
+    from release_safety import (
+        has_financial_capture_body,
+        has_financial_capture_path,
+        private_capture_file,
+        safe_parts,
+        validate_member_inventory,
+        validate_zip_metadata,
+    )
+
+
+try:
+    from .release_payload import ReleaseSource
+except ImportError:  # direct script execution
+    from release_payload import ReleaseSource
 
 
 EXCLUDED_DIR_NAMES = {
@@ -60,10 +88,21 @@ EXCLUDED_FILE_NAMES = {
 EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".tmp", ".bak", ".lock"}
 
 
+def _freeze_canaries(canaries: Iterable[str]) -> tuple[str, ...]:
+    return tuple(text for item in canaries if (text := str(item)))
+
+
+def _scan_payload(raw: bytes, needles: tuple[bytes, ...]) -> None:
+    if any(needle in raw for needle in needles):
+        # Do not put secret values or payload content in diagnostics.
+        raise RuntimeError("Release secret canary detected in payload")
+
+
 def scan_release_files_for_canaries(
     files: Iterable[Path],
     *,
     canaries: Iterable[str] = (),
+    source: ReleaseSource | None = None,
 ) -> None:
     """Fail the build when a known secret canary is present in release files.
 
@@ -72,13 +111,18 @@ def scan_release_files_for_canaries(
     regular expressions with synthetic token-shaped strings.
     """
 
-    needles = [str(item).encode("utf-8") for item in canaries if str(item)]
+    needles = [item.encode("utf-8") for item in _freeze_canaries(canaries)]
     if not needles:
         return
     findings: list[str] = []
     for path in files:
         try:
-            data = path.read_bytes()
+            if source is None:
+                # Independent standalone operation, not a read within a build.
+                with ReleaseSource(path.parent) as standalone_source:
+                    data = standalone_source.read(path)
+            else:
+                data = source.read(path)
         except OSError as exc:
             raise RuntimeError(f"Cannot scan release file {path}: {exc}") from exc
         if any(needle in data for needle in needles):
@@ -92,7 +136,10 @@ def collect_release_files(
     output: Path | None = None,
     *,
     secret_canaries: Iterable[str] = (),
+    source: ReleaseSource | None = None,
 ) -> list[Path]:
+    if root.is_symlink() or getattr(root.lstat(), "st_file_attributes", 0) & 0x400:
+        raise RuntimeError("Release root is a symlink or reparse point")
     legacy = find_legacy_files(root)
     if legacy:
         names = ", ".join(path.name for path in legacy)
@@ -101,7 +148,8 @@ def collect_release_files(
     output_resolved = output.resolve() if output is not None else None
     files: list[Path] = []
     for path in root.rglob("*"):
-        if path.is_symlink():
+        if (path.is_symlink()
+                or getattr(path.lstat(), "st_file_attributes", 0) & 0x400):
             raise RuntimeError(
                 "Release tree contains a symbolic link: "
                 + path.relative_to(root).as_posix()
@@ -109,17 +157,22 @@ def collect_release_files(
         if not path.is_file():
             continue
         relative = path.relative_to(root)
-        if any(part in EXCLUDED_DIR_NAMES for part in relative.parts[:-1]):
+        if (any(part.casefold() in {n.casefold() for n in EXCLUDED_DIR_NAMES}
+                for part in relative.parts[:-1])
+                or has_financial_capture_path(relative.parts)):
             continue
-        if path.name in EXCLUDED_FILE_NAMES:
+        if path.name.casefold() in {n.casefold() for n in EXCLUDED_FILE_NAMES}:
             continue
         if path.suffix.lower() in EXCLUDED_SUFFIXES:
             continue
         if output_resolved is not None and path.resolve() == output_resolved:
             continue
+        safe_parts(relative.as_posix())
+        if private_capture_file(path, source=source):
+            continue
         files.append(path)
     files = sorted(files, key=lambda item: item.relative_to(root).as_posix())
-    scan_release_files_for_canaries(files, canaries=secret_canaries)
+    scan_release_files_for_canaries(files, canaries=secret_canaries, source=source)
     return files
 
 
@@ -131,10 +184,37 @@ def build_zip(
     secret_canaries: Iterable[str] = (),
     required_empty_directories: Iterable[str] = (),
 ) -> list[str]:
-    root = root.resolve()
-    output = output.resolve()
-    files = collect_release_files(root, output, secret_canaries=secret_canaries)
-    output.parent.mkdir(parents=True, exist_ok=True)
+    canaries = _freeze_canaries(secret_canaries)
+    safe_parts(archive_root, allow_empty=True)
+    try:
+        # Output cleanup outlives source leases. Only a completely verified ZIP
+        # crosses this boundary; no source is reopened after releasing leases.
+        with ExitStack() as output_cleanup:
+            with ReleaseSource(root) as source:
+                members, temporary = _build_checked_zip(
+                    source, output, archive_root, canaries,
+                    required_empty_directories, output_cleanup,
+                )
+            os.replace(temporary, output.absolute())
+            return members
+    except OSError as exc:
+        raise RuntimeError("Release build filesystem boundary failed") from exc
+
+
+def _build_checked_zip(
+    source: ReleaseSource, output: Path, archive_root: str,
+    canaries: tuple[str, ...], required_empty_directories: Iterable[str],
+    output_cleanup: ExitStack,
+) -> tuple[list[str], Path]:
+    root = source.root
+    needles = tuple(value.encode("utf-8") for value in canaries)
+    safe_parts(archive_root, allow_empty=True)
+    if root.is_symlink() or getattr(root.lstat(), "st_file_attributes", 0) & 0x400:
+        raise RuntimeError("Release root is a symbolic link")
+    output = output.absolute()
+    if output.is_symlink() or (output.exists() and getattr(output.lstat(), "st_file_attributes", 0) & 0x400):
+        raise RuntimeError("Release destination is a link or reparse point")
+    files = collect_release_files(root, output, secret_canaries=canaries, source=source)
     members: list[str] = []
 
     def write_bytes(archive: zipfile.ZipFile, member: str, data: bytes) -> None:
@@ -154,12 +234,10 @@ def build_zip(
         info.create_system = 3
         archive.writestr(info, b"", compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
 
-    prefix = archive_root.strip("/")
+    prefix = archive_root
     directory_members: list[str] = []
     for value in required_empty_directories:
-        relative = Path(str(value).replace("\\", "/"))
-        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
-            raise RuntimeError(f"Unsafe required empty directory: {value!r}")
+        relative = Path(*safe_parts(value))
         selected = root.joinpath(*relative.parts)
         if not selected.is_dir() or any(selected.iterdir()):
             raise RuntimeError(
@@ -180,34 +258,44 @@ def build_zip(
         for path in files
     ]
     payload_members = sorted([*directory_members, *file_members])
+    manifest_member = f"{prefix}/ZIP_CONTENTS.txt" if prefix else "ZIP_CONTENTS.txt"
+    validate_member_inventory([*payload_members, manifest_member])
     file_by_member = dict(zip(file_members, files, strict=True))
-    temporary = output.with_name(f"{output.name}.{uuid4().hex}.tmp")
-    temporary.unlink(missing_ok=True)
-    try:
-        with zipfile.ZipFile(temporary, mode="w") as archive:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with ExitStack() as fd_owner:
+        fd, temporary_name = tempfile.mkstemp(prefix=output.name + ".", suffix=".tmp", dir=output.parent)
+        # Register ownership immediately, before any stream constructor/audit
+        # call. The CRT stream borrows the fd; fd_owner always closes it first.
+        fd_owner.callback(os.close, fd)
+        temporary = Path(temporary_name)
+        output_cleanup.callback(temporary.unlink, missing_ok=True)
+        with os.fdopen(fd, "w+b", closefd=False) as temporary_stream, zipfile.ZipFile(temporary_stream, mode="w") as archive:
             for member in payload_members:
                 path = file_by_member.get(member)
                 if path is None:
                     write_directory(archive, member)
                 else:
-                    write_bytes(archive, member, path.read_bytes())
+                    # Scan the same immutable buffer sent to writestr. Earlier
+                    # checked advisory reads never authorise a later read.
+                    raw = source.read(path)
+                    _scan_payload(raw, needles)
+                    _scan_payload(member.encode("utf-8"), needles)
+                    if path.suffix.casefold() == ".json" and has_financial_capture_body(raw):
+                        raise RuntimeError("Financial capture appeared during packaging")
+                    write_bytes(archive, member, raw)
                 members.append(member)
             manifest_member = (
                 f"{prefix}/ZIP_CONTENTS.txt" if prefix else "ZIP_CONTENTS.txt"
             )
-            write_bytes(
-                archive,
-                manifest_member,
-                ("\n".join(members + [manifest_member]) + "\n").encode("utf-8"),
-            )
+            manifest_raw = ("\n".join(members + [manifest_member]) + "\n").encode("utf-8")
+            _scan_payload(manifest_raw, needles)
+            write_bytes(archive, manifest_member, manifest_raw)
             members.append(manifest_member)
-        with zipfile.ZipFile(temporary, "r") as completed:
-            if completed.namelist() != members or completed.testzip() is not None:
-                raise RuntimeError("Completed release ZIP verification failed.")
-        os.replace(temporary, output)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return members
+    with zipfile.ZipFile(temporary, "r") as completed:
+        if completed.namelist() != members or completed.testzip() is not None:
+            raise RuntimeError("Completed release ZIP verification failed.")
+    zip_identity(temporary)
+    return members, temporary
 
 
 def zip_identity(path: str | Path) -> dict[str, object]:
@@ -215,7 +303,10 @@ def zip_identity(path: str | Path) -> dict[str, object]:
 
     selected = Path(path)
     raw = selected.read_bytes()
-    with zipfile.ZipFile(selected, "r") as archive:
+    with zipfile.ZipFile(io.BytesIO(raw), "r") as archive:
+        validate_member_inventory(archive.namelist())
+        for info in archive.infolist():
+            validate_zip_metadata(info)
         if archive.testzip() is not None:
             raise RuntimeError("ZIP CRC validation failed.")
         members = archive.namelist()
@@ -223,10 +314,18 @@ def zip_identity(path: str | Path) -> dict[str, object]:
         manifest_member = members[-1] if members else ""
         if (
             payload_members != sorted(payload_members)
-            or not manifest_member.endswith("ZIP_CONTENTS.txt")
+            or manifest_member.split("/")[-1] != "ZIP_CONTENTS.txt"
             or len(members) != len(set(members))
         ):
             raise RuntimeError("ZIP members are not unique and sorted.")
+        prefix = manifest_member[:-len("ZIP_CONTENTS.txt")]
+        if prefix and any(not n.startswith(prefix) for n in payload_members):
+            raise RuntimeError("ZIP member escapes the declared archive root")
+        for name in payload_members:
+            if has_financial_capture_path(safe_parts(name, directory=name.endswith("/"))):
+                raise RuntimeError("Financial capture archive member")
+            if name.casefold().endswith(".json") and has_financial_capture_body(archive.read(name)):
+                raise RuntimeError("Financial capture protocol document in archive")
         expected_contents = ("\n".join(members) + "\n").encode("utf-8")
         if archive.read(manifest_member) != expected_contents:
             raise RuntimeError("ZIP_CONTENTS.txt does not match archive members.")

@@ -807,7 +807,10 @@ def test_pending_attempt_kat_and_no_rollback(
     )
 
 
-def test_restart_closure_disarms_and_preserves_attempt_count(tmp_path: Path) -> None:
+@pytest.mark.parametrize("terminal_kind", ["position_only", "submission_rejected"])
+def test_restart_closure_disarms_and_preserves_attempt_count(
+    tmp_path: Path, terminal_kind: str,
+) -> None:
     manager, current = _chain(tmp_path)
     proof = _proof(authority_record_revision=5, authority_record_sha256=current.sha256)
     with manager.store.locked():
@@ -820,8 +823,8 @@ def test_restart_closure_disarms_and_preserves_attempt_count(tmp_path: Path) -> 
         intent_id="intent-001",
         cl7_locked_dispatch_proof=proof.to_canonical_dict(),
         cl7_locked_dispatch_proof_sha256=proof.sha256,
-        status="RECONCILED",
-        outcome="FILLED",
+        status="RECONCILED" if terminal_kind == "position_only" else "FAILED",
+        outcome="FILLED" if terminal_kind == "position_only" else "SUBMISSION_REJECTED",
     )
     central = SimpleNamespace(
         inspect_locked=lambda callback: callback(
@@ -831,6 +834,21 @@ def test_restart_closure_disarms_and_preserves_attempt_count(tmp_path: Path) -> 
             )
         )
     )
+    if terminal_kind == "position_only":
+        # A position-only completion supplies no CL2 debit/credit/fee evidence.
+        # It must preserve the durable pending proof and spent attempt exactly.
+        with pytest.raises(cl7.CL7RuntimeError) as captured:
+            manager.recover_runtime(
+                central_manager=central,
+                raw_account_id=RAW_ACCOUNT,
+                identity_key=KEY,
+                identity_key_id=KEY_ID,
+                transition_at="2026-09-11T10:00:07.000000000Z",
+            )
+        assert captured.value.reason is cl7.CL7RuntimeReason.RECOVERY_REQUIRED
+        assert captured.value.dependency_reason == "EXACT_SETTLEMENT_REQUIRED"
+        assert manager.status().canonical_bytes == pending.canonical_bytes
+        return
     closed, disposition = manager.recover_runtime(
         central_manager=central,
         raw_account_id=RAW_ACCOUNT,
@@ -1443,6 +1461,9 @@ def test_initial_rebuild_timestamps_non_atomic_provider_reads_independently(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = object.__new__(cl7.RuntimeCashAuthorityManager)
+    # STEP11: this deliberately constructor-free fixture exercises the unchanged
+    # legacy source. Give it the explicit selector normally set by __init__.
+    manager._cash_source_version = 2
     current = SimpleNamespace(operations_complete_through=T0)
     batch = SimpleNamespace()
     captured: dict[str, object] = {}

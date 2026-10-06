@@ -8,6 +8,7 @@ import json
 import re
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,7 @@ from trading_robot.gui_runtime_controller import CL4MoneyNormalizingTransport
 from trading_robot.portfolio_manager import CanonicalPortfolioManager
 from trading_robot.portfolio_model import PortfolioState
 from trading_robot.portfolio_repository import PortfolioRepository
+from trading_robot.portfolio_risk_adapter import PortfolioRiskInstrumentMetadata
 from trading_robot.portfolio_risk_runtime import PortfolioRiskRuntime
 from trading_robot.reporting_risk_cash_context import RiskCashContextReason
 from trading_robot.risk_persistence import RiskProfileStore, RiskStateStore
@@ -403,6 +405,12 @@ def _blocked_payload(
         "status": "BLOCKED",
     }
     if (
+        exc.reason is CL7RuntimeReason.RECOVERY_REQUIRED
+        and exc.stage == "POST_FILL"
+        and exc.dependency_reason == "EXACT_SETTLEMENT_REQUIRED"
+    ):
+        payload["dependency_reason"] = "EXACT_SETTLEMENT_REQUIRED"
+    if (
         exc.reason is CL7RuntimeReason.OPENING_INVALID
         and exc.stage == "CL4_OPENING"
         and exc.dependency_reason in {reason.value for reason in CL4Reason}
@@ -558,7 +566,11 @@ class _Runtime:
             "wait_ns": lambda duration: time.sleep(duration / 1_000_000_000),
         }
 
-    def adapter(self) -> SandboxExecutionAdapter:
+    def adapter(
+        self,
+        *,
+        instrument_metadata: Mapping[str, PortfolioRiskInstrumentMetadata] | None = None,
+    ) -> SandboxExecutionAdapter:
         if self.provider is None:
             raise CL7RuntimeError(
                 CL7RuntimeReason.BROKER_READ_FAILED,
@@ -575,6 +587,7 @@ class _Runtime:
             account_id=self.raw_account,
             profile_store=self.profiles,
             state_store=self.risk_state,
+            instrument_metadata=instrument_metadata,
         )
         return SandboxExecutionAdapter(
             self.provider,
@@ -698,13 +711,25 @@ def _safe_dispatch(result: SandboxDispatchResult) -> dict[str, object]:
 
 
 def _safe_inspection(result: SandboxInspectionResult) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "executed_lots": result.executed_lots,
         "provider_status": _operator_token(result.provider_status),
         "retryable": result.retryable,
         "status": result.status,
         "terminal": result.terminal,
     }
+    if result.reconciliation_block_reason is not None:
+        payload["reconciliation_block_reason"] = _operator_token(
+            result.reconciliation_block_reason
+        )
+        # The private typed receipt retains exact figures for a future ledger
+        # match. Public CLI diagnostics expose no monetary amounts or raw IDs.
+        payload["receipt_binding_verified"] = result.exact_receipt is not None
+        payload["settlement_verified"] = False
+        payload["authority_clear_allowed"] = False
+        payload["fee_status"] = (result.exact_receipt.fee_status
+                                 if result.exact_receipt is not None else None)
+    return payload
 
 
 def _print(payload: dict[str, object]) -> None:
@@ -845,6 +870,11 @@ def main(argv: list[str] | None = None) -> int:
                         inspection = adapter._inspect_order(blocker)
                         if inspection.status != "ORDER_OBSERVED":
                             raise CL7RuntimeError(CL7RuntimeReason.RECOVERY_REQUIRED)
+                        if inspection.suggested_reconciliation_outcome is None:
+                            raise CL7RuntimeError(
+                                CL7RuntimeReason.RECOVERY_REQUIRED,
+                                "EXACT_SETTLEMENT_REQUIRED", stage="POST_FILL",
+                            )
                         if blocker.status == "IN_FLIGHT":
                             if inspection.broker_order_id is None:
                                 raise CL7RuntimeError(

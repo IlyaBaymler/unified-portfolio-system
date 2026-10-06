@@ -14,7 +14,9 @@ from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, BinaryIO, Self
+
+from trading_robot.sqlite_open_custody import PathContinuityGuard
 
 from trading_robot.cash_ledger_domain import (
     IdentityRelation,
@@ -1312,7 +1314,126 @@ def _validate_busy_timeout(value: object) -> int:
     return value
 
 
-def _validate_live_root(root: Path) -> Path:
+@dataclass(frozen=True, slots=True)
+class _DatabaseIdentity:
+    device: int
+    inode: int
+
+
+def _database_identity_from_stat(value: os.stat_result) -> _DatabaseIdentity:
+    return _DatabaseIdentity(device=value.st_dev, inode=value.st_ino)
+
+
+def _database_identity_from_path(database: Path) -> _DatabaseIdentity:
+    try:
+        return _database_identity_from_stat(database.stat())
+    except OSError as exc:
+        raise PersistenceError(PersistenceReason.PATH_INVALID) from exc
+
+
+class _DatabaseCustody:
+    """Retained identity plus a guarded, explicitly sealed SQLite open boundary."""
+
+    __slots__ = ("_handle", "_identity", "_continuity", "_bound_connection")
+
+    def __init__(self, handle: BinaryIO, identity: _DatabaseIdentity,
+                 continuity: PathContinuityGuard) -> None:
+        self._handle = handle
+        self._identity = identity
+        self._continuity: PathContinuityGuard | None = continuity
+        self._bound_connection: sqlite3.Connection | None = None
+
+    @property
+    def identity(self) -> _DatabaseIdentity:
+        return self._identity
+
+    @property
+    def closed(self) -> bool:
+        return self._handle.closed
+
+    def seal_open(self, root: Path, connection: sqlite3.Connection) -> None:
+        # All read-only and writable open probes remain inside the same guarded
+        # interval. Only the final live connection is sealed. A failed interval
+        # is never re-baselined. Once bound to A, restoring A after a later
+        # rejected rename is safe: this connection cannot silently reopen as B.
+        if self._continuity is None or self._bound_connection is not None:
+            _fail(PersistenceReason.PATH_INVALID)
+        _validate_open_root(root, connection, self)
+        self._bound_connection = connection
+        self._continuity.close()
+        self._continuity = None
+
+    def validate_connection(self, connection: sqlite3.Connection) -> None:
+        if self._continuity is None and connection is not self._bound_connection:
+            _fail(PersistenceReason.PATH_INVALID)
+
+    def validate(self, database: Path) -> None:
+        try:
+            if self._continuity is not None:
+                self._continuity.validate()
+            if self._handle.closed:
+                _fail(PersistenceReason.PATH_INVALID)
+            handle_identity = _database_identity_from_stat(
+                os.fstat(self._handle.fileno())
+            )
+            path_identity = _database_identity_from_stat(database.stat())
+        except PersistenceError:
+            raise
+        except (OSError, ValueError) as exc:
+            raise PersistenceError(PersistenceReason.PATH_INVALID) from exc
+        if handle_identity != self._identity or path_identity != self._identity:
+            _fail(PersistenceReason.PATH_INVALID)
+
+    def close(self) -> None:
+        try:
+            if not self._handle.closed:
+                self._handle.close()
+        finally:
+            if self._continuity is not None:
+                self._continuity.close()
+            self._bound_connection = None
+
+
+def _open_database_custody(
+    database: Path,
+    expected_identity: _DatabaseIdentity,
+) -> _DatabaseCustody:
+    handle: BinaryIO | None = None
+    continuity: PathContinuityGuard | None = None
+    try:
+        handle = database.open("rb", buffering=0)
+        identity = _database_identity_from_stat(os.fstat(handle.fileno()))
+        if identity != expected_identity:
+            _fail(PersistenceReason.PATH_INVALID)
+        # Installed before any SQLite open; records A->B->A transitions even
+        # when fstat(custody) and stat(path) match again at return.
+        continuity = PathContinuityGuard(database, handle)
+        custody = _DatabaseCustody(handle, identity, continuity)
+        custody.validate(database)
+        return custody
+    except PersistenceError:
+        if continuity is not None:
+            continuity.close()
+        if handle is not None:
+            handle.close()
+        raise
+    except (OSError, ValueError) as exc:
+        if continuity is not None:
+            continuity.close()
+        if handle is not None:
+            handle.close()
+        raise PersistenceError(PersistenceReason.PATH_INVALID) from exc
+
+
+    except BaseException:
+        if continuity is not None:
+            continuity.close()
+        if handle is not None:
+            handle.close()
+        raise
+
+
+def _validate_store_layout(root: Path) -> tuple[Path, Path, Path]:
     _validate_existing_components(root)
     if not root.exists():
         _fail(PersistenceReason.STORE_MISSING)
@@ -1350,12 +1471,62 @@ def _validate_live_root(root: Path) -> Path:
                 raise PersistenceError(
                     PersistenceReason.WAL_SIDECAR_INCONSISTENT
                 ) from exc
+    return database, wal, shared_memory
+
+
+def _validate_live_root_identity(root: Path) -> tuple[Path, _DatabaseIdentity]:
+    """Validate a cold/pre-open store, including raw WAL/SHM custody."""
+    database, wal, shared_memory = _validate_store_layout(root)
+    identity = _database_identity_from_path(database)
     if wal.exists():
         metadata = _validate_wal(database, wal)
         if metadata is None:
             _validate_empty_shm(database, shared_memory)
         else:
             _validate_shm(metadata, shared_memory)
+    if _database_identity_from_path(database) != identity:
+        _fail(PersistenceReason.PATH_INVALID)
+    return database, identity
+
+
+def _validate_live_root(root: Path) -> Path:
+    return _validate_live_root_identity(root)[0]
+
+
+def _validate_open_root(
+    root: Path,
+    connection: sqlite3.Connection,
+    custody: _DatabaseCustody,
+) -> Path:
+    """Validate layout and bind an already-open WAL connection without reading SHM."""
+    database, _, _ = _validate_store_layout(root)
+    if not isinstance(custody, _DatabaseCustody):
+        _fail(PersistenceReason.TYPE_INVALID)
+    custody.validate_connection(connection)
+    custody.validate(database)
+    try:
+        databases = connection.execute("PRAGMA database_list").fetchall()
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()
+    except sqlite3.Error as exc:
+        raise PersistenceError(PersistenceReason.IO_FAILURE) from exc
+    main_databases = [row for row in databases if row[1] == "main"]
+    if (
+        len(main_databases) != 1
+        or not main_databases[0][2]
+        or any(row[1] not in {"main", "temp"} for row in databases)
+        or any(row[1] == "temp" and row[2] for row in databases)
+    ):
+        _fail(PersistenceReason.PATH_INVALID)
+    try:
+        connected = Path(main_databases[0][2]).resolve(strict=True)
+        expected = database.resolve(strict=True)
+    except OSError as exc:
+        raise PersistenceError(PersistenceReason.PATH_INVALID) from exc
+    if os.path.normcase(str(connected)) != os.path.normcase(str(expected)):
+        _fail(PersistenceReason.PATH_INVALID)
+    if journal_mode is None or str(journal_mode[0]).lower() != "wal":
+        _fail(PersistenceReason.VERSION_UNSUPPORTED)
+    custody.validate(database)
     return database
 
 
@@ -1485,12 +1656,15 @@ class CashLedgerStore:
         *,
         root: Path,
         connection: sqlite3.Connection,
+        custody: _DatabaseCustody,
         registry: dict[tuple[str, int], CodecDescriptor],
         busy_timeout_ms: int,
         fault_injector: Callable[[str], None] | None,
     ) -> None:
+        custody.seal_open(root, connection)
         self._root = root
         self._connection = connection
+        self._custody = custody
         self._registry = registry
         self._busy_timeout_ms = busy_timeout_ms
         self._fault_injector = fault_injector
@@ -1578,31 +1752,44 @@ class CashLedgerStore:
         path = _path_from(root)
         timeout = _validate_busy_timeout(busy_timeout_ms)
         registry = normalize_codec_registry(codec_registry)
-        database = _validate_live_root(path)
+        database, identity = _validate_live_root_identity(path)
         _validate_sqlite_header(database)
-        connection = _connect(database, timeout)
+        custody = _open_database_custody(database, identity)
+        connection: sqlite3.Connection | None = None
         try:
+            connection = _connect(database, timeout)
+            _validate_open_root(path, connection, custody)
             if str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower() != "wal":
                 _fail(PersistenceReason.VERSION_UNSUPPORTED)
             _validate_connection(connection, registry)
+            return cls(
+                root=path,
+                connection=connection,
+                custody=custody,
+                registry=registry,
+                busy_timeout_ms=timeout,
+                fault_injector=fault_injector,
+            )
         except PersistenceError:
-            connection.close()
+            if connection is not None:
+                connection.close()
+            custody.close()
             raise
         except sqlite3.DatabaseError as exc:
-            connection.close()
+            if connection is not None:
+                connection.close()
+            custody.close()
             reason = (
                 PersistenceReason.WAL_SIDECAR_INCONSISTENT
                 if (path / "store.sqlite3-wal").exists()
                 else PersistenceReason.INTEGRITY_FAILURE
             )
             raise PersistenceError(reason) from exc
-        return cls(
-            root=path,
-            connection=connection,
-            registry=registry,
-            busy_timeout_ms=timeout,
-            fault_injector=fault_injector,
-        )
+        except BaseException:
+            if connection is not None:
+                connection.close()
+            custody.close()
+            raise
 
     @property
     def root(self) -> Path:
@@ -1631,21 +1818,25 @@ class CashLedgerStore:
         if self._closed:
             return
         try:
-            if self._connection.in_transaction:
-                self._connection.execute("ROLLBACK")
-            self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            self._connection.close()
+            try:
+                if self._connection.in_transaction:
+                    self._connection.execute("ROLLBACK")
+                self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            finally:
+                self._connection.close()
         finally:
+            self._custody.close()
             self._closed = True
 
     def validate(self) -> StoreSnapshot:
         self._ensure_open()
-        _validate_live_root(self._root)
+        _validate_open_root(self._root, self._connection, self._custody)
         _validate_connection(self._connection, self._registry)
         return self.snapshot()
 
     def snapshot(self) -> StoreSnapshot:
         self._ensure_open()
+        _validate_open_root(self._root, self._connection, self._custody)
         try:
             self._connection.execute("BEGIN")
             row = self._connection.execute(
@@ -1660,6 +1851,7 @@ class CashLedgerStore:
                 ledger_head_json_ascii=_blob(row["ledger_head_json"]).decode("ascii"),
                 ledger_head_sha256=row["ledger_head_sha256"],
             )
+            _validate_open_root(self._root, self._connection, self._custody)
             self._connection.execute("COMMIT")
             return result
         except PersistenceError:
@@ -1673,6 +1865,7 @@ class CashLedgerStore:
 
     def _begin_mutation(self, operation: str) -> None:
         self._ensure_open()
+        _validate_open_root(self._root, self._connection, self._custody)
         try:
             self._fault(f"{operation}.before_transaction")
             self._connection.execute("BEGIN IMMEDIATE")
@@ -1691,6 +1884,7 @@ class CashLedgerStore:
     def _finish_mutation(self, operation: str) -> None:
         try:
             self._fault(f"{operation}.before_commit")
+            _validate_open_root(self._root, self._connection, self._custody)
             self._connection.execute("COMMIT")
         except InjectedFault as exc:
             self._abort_mutation()
@@ -2261,10 +2455,12 @@ class CashLedgerStore:
 
     def export_bytes(self) -> bytes:
         self._ensure_open()
+        _validate_open_root(self._root, self._connection, self._custody)
         try:
             self._connection.execute("BEGIN")
             _validate_connection(self._connection, self._registry)
             result = _export_from_connection(self._connection)
+            _validate_open_root(self._root, self._connection, self._custody)
             self._connection.execute("COMMIT")
             return result
         except PersistenceError:
@@ -2278,7 +2474,7 @@ class CashLedgerStore:
 
     def backup(self, destination: object) -> BackupVerification:
         self._ensure_open()
-        _validate_live_root(self._root)
+        _validate_open_root(self._root, self._connection, self._custody)
         _validate_connection(self._connection, self._registry)
         target = _path_from(destination)
         _validate_target_parent(target)
@@ -2315,7 +2511,7 @@ class CashLedgerStore:
                 busy_timeout_ms=self._busy_timeout_ms,
             )
             self._fault("backup.before_promote")
-            _validate_live_root(self._root)
+            _validate_open_root(self._root, self._connection, self._custody)
             _validate_connection(self._connection, self._registry)
             _promote_staging(staging, target)
             return BackupVerification(

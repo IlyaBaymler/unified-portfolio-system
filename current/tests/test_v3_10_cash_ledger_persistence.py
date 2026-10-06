@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
 from trading_robot import cash_ledger_persistence as persistence
 from trading_robot.cash_ledger_domain import (
     LedgerCorrectionBundle,
@@ -46,6 +47,7 @@ MODULE_PATH = CURRENT / "trading_robot" / "cash_ledger_persistence.py"
 FIXTURE_PATH = CURRENT / "tests" / "fixtures" / "v3_10_cash_ledger_persistence_vectors.json"
 ACCEPTED_CONTRACT_HEAD = "f3b0ab7db1889695eb1b56264133ac895b7ed52d"
 CL1_PREDECESSOR = "095a24a0d8ad2487f09ec0c5f3473a6c65a84710"
+CL2_ACCEPTED_IMPLEMENTATION_HEAD = "d684186c0628d27ed452ce4f11311155fdf7a44e"
 
 
 @pytest.fixture(scope="module")
@@ -1443,77 +1445,301 @@ def test_v310_cl2_28_three_path_delta_and_immutable_predecessor_files() -> None:
         "docs/project/V3_10_CL2_APPEND_ONLY_PERSISTENCE_CONTRACT_RU.md",
         *allowed,
     }
-    base_object_exit, _ = _git_output(
-        "cat-file", "-e", f"{ACCEPTED_CONTRACT_HEAD}^{{commit}}"
+    # Custody belongs to the accepted historical implementation, not a later
+    # successor's cumulative delta. Missing history is a failure, never a PR
+    # metadata substitute, skip, or request to fetch from inside pytest.
+    replacement_exit, replacement_refs = _git_output(
+        "for-each-ref", "--format=%(refname)", "refs/replace"
     )
-    if base_object_exit == 0:
-        diff_exit, diff_text = _git_output(
-            "diff", "--name-only", f"{ACCEPTED_CONTRACT_HEAD}..HEAD"
-        )
-        assert diff_exit == 0
-        changed = {line.replace("\\", "/") for line in diff_text.splitlines()}
-        assert changed == allowed
-        ancestry_exit, ancestry_text = _git_output(
-            "rev-list",
-            "--left-right",
-            "--count",
-            f"{ACCEPTED_CONTRACT_HEAD}...HEAD",
-        )
-        assert ancestry_exit == 0
-        assert ancestry_text.split() == ["0", "5"]
-        accepted_merge_exit, accepted_merge_base = _git_output(
-            "merge-base", ACCEPTED_CONTRACT_HEAD, "HEAD"
-        )
-        assert accepted_merge_exit == 0
-        assert accepted_merge_base.strip() == ACCEPTED_CONTRACT_HEAD
-    else:
-        assert os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
-        event_path = os.environ.get("GITHUB_EVENT_PATH")
-        assert event_path is not None
-        event = json.loads(Path(event_path).read_text(encoding="utf-8-sig"))
-        pull_request = event["pull_request"]
-        assert pull_request["base"]["ref"] == "program/v3-10-v4-stable-line"
-        assert pull_request["base"]["sha"] == CL1_PREDECESSOR
-        assert pull_request["head"]["ref"] == "agent/v3-10-clean-cl2-implementation"
-        assert pull_request["head"]["repo"]["full_name"] == (
-            "baimleriv/unified-portfolio-system"
-        )
-        assert pull_request["commits"] == 7
-        assert pull_request["changed_files"] == len(cumulative_allowed)
-        current_exit, current_head = _git_output("rev-parse", "HEAD")
-        commit_exit, commit_text = _git_output("cat-file", "-p", "HEAD")
-        assert current_exit == commit_exit == 0
-        assert current_head.strip() == os.environ.get("GITHUB_SHA")
-        parents = [
-            line.removeprefix("parent ")
-            for line in commit_text.splitlines()
-            if line.startswith("parent ")
-        ]
-        assert parents == [
-            CL1_PREDECESSOR,
-            pull_request["head"]["sha"],
-        ]
-        assert all((ROOT / path).is_file() for path in cumulative_allowed)
+    assert replacement_exit == 0 and not replacement_refs.strip()
+    graft_exit, graft_path = _git_output(
+        "rev-parse", "--path-format=absolute", "--git-path", "info/grafts"
+    )
+    assert graft_exit == 0 and not Path(graft_path.strip()).exists()
+    for anchor in (
+        ACCEPTED_CONTRACT_HEAD,
+        CL1_PREDECESSOR,
+        CL2_ACCEPTED_IMPLEMENTATION_HEAD,
+    ):
+        anchor_exit, _ = _git_output("cat-file", "-e", f"{anchor}^{{commit}}")
+        assert anchor_exit == 0, f"Historical CL2 custody requires commit {anchor}"
+
+    diff_exit, diff_text = _git_output(
+        "diff",
+        "--name-only",
+        ACCEPTED_CONTRACT_HEAD,
+        CL2_ACCEPTED_IMPLEMENTATION_HEAD,
+    )
+    assert diff_exit == 0
+    assert {line.replace("\\", "/") for line in diff_text.splitlines()} == allowed
+    ancestry_exit, ancestry_text = _git_output(
+        "rev-list",
+        "--left-right",
+        "--count",
+        f"{ACCEPTED_CONTRACT_HEAD}...{CL2_ACCEPTED_IMPLEMENTATION_HEAD}",
+    )
+    assert ancestry_exit == 0
+    assert ancestry_text.split() == ["0", "5"]
+    accepted_merge_exit, accepted_merge_base = _git_output(
+        "merge-base", ACCEPTED_CONTRACT_HEAD, CL2_ACCEPTED_IMPLEMENTATION_HEAD
+    )
+    assert accepted_merge_exit == 0
+    assert accepted_merge_base.strip() == ACCEPTED_CONTRACT_HEAD
+
     for path in (
         "docs/project/V3_10_CL2_APPEND_ONLY_PERSISTENCE_CONTRACT_RU.md",
         "current/trading_robot/cash_ledger_domain.py",
         "current/tests/test_v3_10_cash_ledger_domain.py",
         "current/tests/fixtures/v3_10_cash_ledger_vectors.json",
     ):
-        if base_object_exit == 0:
-            result, _ = _git_output(
-                "diff", "--quiet", ACCEPTED_CONTRACT_HEAD, "--", path
+        for anchor in (ACCEPTED_CONTRACT_HEAD, CL2_ACCEPTED_IMPLEMENTATION_HEAD):
+            blob_exit, _ = _git_output(
+                "cat-file", "-e", f"{anchor}:{path}"
             )
-            assert result == 0
-    if base_object_exit == 0:
-        merge_exit, merge_base = _git_output("merge-base", CL1_PREDECESSOR, "HEAD")
-        assert merge_exit == 0
-        merge_base = merge_base.strip()
-        assert merge_base == CL1_PREDECESSOR
-        cumulative_exit, cumulative_text = _git_output(
-            "diff", "--name-only", f"{CL1_PREDECESSOR}..HEAD"
+            assert blob_exit == 0
+        result, _ = _git_output(
+            "diff", "--quiet", ACCEPTED_CONTRACT_HEAD,
+            CL2_ACCEPTED_IMPLEMENTATION_HEAD, "--", path
         )
-        assert cumulative_exit == 0
-        assert {
-            line.replace("\\", "/") for line in cumulative_text.splitlines()
-        } == cumulative_allowed
+        assert result == 0
+
+    merge_exit, merge_base = _git_output(
+        "merge-base", CL1_PREDECESSOR, CL2_ACCEPTED_IMPLEMENTATION_HEAD
+    )
+    assert merge_exit == 0
+    assert merge_base.strip() == CL1_PREDECESSOR
+    cumulative_exit, cumulative_text = _git_output(
+        "diff", "--name-only", CL1_PREDECESSOR, CL2_ACCEPTED_IMPLEMENTATION_HEAD
+    )
+    assert cumulative_exit == 0
+    assert {
+        line.replace("\\", "/") for line in cumulative_text.splitlines()
+    } == cumulative_allowed
+    for path in cumulative_allowed:
+        historical_file_exit, _ = _git_output(
+            "cat-file", "-e", f"{CL2_ACCEPTED_IMPLEMENTATION_HEAD}:{path}"
+        )
+        assert historical_file_exit == 0
+    cumulative_count_exit, cumulative_count = _git_output(
+        "rev-list", "--left-right", "--count",
+        f"{CL1_PREDECESSOR}...{CL2_ACCEPTED_IMPLEMENTATION_HEAD}",
+    )
+    assert cumulative_count_exit == 0
+    assert cumulative_count.split() == ["0", "7"]
+
+    # Contemporary successors must retain the exact frozen implementation in
+    # their ancestry; matching trees or unrelated reconstructed histories fail.
+    successor_exit, _ = _git_output(
+        "merge-base", "--is-ancestor", CL2_ACCEPTED_IMPLEMENTATION_HEAD, "HEAD"
+    )
+    assert successor_exit == 0
+
+
+def test_v310_cl2_29_open_validation_never_raw_reads_live_shm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    vectors: dict[str, dict[str, object]],
+    descriptor: CodecDescriptor,
+) -> None:
+    root = tmp_path / "live-store"
+    store = CashLedgerStore.create(root, [descriptor])
+    other = CashLedgerStore.create(tmp_path / "other-store", [descriptor])
+    shared_memory = root / "store.sqlite3-shm"
+    original_read_bytes = Path.read_bytes
+    attempted_shm_reads: list[Path] = []
+
+    def reject_live_shm(path: Path) -> bytes:
+        if path == shared_memory and path.exists():
+            attempted_shm_reads.append(path)
+            raise PermissionError("simulated Windows live SHM denial")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_live_shm)
+    try:
+        store.append_observation(
+            _observation(vectors, descriptor, "observation-original"),
+            expected_store_revision=0,
+        )
+        expected = store.snapshot()
+        exported = store.export_bytes()
+        assert store.validate() == expected
+        assert store.snapshot() == expected
+        assert store.export_bytes() == exported
+        assert store.backup(tmp_path / "backup").store_revision == expected.store_revision
+        assert attempted_shm_reads == []
+
+        with _reason(PersistenceReason.PATH_INVALID):
+            persistence._validate_open_root(root, other._connection, other._custody)
+
+        store._connection.execute("ATTACH DATABASE ':memory:' AS unexpected")
+        try:
+            with _reason(PersistenceReason.PATH_INVALID):
+                store.validate()
+        finally:
+            store._connection.execute("DETACH DATABASE unexpected")
+
+        journal = root / "store.sqlite3-journal"
+        journal.write_bytes(b"suspect-evidence")
+        try:
+            with _reason(PersistenceReason.WAL_SIDECAR_INCONSISTENT):
+                store.validate()
+        finally:
+            journal.unlink()
+
+        with _reason(PersistenceReason.WAL_SIDECAR_INCONSISTENT):
+            persistence._validate_live_root(root)
+        assert attempted_shm_reads == [shared_memory]
+    finally:
+        other.close()
+        store.close()
+
+
+def _replace_open_database_or_skip(
+    root: Path,
+    replacement_root: Path,
+    displaced: Path,
+) -> None:
+    database = root / "store.sqlite3"
+    try:
+        os.replace(database, displaced)
+    except PermissionError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 32:
+            pytest.skip("Windows protects the open SQLite file with WinError 32")
+        raise
+    os.replace(replacement_root / "store.sqlite3", database)
+
+
+def _restore_replaced_database(root: Path, displaced: Path) -> None:
+    database = root / "store.sqlite3"
+    if displaced.exists():
+        if database.exists():
+            database.unlink()
+        os.replace(displaced, database)
+
+
+def test_v310_cl2_30_live_identity_rejects_real_path_replacement(
+    tmp_path: Path,
+    descriptor: CodecDescriptor,
+) -> None:
+    root = tmp_path / "live-store"
+    replacement_root = tmp_path / "replacement-store"
+    store = CashLedgerStore.create(root, [descriptor])
+    replacement = CashLedgerStore.create(replacement_root, [descriptor])
+    replacement.close()
+    displaced = tmp_path / "displaced-original.sqlite3"
+    before = store.export_bytes()
+    try:
+        _replace_open_database_or_skip(root, replacement_root, displaced)
+        reported = Path(store._connection.execute("PRAGMA database_list").fetchone()[2])
+        assert reported.resolve(strict=True) == (root / "store.sqlite3").resolve(strict=True)
+        with _reason(PersistenceReason.PATH_INVALID):
+            store.validate()
+        _restore_replaced_database(root, displaced)
+        assert store.export_bytes() == before
+    finally:
+        _restore_replaced_database(root, displaced)
+        store.close()
+
+
+def test_v310_cl2_31_backup_rechecks_retained_source_identity_before_promote(
+    tmp_path: Path,
+    descriptor: CodecDescriptor,
+) -> None:
+    root = tmp_path / "live-store"
+    replacement_root = tmp_path / "replacement-store"
+    displaced = tmp_path / "displaced-original.sqlite3"
+    replacement = CashLedgerStore.create(replacement_root, [descriptor])
+    replacement.close()
+
+    def replace_before_promote(point: str) -> None:
+        if point == "backup.before_promote":
+            _replace_open_database_or_skip(root, replacement_root, displaced)
+
+    store = CashLedgerStore.create(root, [descriptor], fault_injector=replace_before_promote)
+    before = store.export_bytes()
+    target = tmp_path / "backup"
+    try:
+        with _reason(PersistenceReason.PATH_INVALID):
+            store.backup(target)
+        assert not target.exists()
+        _restore_replaced_database(root, displaced)
+        assert store.export_bytes() == before
+    finally:
+        _restore_replaced_database(root, displaced)
+        store.close()
+
+
+def test_v310_cl2_32_same_path_rejects_identity_token_and_handle_mismatch(
+    tmp_path: Path,
+    descriptor: CodecDescriptor,
+) -> None:
+    store = CashLedgerStore.create(tmp_path / "store", [descriptor])
+    other = CashLedgerStore.create(tmp_path / "other", [descriptor])
+    original_identity = store._custody._identity
+    original_handle = store._custody._handle
+    foreign_handle = (other.root / "store.sqlite3").open("rb", buffering=0)
+    try:
+        reported = Path(store._connection.execute("PRAGMA database_list").fetchone()[2])
+        assert reported.resolve(strict=True) == (store.root / "store.sqlite3").resolve(strict=True)
+        store._custody._identity = persistence._DatabaseIdentity(
+            device=original_identity.device,
+            inode=original_identity.inode + 1,
+        )
+        with _reason(PersistenceReason.PATH_INVALID):
+            store.validate()
+        store._custody._identity = original_identity
+
+        store._custody._handle = foreign_handle
+        with _reason(PersistenceReason.PATH_INVALID):
+            store.validate()
+    finally:
+        store._custody._handle = original_handle
+        store._custody._identity = original_identity
+        foreign_handle.close()
+        other.close()
+        store.close()
+
+
+def test_v310_cl2_33_custody_handle_lifetime_and_failed_open_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    vectors: dict[str, dict[str, object]],
+    descriptor: CodecDescriptor,
+) -> None:
+    root = tmp_path / "store"
+    store = CashLedgerStore.create(root, [descriptor])
+    identity = store._custody.identity
+    custody = store._custody
+    assert not custody.closed
+    store.append_observation(
+        _observation(vectors, descriptor, "observation-original"),
+        expected_store_revision=0,
+    )
+    assert custody.identity == identity
+    custody.validate(root / "store.sqlite3")
+    store.close()
+    assert custody.closed
+
+    closed_custodies = []
+    for _ in range(8):
+        reopened = CashLedgerStore.open(root, [descriptor])
+        closed_custodies.append(reopened._custody)
+        reopened.close()
+    assert all(item.closed for item in closed_custodies)
+
+    captured = []
+    real_open_custody = persistence._open_database_custody
+
+    def capture_custody(database, expected_identity):
+        result = real_open_custody(database, expected_identity)
+        captured.append(result)
+        return result
+
+    def reject_live_open(*_args, **_kwargs):
+        raise PersistenceError(PersistenceReason.PATH_INVALID)
+
+    monkeypatch.setattr(persistence, "_open_database_custody", capture_custody)
+    monkeypatch.setattr(persistence, "_validate_open_root", reject_live_open)
+    with _reason(PersistenceReason.PATH_INVALID):
+        CashLedgerStore.open(root, [descriptor])
+    assert len(captured) == 1 and captured[0].closed

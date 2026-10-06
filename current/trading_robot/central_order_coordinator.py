@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -40,6 +41,14 @@ from .risk_runtime import RiskRuntimeAdapter
 
 class CentralOrderCoordinationError(RuntimeError):
     """Raised when coordinator inputs violate the v3.8 execution contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioRiskQuoteObservation:
+    """A quote and its post-acquisition clock; grants no execution authority."""
+
+    quote: PortfolioRiskCandidateQuote
+    evaluated_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +124,7 @@ class CentralOrderCoordinator:
         preflight_gate: PortfolioPreflightGate | None = None,
         portfolio_risk_shadow: PortfolioRiskShadowObserver | None = None,
         portfolio_risk_runtime: PortfolioRiskRuntime | None = None,
+        execution_order_type: str = "BESTPRICE",
     ) -> None:
         if str(getattr(risk_runtime, "account_id", "")).strip() != (
             manager.account_id
@@ -128,6 +138,9 @@ class CentralOrderCoordinator:
             raise CentralOrderCoordinationError(
                 "Central coordinator requires SANDBOX_EXECUTION Risk runtime."
             )
+        if type(execution_order_type) is not str or execution_order_type not in {"MARKET", "BESTPRICE"}:
+            raise CentralOrderCoordinationError("EXECUTION_ORDER_TYPE_INVALID")
+        self.execution_order_type = execution_order_type
         self.manager = manager
         self.portfolio_repository = portfolio_repository
         self.risk_runtime = risk_runtime
@@ -177,7 +190,15 @@ class CentralOrderCoordinator:
         cash_buffer_bps: int = 100,
         observe_only: bool = False,
         portfolio_risk_candidate_quote: PortfolioRiskCandidateQuote | None = None,
+        portfolio_risk_quote_loader: (
+            Callable[[], PortfolioRiskQuoteObservation] | None
+        ) = None,
     ) -> CentralOrderCoordinationResult:
+        if portfolio_risk_quote_loader is not None and (
+            not callable(portfolio_risk_quote_loader)
+            or portfolio_risk_candidate_quote is not None
+        ):
+            raise CentralOrderCoordinationError("CANDIDATE_QUOTE_SOURCE_INVALID")
         self._validate_inputs(
             proposal,
             runtime,
@@ -270,6 +291,33 @@ class CentralOrderCoordinator:
             or getattr(risk, "error", None)
             or decision is None
         )
+        # Natural GUI cycles acquire a quote only after the real Risk owner
+        # has allowed an actual position change. A HOLD is not authorization
+        # and must still pass canonical/preflight/Risk checks, but it requires
+        # neither a quote nor a new order. Do not classify by Strategy alone:
+        # Risk can reduce a proposed target to the current position.
+        if (
+            portfolio_risk_quote_loader is not None
+            and not observe_only
+            and not assessment_failed
+            and approved_target != current_lots
+            and bool(getattr(decision, "order_allowed", False))
+        ):
+            observation = portfolio_risk_quote_loader()
+            if (
+                type(observation) is not PortfolioRiskQuoteObservation
+                or type(observation.quote) is not PortfolioRiskCandidateQuote
+                or not isinstance(observation.evaluated_at, datetime)
+                or observation.evaluated_at.tzinfo is None
+                or observation.evaluated_at.utcoffset() is None
+                or _utc(observation.evaluated_at) < _utc(now)
+            ):
+                raise CentralOrderCoordinationError("CANDIDATE_QUOTE_OBSERVATION_INVALID")
+            # Use the post-read clock for authoritative admission/freshness.
+            # Existing admission guards still recheck canonical/policy/state
+            # custody after the external read and before enqueuing an intent.
+            portfolio_risk_candidate_quote = observation.quote
+            now = _utc(observation.evaluated_at)
         portfolio_shadow = None
         if self.portfolio_risk_shadow is not None and decision is not None:
             try:
@@ -421,6 +469,7 @@ class CentralOrderCoordinator:
                     else price
                 ),
                 lot_size=lot_size,
+                order_type=self.execution_order_type,
             )
         except (
             CentralOrderConflictError,

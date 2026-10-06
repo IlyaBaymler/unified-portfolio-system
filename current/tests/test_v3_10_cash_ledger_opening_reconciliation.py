@@ -272,6 +272,8 @@ def test_v310_cl4_01_exact_exports_signatures_immutable_and_import_boundary() ->
         "AdoptionCandidate",
         "OpeningAcceptance",
         "CL4_OPENING_CODEC",
+        "CL4_RUB_POSITION_OPENING_CODEC",
+        "build_broker_rub_position_cash_proof",
         "build_broker_cash_proof",
         "prepare_from_now_opening",
         "accept_from_now_opening",
@@ -280,7 +282,12 @@ def test_v310_cl4_01_exact_exports_signatures_immutable_and_import_boundary() ->
         "build_adoption_candidate",
     )
     assert {name for name in vars(cl4) if not name.startswith("_")} == set(cl4.__all__)
+    # STEP11 explicit additional versioned source, historical signatures unchanged.
     expected_parameters = {
+        "build_broker_rub_position_cash_proof": [
+            "response", "raw_account_id", "account_scope_sha256", "environment",
+            "as_of", "evaluated_at", "response_complete", "identity_key", "identity_key_id",
+        ],
         "build_broker_cash_proof": [
             "response",
             "account_scope_sha256",

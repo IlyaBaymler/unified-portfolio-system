@@ -499,7 +499,9 @@ def money_value_to_money(value: object) -> Money:  # noqa: F821
         nano = value["nano"]
         if not isinstance(currency, str):
             _raise(BrokerReadReason.MONEY_INVALID, _ledger.MoneyReason.TYPE_INVALID)
-        if currency != "RUB":
+        # Provider MoneyValue strings may use either exact wire spelling.
+        # Persisted Money remains canonical RUB; never case-fold unknown tokens.
+        if currency not in {"RUB", "rub"}:
             _raise(
                 BrokerReadReason.MONEY_INVALID, _ledger.MoneyReason.CURRENCY_UNSUPPORTED
             )
@@ -521,7 +523,7 @@ def money_value_to_money(value: object) -> Money:  # noqa: F821
                 BrokerReadReason.MONEY_INVALID,
                 _ledger.MoneyReason.WIRE_NANO_OUT_OF_RANGE,
             )
-        return _ledger.Money.from_units_nano(units=units, nano=nano, currency=currency)
+        return _ledger.Money.from_units_nano(units=units, nano=nano, currency="RUB")
     except BrokerReadError:
         raise
     except _ledger.MoneyError as error:

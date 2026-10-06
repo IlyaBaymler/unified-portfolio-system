@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 import logging
+import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -30,8 +31,14 @@ from .portfolio_model import (
     SnapshotFreshness,
 )
 from .portfolio_reconciler import PortfolioReconciler, ReconciliationContext
-from .portfolio_repository import PortfolioRepository, PortfolioRepositoryError
+from .portfolio_repository import (
+    PortfolioRepository, PortfolioRepositoryError, portfolio_document_checksum,
+)
 from .portfolio_snapshot import PortfolioSnapshotBuilder
+from .portfolio_observation import PortfolioObservationPolicy
+from .portfolio_cash_observation import (
+    DesktopOwnCashPolicy, PortfolioCashObservation, PortfolioCashObservationError,
+)
 from .portfolio_transactions import (
     LegacyPortfolioShadowWriter,
     PortfolioTransactionCoordinator,
@@ -97,9 +104,49 @@ class CanonicalPortfolioManager:
         *,
         record_event: bool = True,
         _stage_observer: Callable[[str], None] | None = None,
+        observation_policy: PortfolioObservationPolicy | None = None,
+        cash_observation_policy: DesktopOwnCashPolicy | None = None,
     ) -> PortfolioState:
-        """Refresh directly from broker API plus the previous canonical plan."""
+        """Refresh observations; the desktop policy pins revision before reads.
 
+        Legacy callers retain their frozen read/observer sequence. The strict
+        desktop path is opt-in and does not expand controlled Q7 read budgets.
+        """
+
+        if cash_observation_policy is not None and (
+            type(cash_observation_policy) is not DesktopOwnCashPolicy
+            or observation_policy is None
+            or cash_observation_policy.account_id != self.account_id
+            or cash_observation_policy.instruments != observation_policy.instruments
+        ):
+            raise PortfolioCashObservationError("PORTFOLIO_CASH_SCOPE_MISMATCH")
+        previous = None
+        if observation_policy is not None:
+            if _stage_observer is not None:
+                _stage_observer("LOCAL_PRESTATE")
+            previous = self.repository.load(expected_account_id=self.account_id)
+            if observation_policy.account_id != self.account_id:
+                raise PortfolioRepositoryError("PORTFOLIO_OBSERVATION_ACCOUNT_MISMATCH")
+            started = time.monotonic()
+            portfolio, broker_orders = observation_policy.acquire(
+                self.api, previous, _stage_observer,
+            )
+            cash_observation = None
+            if cash_observation_policy is not None:
+                def checkpoint(stage: str) -> None:
+                    if not 0 <= time.monotonic() - started <= observation_policy.max_acquisition_seconds:
+                        raise PortfolioCashObservationError("PORTFOLIO_CASH_OBSERVATION_EXPIRED")
+                    if _stage_observer is not None:
+                        _stage_observer(stage)
+                cash_observation = cash_observation_policy.acquire(self.api, checkpoint)
+                if observation_policy.binding_guard is not None:
+                    observation_policy.binding_guard()
+                checkpoint("CASH_PUBLICATION_READY")
+            return self.refresh_from_api_portfolio(
+                portfolio, broker_orders=broker_orders, record_event=record_event,
+                _stage_observer=_stage_observer, _expected_previous=previous,
+                _cash_observation=cash_observation,
+            )
         if _stage_observer is not None:
             _stage_observer("PROVIDER_PORTFOLIO")
         portfolio = self.api.get_portfolio(self.account_id)
@@ -113,6 +160,7 @@ class CanonicalPortfolioManager:
             broker_orders=broker_orders,
             record_event=record_event,
             _stage_observer=_stage_observer,
+            _expected_previous=previous,
         )
 
     def refresh_from_api_portfolio(
@@ -125,6 +173,8 @@ class CanonicalPortfolioManager:
         record_event: bool = True,
         snapshot_at: str | None = None,
         _stage_observer: Callable[[str], None] | None = None,
+        _expected_previous: PortfolioState | None = None,
+        _cash_observation: PortfolioCashObservation | None = None,
     ) -> PortfolioState:
         """Refresh using one exact broker observation.
 
@@ -134,9 +184,11 @@ class CanonicalPortfolioManager:
         """
 
         del runtime_state
-        if _stage_observer is not None:
+        if _stage_observer is not None and _expected_previous is None:
             _stage_observer("LOCAL_PRESTATE")
-        previous = self.repository.load(expected_account_id=self.account_id)
+        previous = _expected_previous or self.repository.load(expected_account_id=self.account_id)
+        if previous.account_id != self.account_id:
+            raise PortfolioRepositoryError("PORTFOLIO_OBSERVATION_ACCOUNT_MISMATCH")
         if _stage_observer is not None:
             _stage_observer("ADAPTER")
         broker = BrokerPortfolioAdapter.from_api_portfolio(
@@ -146,6 +198,10 @@ class CanonicalPortfolioManager:
             broker_orders=broker_orders,
             snapshot_at=snapshot_at,
         )
+        if _cash_observation is not None:
+            if type(_cash_observation) is not PortfolioCashObservation:
+                raise PortfolioCashObservationError("PORTFOLIO_CASH_OBSERVATION_INVALID")
+            broker = _cash_observation.apply(broker)
         runtime = RuntimePortfolioAdapter.from_portfolio_state(previous)
         return self._reconcile_and_publish(
             broker,
@@ -736,6 +792,7 @@ class CanonicalPortfolioManager:
                 portfolio_source="CANONICAL",
             ),
             expected_revision=previous.revision,
+            expected_document_checksum=portfolio_document_checksum(previous),
             account_id=self.account_id,
         )
         state = result.state

@@ -13,6 +13,13 @@ from .central_order_manager import (
     CentralOrderManager,
     CentralOrderState,
 )
+from .exact_order_receipt import (
+    ExactOrderReceipt,
+    ExactOrderReceiptError,
+    decode_exact_order_receipt,
+    validate_exact_receipt_binding,
+)
+from .exact_own_funds import MAX_AGE_NS, LockedOwnFundsPolicy, OwnFundsError
 from .market_idle import MarketAvailability, classify_market_status
 from .orders import (
     executed_lots,
@@ -84,6 +91,8 @@ class SandboxExecutionTransport(Protocol):
 
     def get_portfolio(self, account_id: str) -> dict[str, Any]: ...
 
+    def get_positions(self, account_id: str) -> dict[str, Any]: ...
+
     def get_withdraw_limits(self, account_id: str) -> Any: ...
 
 
@@ -153,6 +162,8 @@ class SandboxInspectionResult:
     execution_price_source: str | None = None
     retryable: bool = False
     error: str | None = None
+    exact_receipt: ExactOrderReceipt | None = None
+    reconciliation_block_reason: str | None = None
 
 
 class SandboxExecutionAdapter:
@@ -176,6 +187,7 @@ class SandboxExecutionAdapter:
         cl7_identity_key: bytes | None = None,
         cl7_identity_key_id: str | None = None,
         cl7_ledger_store: Any | None = None,
+        cl7_own_funds_policy: LockedOwnFundsPolicy | None = None,
         cl7_proof_builder: Callable[
             [RuntimeCashAuthorityRecord, CentralOrderState, CentralOrderIntent],
             LockedDispatchProof,
@@ -209,6 +221,7 @@ class SandboxExecutionAdapter:
         self.cl7_identity_key = cl7_identity_key
         self.cl7_identity_key_id = cl7_identity_key_id
         self.cl7_ledger_store = cl7_ledger_store
+        self.cl7_own_funds_policy = cl7_own_funds_policy
         self.cl7_proof_builder = cl7_proof_builder
         self.cl7_clock = cl7_clock or (
             lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
@@ -373,14 +386,24 @@ class SandboxExecutionAdapter:
                     transition_at=self.cl7_clock(),
                 )
                 try:
-                    portfolio_response = self.transport.get_portfolio(
-                        self.policy.account_id
+                    portfolio_response = authority_manager.read_accounting_cash(
+                        self.transport, self.policy.account_id,
+                        clock=self.cl7_clock, monotonic_ns=self.cl7_monotonic_ns,
                     )
                     broker_cash_as_of = self.cl7_clock()
-                    withdraw_limits_observation = self.transport.get_withdraw_limits(
-                        self.policy.account_id
-                    )
-                    broker_withdraw_limits_as_of = self.cl7_clock()
+                    if authority_manager.buying_budget_policy is None:
+                        withdraw_limits_observation = self.transport.get_withdraw_limits(self.policy.account_id)
+                        broker_withdraw_limits_as_of = self.cl7_clock()
+                        own_buying_cash_proof = None
+                    else:
+                        withdraw_limits_observation, broker_withdraw_limits_as_of, own_buying_cash_proof = authority_manager.read_availability_cash(
+                            self.transport, self.policy.account_id,
+                            account_scope_sha256=authority.account_scope_sha256,
+                            identity_key=self.cl7_identity_key, identity_key_id=self.cl7_identity_key_id,
+                            clock=self.cl7_clock, monotonic_ns=self.cl7_monotonic_ns,
+                        )
+                except CL7RuntimeError:
+                    raise
                 except Exception:  # noqa: BLE001 - provider trust boundary
                     raise CL7RuntimeError(
                         CL7RuntimeReason.BROKER_READ_FAILED,
@@ -419,10 +442,22 @@ class SandboxExecutionAdapter:
                             leased_at=_cl7_iso_timestamp(evaluated_at),
                         )
                         with authority_manager.ledger_guard(self.cl7_ledger_store):
+                            own_funds_started_ns = None
+
+                            def require_dispatch_fresh(proof: LockedDispatchProof) -> None:
+                                _require_cl7_proof_fresh(proof, self.cl7_clock())
+                                if own_funds_started_ns is not None:
+                                    tick = self.cl7_monotonic_ns()
+                                    if (type(own_funds_started_ns) is not int
+                                        or type(tick) is not int
+                                        or not 0 <= tick - own_funds_started_ns <= MAX_AGE_NS):
+                                        raise CL7RuntimeError(CL7RuntimeReason.CONTEXT_STALE)
+
                             def validate(
                                 central: CentralOrderState,
                                 queued: CentralOrderIntent,
                             ) -> LockedDispatchProof:
+                                nonlocal own_funds_started_ns
                                 if self.portfolio_risk_runtime is not None:
                                     self.portfolio_risk_runtime.validate_dispatch(
                                         portfolio=locked_portfolio,
@@ -440,6 +475,7 @@ class SandboxExecutionAdapter:
                                     broker_withdraw_limits_as_of=(
                                         broker_withdraw_limits_as_of
                                     ),
+                                    own_buying_cash_proof=own_buying_cash_proof,
                                     central_state=central,
                                     portfolio_lease=portfolio_lease,
                                     risk_policy=risk_policy,
@@ -450,6 +486,19 @@ class SandboxExecutionAdapter:
                                     evaluated_at=evaluated_at,
                                     require_ready=True,
                                 )
+                                own_funds = None
+                                if self.cl7_own_funds_policy is not None:
+                                    if type(self.cl7_own_funds_policy) is not LockedOwnFundsPolicy or self.cl7_proof_builder is not None:
+                                        raise CL7RuntimeError(CL7RuntimeReason.DISPATCH_PROOF_INVALID)
+                                    try:
+                                        own_funds_started_ns = self.cl7_monotonic_ns()
+                                        own_funds = self.cl7_own_funds_policy.acquire(
+                                            self.transport, queued, central,
+                                            clock=self.cl7_clock, monotonic_ns=self.cl7_monotonic_ns,
+                                        )
+                                    except OwnFundsError as exc:
+                                        raise CL7RuntimeError(CL7RuntimeReason.OWN_FUNDS_BLOCKED, str(exc),
+                                                              stage="LOCKED_OWN_FUNDS") from None
                                 if self.cl7_proof_builder is None:
                                     proof = authority_manager.build_locked_dispatch_proof(
                                         context=evidence.context,
@@ -461,6 +510,7 @@ class SandboxExecutionAdapter:
                                         target_lots=queued.candidate.target_lots,
                                         direction=queued.candidate.direction,
                                         evaluated_at=evaluated_at,
+                                        own_funds_evidence=own_funds,
                                     )
                                 else:
                                     proof = self.cl7_proof_builder(
@@ -476,7 +526,7 @@ class SandboxExecutionAdapter:
                                     raw_intent_id=queued.intent_id,
                                     identity_key=self.cl7_identity_key,
                                 )
-                                _require_cl7_proof_fresh(proof, self.cl7_clock())
+                                require_dispatch_fresh(proof)
                                 return proof
 
                             with self.manager.locked_dispatch_lease(
@@ -486,17 +536,30 @@ class SandboxExecutionAdapter:
                                 validator=validate,
                             ) as lease:
                                 try:
+                                    require_dispatch_fresh(lease.proof)
                                     pending = authority_manager._record_dispatch_attempt_locked(
                                         authority,
                                         lease.proof,
                                         transition_at=self.cl7_clock(),
                                     )
                                 except CL7RuntimeError as exc:
-                                    if exc.reason is CL7RuntimeReason.ATTEMPT_RECORD_FAILED:
+                                    if exc.reason in {CL7RuntimeReason.ATTEMPT_RECORD_FAILED, CL7RuntimeReason.CONTEXT_STALE}:
                                         lease.mark_pre_submit_failed(
-                                            reason="CL7_ATTEMPT_RECORD_FAILED"
+                                            reason="CL7_" + exc.reason.value
                                         )
                                     raise
+                                # Custody writes may consume the evidence lifetime. Once
+                                # the attempt marker exists, an expired proof is kept
+                                # pending for recovery, never cleared for an automatic retry.
+                                try:
+                                    require_dispatch_fresh(lease.proof)
+                                except CL7RuntimeError:
+                                    return SandboxDispatchResult(
+                                        status="CL7_RECOVERY_REQUIRED",
+                                        intent_id=lease.intent.intent_id,
+                                        market=market,
+                                        error="EVIDENCE_EXPIRED_AFTER_MARKER",
+                                    )
                                 try:
                                     response = self.transport.post_order_once(
                                         self.policy.account_id,
@@ -868,6 +931,46 @@ class SandboxExecutionAdapter:
             ),
         )
 
+    def finalize_exact_settlement(self, *, recovery: Any, proof_sha256: str) -> Any:
+        """Explicit bounded owner closure after verified STEP14 cash components."""
+        from .exact_settlement_closure import finalize_exact_settlement
+        return finalize_exact_settlement(self, recovery=recovery, proof_sha256=proof_sha256)
+
+    def reconcile_fee_alias(self, *, recovery: Any, proof_sha256: str,
+                            original_transaction_sha256: str) -> Any:
+        """Explicit zero-money alias verification; may retain a fee HOLD."""
+        from .exact_fee_alias import reconcile_fee_alias
+
+        return reconcile_fee_alias(self, recovery=recovery, proof_sha256=proof_sha256,
+                                   original_transaction_sha256=original_transaction_sha256)
+
+    def reconcile_fee_replacement(self, *, recovery: Any, proof_sha256: str,
+                                  original_transaction_sha256: str) -> Any:
+        """Explicit immutable commission correction; never a new order or arm."""
+        from .exact_fee_replacement import reconcile_fee_replacement
+
+        return reconcile_fee_replacement(self, recovery=recovery, proof_sha256=proof_sha256,
+                                         original_transaction_sha256=original_transaction_sha256)
+
+    def reconcile_late_fee(self, *, recovery: Any, proof_sha256: str) -> Any:
+        """Explicit cash-only late-fee gate for the latest closed exact intent.
+
+        Requires DISARMED or this gate's own held state. It never arms or
+        records another Risk execution; incomplete evidence retains the hold.
+        """
+        from .exact_late_fee import reconcile_late_fee
+        return reconcile_late_fee(self, recovery=recovery, proof_sha256=proof_sha256)
+
+    def record_exact_cash_components(self, *, expected_proof_sha256: str | None = None) -> Any:
+        """Record verified full-fill cash components; do not reconcile the order.
+
+        Explicit recovery substep, never invoked by dispatch or LEGACY recovery.
+        The exact pending guard remains closed even after successful recording.
+        """
+        from .exact_cash_settlement import record_exact_cash_components
+
+        return record_exact_cash_components(self, expected_proof_sha256=expected_proof_sha256)
+
     def inspect_blocking_order(self) -> SandboxInspectionResult:
         blocker = self.manager.state().blocking_intent
         if blocker is None:
@@ -886,6 +989,8 @@ class SandboxExecutionAdapter:
                 retryable=False,
                 error="CENTRAL_CHANGED",
             )
+        if blocker.cl7_locked_dispatch_proof is not None:
+            return self._inspect_exact_order(blocker)
         try:
             response = self.transport.get_order_state(
                 self.policy.account_id,
@@ -952,6 +1057,103 @@ class SandboxExecutionAdapter:
             ),
             execution_price_rub=price,
             execution_price_source=price_source,
+        )
+
+    def _inspect_exact_order(
+        self, blocker: CentralOrderIntent,
+    ) -> SandboxInspectionResult:
+        """One bounded read, with optimistic custody checks; never a settlement.
+
+        The CLI may already hold the authority lock. Read the protected record
+        without acquiring that lock again, and reject a changed snapshot. These
+        observations are not a lease for any later mutation or authority clear.
+        """
+        try:
+            own_policy = self.cl7_own_funds_policy
+            if own_policy is None or own_policy.account_id != self.policy.account_id:
+                raise ExactOrderReceiptError("EXACT_RECEIPT_METADATA_UNAVAILABLE")
+            own_policy.binding_guard()
+            instrument = own_policy.instruments.get(blocker.candidate.instrument_id)
+            validate_exact_receipt_binding(
+                blocker, account_id=self.policy.account_id,
+                identity_key=self.cl7_identity_key,
+                identity_key_id=self.cl7_identity_key_id, instrument=instrument,
+            )
+            authority = self.cash_authority_manager.store._load_unlocked(
+                allow_missing_legacy=False,
+            )
+            central = self.manager.state()
+            if (authority.state is not RuntimeCashAuthorityState.EXACT_CASH_DISPATCH_PENDING
+                    or central.blocking_intent != blocker
+                    or self.cash_authority_manager._recovery_intent_from_state(
+                        authority, central, identity_key=self.cl7_identity_key,
+                    ) != blocker):
+                raise ExactOrderReceiptError("EXACT_RECEIPT_CUSTODY_MISMATCH")
+            started, started_at = self.cl7_monotonic_ns(), self.cl7_clock()
+            if type(started) is not int or started < 0:
+                raise ExactOrderReceiptError("EXACT_RECEIPT_CLOCK_INVALID")
+            start_wall = _cl7_timestamp_ns(started_at)
+            try:
+                raw = self.transport.get_order_state(
+                    self.policy.account_id, blocker.intent_id, by_request_id=True,
+                )
+            except TBankAPIError as exc:
+                return SandboxInspectionResult(
+                    status=("NOT_FOUND_UNCERTAIN" if exc.status_code == 404
+                            and not exc.transient else "INSPECTION_UNAVAILABLE"),
+                    intent_id=blocker.intent_id, retryable=True,
+                    error="EXACT_RECEIPT_READ_UNAVAILABLE",
+                    reconciliation_block_reason="EXACT_SETTLEMENT_REQUIRED",
+                )
+            except Exception:  # noqa: BLE001 - never surface private provider diagnostics
+                return SandboxInspectionResult(
+                    status="INSPECTION_UNAVAILABLE", intent_id=blocker.intent_id,
+                    retryable=True, error="EXACT_RECEIPT_READ_UNAVAILABLE",
+                    reconciliation_block_reason="EXACT_SETTLEMENT_REQUIRED",
+                )
+            finished, observed_at = self.cl7_monotonic_ns(), self.cl7_clock()
+            if (type(finished) is not int or not 0 <= finished - started <= MAX_AGE_NS
+                    or not 0 <= _cl7_timestamp_ns(observed_at) - start_wall <= MAX_AGE_NS):
+                raise ExactOrderReceiptError("EXACT_RECEIPT_READ_STALE")
+            receipt = decode_exact_order_receipt(
+                raw, blocker, account_id=self.policy.account_id,
+                identity_key=self.cl7_identity_key,
+                identity_key_id=self.cl7_identity_key_id, instrument=instrument,
+                observed_at=observed_at,
+            )
+            own_policy.binding_guard()
+            if (self.manager.state() != central
+                    or self.cash_authority_manager.store._load_unlocked(
+                        allow_missing_legacy=False,
+                    ) != authority
+                    or self.cl7_own_funds_policy is not own_policy
+                    or own_policy.instruments.get(blocker.candidate.instrument_id) != instrument):
+                raise ExactOrderReceiptError("EXACT_RECEIPT_CUSTODY_CHANGED")
+            completed = self.cl7_monotonic_ns()
+            if (type(completed) is not int or not finished <= completed
+                    or not 0 <= completed - started <= MAX_AGE_NS
+                    or not 0 <= _cl7_timestamp_ns(self.cl7_clock()) - start_wall <= MAX_AGE_NS):
+                raise ExactOrderReceiptError("EXACT_RECEIPT_READ_STALE")
+            average = receipt.average_price_rub
+            return SandboxInspectionResult(
+                status="ORDER_OBSERVED", intent_id=blocker.intent_id,
+                broker_order_id=raw["orderId"], provider_status=receipt.provider_status,
+                executed_lots=receipt.executed_lots, terminal=receipt.terminal,
+                # Compatibility/display field only. Exact economics remain in
+                # integer/rational form; no float is booked into CashLedger.
+                execution_price_rub=None if average is None else float(average),
+                execution_price_source=None if average is None else "GET_ORDER_STATE_STAGES",
+                exact_receipt=receipt,
+                reconciliation_block_reason="EXACT_SETTLEMENT_REQUIRED",
+            )
+        except ExactOrderReceiptError as exc:
+            error = str(exc)
+        except Exception:  # noqa: BLE001 - includes custody and metadata provider failures
+            error = "EXACT_RECEIPT_DEPENDENCY_FAILED"
+        return SandboxInspectionResult(
+            status="INSPECTION_UNCERTAIN", intent_id=blocker.intent_id,
+            retryable=True, error=error,
+            reconciliation_block_reason="EXACT_SETTLEMENT_REQUIRED",
         )
 
     def _market_precheck(
@@ -1081,6 +1283,11 @@ def _cl7_reserved_cash(intent: CentralOrderIntent):
 
 
 def _require_cl7_proof_fresh(proof: LockedDispatchProof, now: str) -> None:
+    if proof.own_funds_evidence is not None:
+        try:
+            proof.own_funds_evidence.check_age(now)
+        except OwnFundsError:
+            raise CL7RuntimeError(CL7RuntimeReason.CONTEXT_STALE) from None
     evaluated = _cl7_timestamp_ns(proof.evaluated_at)
     current = _cl7_timestamp_ns(now)
     if evaluated > current or current - evaluated > 10_000_000_000:

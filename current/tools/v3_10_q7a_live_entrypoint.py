@@ -57,6 +57,8 @@ from trading_robot.multi_instrument_strategy import (
     build_strategy_proposal,
 )
 from trading_robot.portfolio_repository import PortfolioRepository
+from trading_robot.portfolio_risk_adapter import PortfolioRiskInstrumentMetadata
+from trading_robot.portfolio_risk_read_service import load_portfolio_risk_metadata
 from trading_robot.runtime_cash_authority import RuntimeCashAuthorityState
 from trading_robot.strategy_runtime import (
     compare_strategy_decisions,
@@ -162,6 +164,65 @@ _POST_MARKER_GUI_REASONS = {
     "CYCLE_CLOCK_INVALID": "QUOTE_OR_METADATA_INVALID",
     "DECISION_AUDIT_UNAVAILABLE": "PROPOSAL_ADMISSION_BINDING_INVALID",
 }
+_ADMISSION_COMPONENTS = frozenset(
+    {
+        "VERIFY_ACTIVE_RUNTIME",
+        "Q7A_CONTROLLED_HOOKS",
+        "CENTRAL_ORDER_COORDINATOR",
+        "VALIDATE_ADMISSION",
+    }
+)
+_ADMISSION_STATUSES = frozenset(
+    {
+        "QUEUED",
+        "ACCOUNT_BLOCKED",
+        "CANONICAL_UNAVAILABLE",
+        "PREFLIGHT_BLOCKED",
+        "RISK_BLOCKED",
+        "NO_POSITION_CHANGE",
+        "CANCELLED_NO_POSITION_CHANGE",
+        "AUTHORIZATION_BLOCKED",
+        "CANONICAL_CHANGED",
+        "REAUTHORIZED",
+        "REPLACED",
+        "ALREADY_PROCESSED",
+        "PORTFOLIO_RISK_ADMISSION_UNAVAILABLE",
+        "PORTFOLIO_RISK_PRICE_UNAVAILABLE",
+        "PORTFOLIO_RISK_BLOCKED",
+        "PORTFOLIO_RISK_NO_POSITION_CHANGE",
+        "PORTFOLIO_RISK_CURRENCY_UNKNOWN",
+        "PORTFOLIO_RISK_ACCOUNT_MISMATCH",
+        "PORTFOLIO_RISK_METADATA_MISMATCH",
+        "PORTFOLIO_RISK_NOT_ENFORCED",
+        "PORTFOLIO_RISK_POLICY_CHANGED",
+        "PORTFOLIO_RISK_STATE_CHANGED",
+        "PORTFOLIO_RISK_CANONICAL_CHANGED",
+        "PORTFOLIO_RISK_RESERVATION_CHANGED",
+        "PORTFOLIO_RISK_QUEUE_CHANGED",
+        "PORTFOLIO_RISK_TIMESTAMP_INVALID",
+        "PORTFOLIO_RISK_REAUTHORIZATION_REQUIRED",
+        "PORTFOLIO_RISK_PROOF_MISMATCH",
+        "COORDINATION_REQUEST_INVALID",
+        "COORDINATION_REQUEST_STALE",
+        "QUOTE_NOT_FRESH",
+        "Q7A_ADMISSION_REQUEST_INVALID",
+        "Q7A_PROPOSAL_DRIFT",
+        "Q7A_PRIVATE_PROPOSAL_DRIFT",
+        "Q7A_ADMISSION_BINDING_INVALID",
+        "PROPOSAL_MARKER_INVALID",
+    }
+)
+_UNRECOGNIZED_ADMISSION_STATUS = "UNRECOGNIZED_STATUS"
+
+
+def _admission_status_from_result(result: object) -> str:
+    if type(result) is CentralOrderCoordinationResult:
+        value = result.status
+        if type(value) is str and value in _ADMISSION_STATUSES:
+            return value
+    return _UNRECOGNIZED_ADMISSION_STATUS
+
+
 _CANDLE_VALIDATION_REASONS = {
     "FRAME": frozenset(
         {
@@ -1859,6 +1920,8 @@ class LiveOwners:
     controlled_proposal_box: dict[str, StrategyProposal]
     verify_active_runtime: Callable[[], ConfiguredExecutionSet]
     pre_admission_checkpoint: str = "BEFORE_PROPOSAL_MARKER"
+    admission_component: str | None = None
+    admission_result: CentralOrderCoordinationResult | None = None
 
 
 def execute_economic_smoke(owners: LiveOwners) -> dict[str, Any]:
@@ -2090,12 +2153,18 @@ def execute_economic_smoke(owners: LiveOwners) -> dict[str, Any]:
     if owners.clock() > gate_a_deadline:
         _fail("LIVE_EVIDENCE_EXPIRED_BEFORE_ADMISSION")
     owners.pre_admission_checkpoint = "CENTRAL_ADMISSION"
+    owners.admission_component = "VERIFY_ACTIVE_RUNTIME"
+    owners.admission_result = None
     owners.verify_active_runtime()
+    owners.admission_component = "Q7A_CONTROLLED_HOOKS"
     result = owners.q7a_hooks.coordinate_marked(
         coordinator=owners.coordinator,
         runtime=owners.runtime,
         request=request,
     )
+    owners.admission_component = "CENTRAL_ORDER_COORDINATOR"
+    owners.admission_result = result
+    owners.admission_component = "VALIDATE_ADMISSION"
     intent = validate_admission(
         result, coordinator=owners.coordinator, before_state=before
     )
@@ -2340,6 +2409,80 @@ def consume_preparation_once(path: Path, prep: LivePreparation) -> str:
         raise
 
 
+def _load_bound_risk_metadata(
+    path: Path,
+    *,
+    expected_raw: bytes,
+) -> dict[str, PortfolioRiskInstrumentMetadata]:
+    """Bind the existing metadata loader to the exact Preparation-pinned bytes.
+
+    The loader verifies its normal checksum/schema. Comparing its normalized
+    result with the pinned payload also rejects a read-time A/B/A substitution;
+    before/after file equality alone would not establish that binding.
+    """
+
+    reason = "QUOTE_OR_METADATA_INVALID"
+    checksum_path = path.with_name(path.name + ".sha256")
+    checksum_raw = _read_exact(checksum_path, reason)
+    if _read_exact(path, reason) != expected_raw:
+        _fail(reason)
+    try:
+        if checksum_raw.decode("ascii").strip().lower() != _sha256(expected_raw):
+            _fail(reason)
+        fields = json.loads(expected_raw, object_pairs_hook=_unique_metadata_object)
+        if (
+            type(fields) is not dict
+            or set(fields) != {"version", "instruments"}
+            or type(fields["version"]) is not int
+            or fields["version"] != 1
+            or type(fields["instruments"]) is not list
+        ):
+            _fail(reason)
+        pinned: dict[str, PortfolioRiskInstrumentMetadata] = {}
+        for row in fields["instruments"]:
+            if (
+                type(row) is not dict
+                or set(row) - {"instrument_id", "lot_size", "asset_class", "currency"}
+                or type(row.get("instrument_id")) is not str
+                or not row["instrument_id"].strip()
+                or type(row.get("lot_size")) is not int
+                or row["lot_size"] <= 0
+                or type(row.get("currency")) is not str
+                or not row["currency"].strip()
+                or (
+                    row.get("asset_class") is not None
+                    and type(row["asset_class"]) is not str
+                )
+            ):
+                _fail(reason)
+            item = PortfolioRiskInstrumentMetadata(**row)
+            if item.instrument_id in pinned:
+                _fail(reason)
+            pinned[item.instrument_id] = item
+        metadata = load_portfolio_risk_metadata(path)
+        if not pinned or metadata != pinned:
+            _fail(reason)
+    except Q7ALiveError:
+        raise
+    except (OSError, RuntimeError, TypeError, ValueError):
+        _fail(reason)
+    if (
+        _read_exact(path, reason) != expected_raw
+        or _read_exact(checksum_path, reason) != checksum_raw
+    ):
+        _fail(reason)
+    return metadata
+
+
+def _unique_metadata_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            _fail("QUOTE_OR_METADATA_INVALID")
+        result[key] = value
+    return result
+
+
 def _compose_live_owners(args: argparse.Namespace, prep: LivePreparation) -> LiveOwners:
     """Materialize the accepted existing owner graph after all public checks."""
 
@@ -2439,6 +2582,21 @@ def _compose_live_owners(args: argparse.Namespace, prep: LivePreparation) -> Liv
     )
     if binding is None:
         _fail("TARGET_NOT_MEMBER")
+    # Preserve the established inactive-runtime/identity gate precedence before
+    # constructing the authoritative metadata-bound Risk/execution adapter.
+    metadata = _load_bound_risk_metadata(args.metadata, expected_raw=metadata_raw)
+    configured_instruments = {
+        item.runtime.config.instrument_id for item in configured.bindings
+    }
+    selected_metadata = metadata.get(target)
+    if (
+        set(metadata) != configured_instruments
+        or selected_metadata is None
+        or selected_metadata.currency != "RUB"
+        or type(control_fields.get("target_lot_size")) is not int
+        or selected_metadata.lot_size != control_fields["target_lot_size"]
+    ):
+        _fail("QUOTE_OR_METADATA_INVALID")
     provider = ProviderEvidenceAdapter(
         live.provider,
         target_instrument_id=target,
@@ -2449,7 +2607,7 @@ def _compose_live_owners(args: argparse.Namespace, prep: LivePreparation) -> Liv
     )
     live.provider = provider
     live.portfolio_manager.api = provider
-    adapter = live.adapter()
+    adapter = live.adapter(instrument_metadata=metadata)
     coordinator = CentralOrderCoordinator(
         live.central,
         live.portfolio,
@@ -2529,6 +2687,19 @@ def _write_terminal_blocked(
         terminal["dependency_reason"] = dependency_reason
     if owners is not None:
         checkpoint = getattr(owners, "pre_admission_checkpoint", None)
+        if type(checkpoint) is str and checkpoint == "CENTRAL_ADMISSION":
+            component = getattr(owners, "admission_component", None)
+            terminal["admission_component"] = (
+                component
+                if type(component) is str and component in _ADMISSION_COMPONENTS
+                else "VERIFY_ACTIVE_RUNTIME"
+            )
+            terminal["admission_status"] = (
+                _admission_status_from_result(getattr(owners, "admission_result", None))
+                if terminal["admission_component"]
+                in {"CENTRAL_ORDER_COORDINATOR", "VALIDATE_ADMISSION"}
+                else _UNRECOGNIZED_ADMISSION_STATUS
+            )
         try:
             central = owners.coordinator.manager.state()
             intents = tuple(central.intents)
