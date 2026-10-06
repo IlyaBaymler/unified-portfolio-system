@@ -290,3 +290,102 @@ def test_workflow_pins_every_checkout_to_pr_head_sha():
     # A pull_request workflow must not silently execute against refs/pull/*/merge.
     for block in body.split(checkout)[1:]:
         assert pinned in block.split("- uses:", 1)[0]
+
+
+def test_duration_lpt_reduces_concentration_and_preserves_every_id():
+    nodes = [f"tests/test_weighted.py::test_{i:02d}" for i in range(32)]
+    weights = {node: 100000 if index % 8 == 0 else 1000 for index, node in enumerate(nodes)}
+    old = [nodes[index::8] for index in range(8)]
+    new = diag.weighted_partition(nodes, 8, weights)
+    cost = lambda group: sum(weights[node] for node in group)
+    assert max(map(cost, new)) < max(map(cost, old)) / 3
+    assert sorted(node for group in new for node in group) == nodes
+    assert new == diag.weighted_partition(nodes[::-1], 8, dict(reversed(list(weights.items()))))
+
+
+@pytest.mark.parametrize("damage", ["zero", "negative", "float", "bool", "missing", "extra", "duplicate_id"])
+def test_duration_weights_fail_closed(damage):
+    nodes = ["test_weighted.py::test_a", "test_weighted.py::test_b"]
+    weights = dict.fromkeys(nodes, 1000)
+    if damage in {"zero", "negative", "float", "bool"}:
+        weights[nodes[0]] = {"zero": 0, "negative": -1, "float": 1.0, "bool": True}[damage]
+    elif damage == "missing":
+        del weights[nodes[0]]
+    elif damage == "extra":
+        weights["test_other.py::test_extra"] = 1000
+    else:
+        nodes.append(nodes[0])
+    with pytest.raises(ValueError):
+        diag.weighted_partition(nodes, 2, weights)
+
+
+@pytest.mark.parametrize("damage", ["source", "run", "attempt", "schema", "record", "zero_weight"])
+def test_frozen_profile_rejects_mutation_and_mixed_evidence(damage):
+    profile = diag.timing_profile()
+    if damage == "source": profile["source"]["head"] = "0" * 40
+    if damage == "run": profile["source"]["run_id"] = "another-run"
+    if damage == "attempt": profile["source"]["run_attempt"] = "2"
+    if damage == "schema": profile["schema"] = "MUTABLE_CACHE"
+    if damage == "record": profile["records"][0] = ["malformed"]
+    if damage == "zero_weight": profile["records"][0][1] = 0
+    with pytest.raises(ValueError, match="timing profile integrity"):
+        diag.validate_timing_profile(profile)
+
+
+def test_unknown_duration_uses_conservative_bound_and_not_an_outcome():
+    node = "tests/test_unseen_module.py::test_unknown"
+    profile = diag.timing_profile()
+    values = sorted(row[1] for row in profile["records"])
+    percentile = values[(99 * len(values) + 99) // 100 - 1]
+    assert diag.planning_weights([node])[node] == (3 * percentile + 1) // 2 + 2000
+    assert profile["outcomes_used"] is False
+    assert not any("passed" in row or "failed" in row for row in profile["records"])
+
+
+def test_identical_input_has_byte_identical_canonical_plan(sample):
+    root, evidence = sample
+    (root / "test_sample.py").write_text("def test_a(): pass\ndef test_b(): pass\n")
+    first = diag.collect(root, evidence / "first", 2, source_only=True)
+    second = diag.collect(root, evidence / "second", 2, source_only=True)
+    assert first == second
+    assert (evidence / "first/plan.json").read_bytes() == (evidence / "second/plan.json").read_bytes()
+
+
+@pytest.mark.parametrize("damage", ["duplicate", "extra", "missing_phase", "junit_disagreement", "interrupt"])
+def test_rehashed_execution_evidence_damage_is_not_green(sample, damage):
+    plan = make_plan(sample, "def test_a(): pass\n", shards=1)
+    assert run_all(sample, plan)["success"]
+    folder = sample[1] / "shard-0/batch-0000"
+    rows = diag.events(folder)
+    receipt = diag.read_json(folder / "exit.json")
+    if damage == "duplicate":
+        rows.append(next(row for row in rows if row["kind"] == "start"))
+    elif damage == "extra":
+        rows.append({"kind": "start", "nodeid": "test_other.py::test_extra"})
+    elif damage == "missing_phase":
+        rows = [row for row in rows if not (row["kind"] == "phase" and row["when"] == "teardown")]
+    elif damage == "junit_disagreement":
+        xml = folder / "junit.xml"
+        tree = diag.ET.parse(xml)
+        case = next(tree.iter("testcase"))
+        case.append(diag.ET.Element("failure", {"message": "synthetic mismatch"}))
+        tree.write(xml, encoding="utf-8")
+        receipt["junit.xml_sha256"] = diag.hashlib.sha256(xml.read_bytes()).hexdigest()
+    else:
+        rows = [row for row in rows if row["kind"] != "session_finish"]
+        receipt["returncode"] = 2
+    (folder / "events.jsonl").write_bytes(b"".join(diag.canonical(row) + b"\n" for row in rows))
+    receipt["events.jsonl_sha256"] = diag.hashlib.sha256((folder / "events.jsonl").read_bytes()).hexdigest()
+    diag.write_json(folder / "exit.json", receipt)
+    result = diag.aggregate(plan, sample[1])
+    assert not result["success"]
+    if damage == "junit_disagreement":
+        assert "JUnit/event identity or outcome disagreement" in diag.assess(folder, plan["nodeids"])["issues"]
+
+
+@pytest.mark.parametrize("budget,timeout", [(2101, 1200), (2100, 1201), (float("nan"), 1200)])
+def test_existing_execution_bounds_cannot_be_enlarged(sample, budget, timeout):
+    plan = make_plan(sample, "def test_a(): pass\n", shards=1)
+    with pytest.raises(ValueError, match="unchanged 2100/1200"):
+        diag.run_shard(sample[0], plan, 0, sample[1] / "forbidden", budget=budget, batch_timeout=timeout)
+    assert not (sample[1] / "forbidden").exists()

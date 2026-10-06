@@ -18,6 +18,8 @@ jobs:
     name: Independent Windows test collection
     runs-on: windows-latest
     timeout-minutes: 15
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
     defaults:
       run:
         shell: pwsh
@@ -45,11 +47,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip check
           exit $LASTEXITCODE
-      - name: Collect every default test and freeze eight partitions
+      - name: Collect every default test and freeze evidence-weighted partitions
+        id: plan
         working-directory: current
         run: |
-          python -B tools/q7a_ci_diagnostics.py collect --out "$env:RUNNER_TEMP/q7a-plan" --shards 8
-          exit $LASTEXITCODE
+          python -B tools/q7a_ci_diagnostics.py collect --out "$env:RUNNER_TEMP/q7a-plan" --shards 32
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $plan = Get-Content -LiteralPath "$env:RUNNER_TEMP/q7a-plan/plan.json" -Raw | ConvertFrom-Json
+          $indices = @(0..($plan.partitions.Count - 1)) | ConvertTo-Json -Compress
+          "shards=$indices" >> $env:GITHUB_OUTPUT
       - name: Preserve the plan, even when collection failed
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -66,7 +72,7 @@ jobs:
           retention-days: 14
 
   regression:
-    name: Windows shard ${{ matrix.shard }} / 8
+    name: Windows duration-aware shard ${{ matrix.shard }}
     needs: collect
     runs-on: windows-latest
     timeout-minutes: 45
@@ -74,7 +80,7 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: ${{ fromJSON(needs.collect.outputs.shards) }}
     defaults:
       run:
         shell: pwsh
@@ -146,7 +152,7 @@ jobs:
         with:
           pattern: q7a-${{ github.run_attempt }}-*
           path: ${{ runner.temp }}/q7a-artifacts
-      - name: Require the entire collection, all eight shards and actual phase evidence
+      - name: Require the entire collection, all planned shards and actual phase evidence
         working-directory: current
         env:
           ARTIFACTS: ${{ runner.temp }}/q7a-artifacts
