@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-import time
 
 import numpy as np
 import pandas as pd
 
+from trading_robot import __version__
 from trading_robot.bot import BotConfig, SandboxTradingBot
 from trading_robot.journal import EventJournal
 from trading_robot.logging_setup import redact_sensitive_text
@@ -164,7 +165,9 @@ def test_cycle_has_timing_session_and_decision_is_not_an_order(tmp_path: Path):
     bot.end_session("test_complete")
     sessions = journal.recent(category="session")
     assert {row["event_type"] for row in sessions} == {"STARTED", "STOPPED"}
-    assert all(row["payload"]["software_version"] == "0.3.9" for row in sessions)
+    assert __version__ == "0.3.10"
+    assert len(sessions) == 2
+    assert all(row["payload"]["software_version"] == __version__ for row in sessions)
 
 
 def test_recovered_retry_is_structured_and_aggregated_into_cycle(tmp_path: Path):

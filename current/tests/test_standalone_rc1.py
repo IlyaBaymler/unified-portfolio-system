@@ -215,7 +215,8 @@ def test_standalone_sources_are_present_and_use_portable_environment():
     launcher = (root / "portable_launcher.bat").read_text(encoding="utf-8")
     assert "desktop_gui.py" in spec
     assert "MOEXResearchRobot" in spec
-    assert "V3_9_0_STABLE_RECOVERY_RUNBOOK_RU.md" in spec
+    assert "V3_10_0_STABLE_RECOVERY_RUNBOOK_RU.md" in spec
+    assert "V3_9_0_STABLE_RECOVERY_RUNBOOK_RU.md" not in spec
     assert "V3_7_0_STABLE_RECOVERY_RUNBOOK_RU.md" not in spec
     assert "V3_7_BETA1_RECOVERY_RUNBOOK_RU.md" not in spec
     assert "V3_7_ALPHA3_RECOVERY_RUNBOOK_RU.md" not in spec
