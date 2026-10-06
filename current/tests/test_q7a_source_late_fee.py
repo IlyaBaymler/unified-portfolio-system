@@ -176,7 +176,7 @@ def test_missing_fee_can_arrive_later_under_existing_hold(exact_case):
 
 
 @pytest.mark.parametrize('damage',['alias','receipt','plan_delete','plan_tamper','second_fee'])
-def test_replay_never_rebooks_renamed_or_changed_fee(exact_case,damage):
+def test_replay_never_rebooks_renamed_or_changed_fee(exact_case,damage,request):
     from trading_robot.exact_late_fee import ExactLateFeeError
     x=exact_case;intent,raw,trade,fee,proof=_setup(x)
     _late(x,proof)
@@ -192,7 +192,18 @@ def test_replay_never_rebooks_renamed_or_changed_fee(exact_case,damage):
         else:
             doc=json.loads(path.read_bytes());doc['payload']['match']['delta_nano']='1';path.write_text(json.dumps(doc))
     with pytest.raises(ExactLateFeeError):_late(x,proof)
-    assert _snapshot(x)==saved
+    after=_snapshot(x)
+    assert after[1:]==saved[1:]
+    assert all(after[0][k]==saved[0][k] for k in ('portfolio','risk','central'))
+    if damage in {'alias','receipt','second_fee'}:
+        authority=x.c.execution_adapter.cash_authority_manager.status()
+        assert authority.state is RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING
+        assert authority.transition_kind=='LATE_FEE_REVIEW_HELD'
+        assert authority.pending_dispatch_proof_sha256==proof
+    else:
+        # A deleted or unauthenticated plan grants no quarantine authority.
+        assert after==saved
+    request.node.user_properties.append(('c1_new_post_calls',x.p.order_calls-saved[2]))
 
 
 @pytest.mark.parametrize('damage',['wrong_proof','armed','risk','portfolio','closure_missing','config'])
@@ -387,3 +398,311 @@ def test_gui_tick_cannot_refresh_trade_or_mutate_during_fee_hold(exact_case):
     saved=_snapshot(x);calls=x.p.candle_calls,x.p.quote_calls,x.p.order_calls
     with pytest.raises(GuiRuntimeBlockedError,match='RECOVERY_REQUIRED'):x.c.run_cycle()
     assert _snapshot(x)==saved and calls==(x.p.candle_calls,x.p.quote_calls,x.p.order_calls)
+
+
+def _c1_completed(x):
+    intent,raw,trade,fee,proof=_setup(x,days=0)
+    result=_late(x,proof)
+    assert result.appended_transactions==1 and not result.replay
+    return intent,raw,trade,fee,proof
+
+
+def _c1_economic_bytes(x):
+    a=x.c.execution_adapter
+    return (x.manager.repository.path.read_bytes(),a.risk_runtime.state_store.path.read_bytes(),
+            a.manager.store.path.read_bytes(),a.cl7_ledger_store.export_bytes())
+
+
+def _c1_blocked_routes(x,proof,monkeypatch,request):
+    from trading_robot.broker_read_adapters import RetryPolicy
+    from trading_robot.gui_runtime_controller import GuiRuntimeBlockedError
+    from trading_robot.runtime_cash_authority import CL7RuntimeError
+    a=x.c.execution_adapter;m=a.cash_authority_manager
+    before=_c1_economic_bytes(x);authority=m.status();calls=[];reads=[]
+    assert authority.transition_kind=='LATE_FEE_REVIEW_HELD'
+    assert authority.pending_dispatch_proof_sha256==proof
+    def physical_post(*args,**kwargs):
+        calls.append((args,kwargs))
+        raise AssertionError('A quarantined account reached the physical POST boundary')
+    def operation_read(*args):
+        reads.append(args)
+        raise AssertionError('A quarantined account entered generic synchronization')
+    with monkeypatch.context() as mp:
+        mp.setattr(x.p,'post_order_once',physical_post)
+        with pytest.raises(CL7RuntimeError):
+            m.arm(raw_account_id=ACCOUNT,identity_key=a.cl7_identity_key,identity_key_id=a.cl7_identity_key_id,
+                  confirmation=m.ARM_PHRASE,transition_at=a.cl7_clock())
+        with pytest.raises(CL7RuntimeError):m.sync_runtime(**x.inputs)
+        with pytest.raises(CL7RuntimeError):
+            m.synchronize_operations(ledger_store=a.cl7_ledger_store,raw_account_id=ACCOUNT,
+                identity_key=a.cl7_identity_key,identity_key_id=a.cl7_identity_key_id,
+                sync_to_exclusive=a.cl7_clock(),transport=operation_read,monotonic_ns=a.cl7_monotonic_ns,
+                wait_ns=a.cl7_wait_ns,absolute_deadline_ns=10**9,retry_policy=RetryPolicy(1,10**9,()),
+                transition_at=a.cl7_clock())
+        # Use the shipped account-level SELL entrypoint, not a replacement
+        # verdict. Both this route and direct native dispatch must refuse POST.
+        x.p.target=0;x.c.set_connected(True);x.c.set_market_state('OPEN')
+        with pytest.raises(GuiRuntimeBlockedError,match='RECOVERY_REQUIRED'):x.c.run_cycle()
+        result=a.dispatch_next(x.manager.repository)
+        assert result.status!='SUBMITTED'
+    assert calls==[] and reads==[]
+    assert _c1_economic_bytes(x)==before and m.status()==authority
+    request.node.user_properties.extend([('c1_new_post_calls',len(calls)),
+        ('c1_generic_sync_reads',len(reads)),('c1_no_rebook',True),('c1_PRC_unchanged',True)])
+
+
+@pytest.mark.parametrize('restart',[False,True])
+@pytest.mark.parametrize('damage',['unknown_commission','changed_commission','unknown_service','exchange',
+    'trade_id','fee_missing','fee_parent','fee_amount','cash_mismatch','timeout','incomplete','clock_regression','clock_unavailable'])
+def test_c1_authenticated_replay_quarantine_blocks_every_route(exact_case,desktop_case,monkeypatch,request,damage,restart):
+    from trading_robot.exact_late_fee import ExactLateFeeError
+    x=exact_case;intent,raw,trade,fee,proof=_c1_completed(x)
+    a=x.c.execution_adapter;done=a.cash_authority_manager.status();before=_c1_economic_bytes(x)
+    clean_raw,clean_operations,clean_wallet=deepcopy(raw),deepcopy(x.operations),x.p.wallet_rub
+    get_state,collect=x.p.get_order_state,x.p.get_operations_by_cursor_once
+    if damage=='unknown_commission':raw.pop('executedCommission')
+    elif damage=='changed_commission':raw['executedCommission']=money('0.2')
+    elif damage=='unknown_service':raw.pop('serviceCommission')
+    elif damage=='exchange':raw['orderId']='OTHER_EXCHANGE'
+    elif damage=='trade_id':raw['stages'][0]['tradeId']='OTHER_TRADE'
+    elif damage=='fee_missing':x.operations.remove(fee)
+    elif damage=='fee_parent':fee['parentOperationId']='OTHER_PARENT'
+    elif damage=='fee_amount':fee['payment']=money('-0.02')
+    elif damage=='cash_mismatch':x.p.wallet_rub-=Decimal('0.01')
+    elif damage=='timeout':
+        def unavailable(*args,**kwargs):raise TimeoutError('SYNTHETIC')
+        monkeypatch.setattr(x.p,'get_order_state',unavailable)
+    elif damage=='incomplete':
+        monkeypatch.setattr(x.p,'get_operations_by_cursor_once',lambda *_:{'hasNext':True,'items':x.operations,'nextCursor':''})
+    old_clock=a.cl7_clock
+    if damage=='clock_regression':a.cl7_clock=lambda:'2000-01-01T00:00:00.000000000Z'
+    elif damage=='clock_unavailable':
+        def broken_clock():raise RuntimeError('SYNTHETIC')
+        a.cl7_clock=broken_clock
+    posts=x.p.order_calls
+    with pytest.raises(ExactLateFeeError):_late(x,proof)
+    a.cl7_clock=old_clock
+    held=a.cash_authority_manager.status()
+    assert held.state is RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING
+    assert held.transition_kind=='LATE_FEE_REVIEW_HELD' and held.pending_dispatch_proof_sha256==proof
+    assert held.previous_record_sha256==done.sha256 and held.record_revision==done.record_revision+1
+    from dataclasses import fields
+    for field in fields(type(done)):
+        if field.name not in {'state','transition_kind','transition_at','record_revision','previous_record_sha256','pending_dispatch_proof_sha256'}:
+            assert getattr(held,field.name)==getattr(done,field.name)
+    assert _c1_economic_bytes(x)==before and x.p.order_calls-posts==0
+    if restart:
+        old_adapter=a;_recompose(x,desktop_case)
+        assert x.c.execution_adapter is not old_adapter
+        assert x.c.execution_adapter.cash_authority_manager.store is not old_adapter.cash_authority_manager.store
+        assert x.c.execution_adapter.cash_authority_manager.status()==held
+    _c1_blocked_routes(x,proof,monkeypatch,request)
+    # Even restored broker evidence cannot implicitly resolve a review hold.
+    raw.clear();raw.update(clean_raw);x.operations[:]=clean_operations;x.p.wallet_rub=clean_wallet
+    monkeypatch.setattr(x.p,'get_order_state',get_state)
+    monkeypatch.setattr(x.p,'get_operations_by_cursor_once',collect)
+    state=x.c.execution_adapter.cash_authority_manager.status()
+    for _ in range(2):
+        with pytest.raises(ExactLateFeeError):_late(x,proof)
+        assert x.c.execution_adapter.cash_authority_manager.status()==state
+    assert _c1_economic_bytes(x)==before and x.p.order_calls-posts==0
+    request.node.user_properties.extend([('c1_restart_fresh_objects',restart),('c1_review_hold_survived',True),
+        ('c1_total_setup_post_calls',posts)])
+
+
+@pytest.mark.parametrize('restart',[False,True])
+def test_c1_exact_completed_replay_preserves_bytes_and_disarmed_authority(exact_case,desktop_case,request,restart):
+    x=exact_case;intent,raw,trade,fee,proof=_c1_completed(x)
+    before=_snapshot(x);done=x.c.execution_adapter.cash_authority_manager.status()
+    if restart:_recompose(x,desktop_case)
+    x.advance();result=_late(x,proof)
+    assert result.replay and result.appended_transactions==0
+    assert _snapshot(x)==before and x.c.execution_adapter.cash_authority_manager.status()==done
+    request.node.user_properties.extend([('c1_new_post_calls',x.p.order_calls-before[2]),('c1_no_rebook',True),
+        ('c1_valid_replay_disarmed',True),('c1_restart_fresh_objects',restart)])
+
+
+@pytest.mark.parametrize('damage',['wrong_proof','plan_hmac','plan_deleted','signed_delta','signed_watermark',
+    'signed_proof','closure_hmac','cash_hmac','portfolio','risk','central','config','ledger','armed'])
+def test_c1_unauthenticated_or_foreign_custody_cannot_quarantine(exact_case,request,damage):
+    from trading_robot.exact_late_fee import ExactLateFeeError
+    from trading_robot.exact_cash_settlement import _seal
+    x=exact_case;intent,raw,trade,fee,proof=_c1_completed(x);a=x.c.execution_adapter
+    root=a.manager.store.path.parent
+    plan=root/'exact_late_fee'/f'{proof}.json'
+    target=plan
+    if damage=='wrong_proof':proof='f'*64
+    elif damage=='plan_deleted':plan.unlink()
+    elif damage=='portfolio':
+        state=x.manager.repository.load(expected_account_id=ACCOUNT)
+        x.manager.repository.save(replace(state,last_transaction_id='foreign'),expected_revision=state.revision,allow_equal_revision=True)
+    elif damage=='risk':
+        s=a.risk_runtime.state_store.load_account(ACCOUNT)
+        a.risk_runtime.state_store.save_account(ACCOUNT,replace(s,daily_order_count=s.daily_order_count+1))
+    elif damage=='central':
+        with a.manager.store.lock_path.open('ab'):pass
+        state=a.manager.state()
+        a.manager.store._save_unlocked(replace(state,revision=state.revision+1))
+    elif damage=='config':a.cl7_own_funds_policy=None
+    elif damage=='ledger':
+        with sqlite3.connect(a.cl7_ledger_store.root/'store.sqlite3') as conn:
+            # Unrelated, intact CL2 bytes are pinned before the call below;
+            # invalid persisted state may never authorize a quarantine write.
+            conn.execute('PRAGMA user_version=99')
+    elif damage=='armed':
+        m=a.cash_authority_manager
+        m.arm(raw_account_id=ACCOUNT,identity_key=a.cl7_identity_key,identity_key_id=a.cl7_identity_key_id,
+              confirmation=m.ARM_PHRASE,transition_at=a.cl7_clock())
+    else:
+        if damage=='closure_hmac':target=root/'exact_settlement_closure'/f'{proof}.json'
+        elif damage=='cash_hmac':target=root/'exact_cash_components'/f'{proof}.json'
+        doc=json.loads(target.read_bytes())
+        if damage=='signed_delta':doc['payload']['match']['delta_nano']='1'
+        elif damage=='signed_watermark':doc['payload']['watermark']['to_exclusive']='2027-01-01T12:00:11.000000000Z'
+        elif damage=='signed_proof':doc['payload']['proof_sha256']='f'*64
+        else:doc['hmac_sha256']='f'*64
+        if damage.startswith('signed_'):doc['hmac_sha256']=_seal(a.cl7_identity_key,doc['payload'])
+        target.write_text(json.dumps(doc))
+    raw.pop('executedCommission')
+    authority=a.cash_authority_manager.status()
+    files=(x.manager.repository.path,a.risk_runtime.state_store.path,a.manager.store.path,a.cl7_ledger_store.root/'store.sqlite3')
+    saved=[p.read_bytes() for p in files];posts=x.p.order_calls
+    with pytest.raises(ExactLateFeeError):_late(x,proof)
+    assert a.cash_authority_manager.status()==authority
+    assert [p.read_bytes() for p in files]==saved and x.p.order_calls-posts==0
+    request.node.user_properties.append(('c1_new_post_calls',x.p.order_calls-posts))
+
+
+@pytest.mark.parametrize('damage',['armed','dispatch_pending','unrelated_disarmed','wrong_proof','arm','reset_attempt',
+    'ledger_head','ledger_revision','watermark','account','key','activation','opening','clock'])
+def test_c1_review_transition_refuses_wrong_state_proof_or_custody(exact_case,request,damage):
+    from trading_robot.runtime_cash_authority import CL7RuntimeError,RuntimeCashAuthorityRecord,_transition_pair
+    x=exact_case;intent,raw,trade,fee,proof=_c1_completed(x);a=x.c.execution_adapter;m=a.cash_authority_manager
+    done=m.status();previous=done
+    if damage=='armed':previous=m._change(done,at=a.cl7_clock(),kind='ARM_EXACT',state=RuntimeCashAuthorityState.EXACT_CASH_ARMED)
+    elif damage=='dispatch_pending':
+        doc=json.loads((a.manager.store.path.parent/'exact_settlement_closure'/f'{proof}.json').read_bytes())
+        previous=RuntimeCashAuthorityRecord.from_canonical_dict(doc['payload']['before']['authority'])
+    elif damage=='unrelated_disarmed':previous=replace(done,transition_kind='DISARM_EXACT')
+    changes={'state':RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING,'pending_dispatch_proof_sha256':proof}
+    at=a.cl7_clock()
+    if damage=='wrong_proof':changes['pending_dispatch_proof_sha256']='f'*64
+    elif damage=='arm':changes['state']=RuntimeCashAuthorityState.EXACT_CASH_ARMED
+    elif damage=='reset_attempt':changes['post_attempt_count']=0
+    elif damage=='ledger_head':changes['ledger_head_sha256']='a'*64
+    elif damage=='ledger_revision':changes['ledger_revision']=done.ledger_revision+1
+    elif damage=='watermark':changes['operations_complete_through']='2027-01-01T12:00:11.000000000Z'
+    elif damage=='account':changes['account_scope_sha256']='a'*64
+    elif damage=='key':changes['identity_key_id']='OTHER_KEY'
+    elif damage=='activation':changes['activation_context_sha256']='a'*64
+    elif damage=='opening':changes['opening_record_sha256']='a'*64
+    elif damage=='clock':at='2000-01-01T00:00:00.000000000Z'
+    before=_c1_economic_bytes(x);posts=x.p.order_calls
+    with pytest.raises(CL7RuntimeError):
+        candidate=m._change(previous,at=at,kind='LATE_FEE_REVIEW_HELD',**changes)
+        _transition_pair(previous,candidate)
+        with m.store.locked():m.store._commit_unlocked(candidate,expected_revision=done.record_revision,expected_sha256=done.sha256)
+    assert m.status()==done and _c1_economic_bytes(x)==before and x.p.order_calls-posts==0
+    request.node.user_properties.append(('c1_new_post_calls',x.p.order_calls-posts))
+
+
+def test_c1_review_hold_has_no_implicit_adjustment_close_transition(exact_case,request):
+    from trading_robot.exact_late_fee import ExactLateFeeError
+    from trading_robot.runtime_cash_authority import CL7RuntimeError,_transition_pair
+    x=exact_case;intent,raw,trade,fee,proof=_c1_completed(x);a=x.c.execution_adapter;m=a.cash_authority_manager
+    raw.pop('executedCommission')
+    with pytest.raises(ExactLateFeeError):_late(x,proof)
+    held=m.status();before=_c1_economic_bytes(x);posts=x.p.order_calls
+    with pytest.raises(CL7RuntimeError):
+        candidate=m._change(held,at=a.cl7_clock(),kind='LATE_FEE_ADJUSTMENT_CLOSED_DISARMED',
+            state=RuntimeCashAuthorityState.EXACT_CASH_DISARMED,pending_dispatch_proof_sha256=None,
+            ledger_head_sha256='a'*64,ledger_revision=held.ledger_revision+1,
+            operations_complete_through='2027-01-01T12:00:11.000000000Z')
+        _transition_pair(held,candidate)
+    assert m.status()==held and _c1_economic_bytes(x)==before and x.p.order_calls-posts==0
+    request.node.user_properties.append(('c1_new_post_calls',x.p.order_calls-posts))
+
+
+def test_c1_committed_review_hold_survives_lost_return_and_fresh_restart(exact_case,desktop_case,monkeypatch,request):
+    from trading_robot.exact_late_fee import ExactLateFeeError
+    x=exact_case;intent,raw,trade,fee,proof=_c1_completed(x);a=x.c.execution_adapter
+    raw.pop('executedCommission');before=_c1_economic_bytes(x);commit=a.cash_authority_manager.store._commit_unlocked
+    with monkeypatch.context() as mp:
+        def lost_return(candidate,**kwargs):
+            result=commit(candidate,**kwargs)
+            if candidate.transition_kind=='LATE_FEE_REVIEW_HELD':raise RuntimeError('AFTER_REVIEW_COMMIT')
+            return result
+        mp.setattr(a.cash_authority_manager.store,'_commit_unlocked',lost_return)
+        with pytest.raises(ExactLateFeeError):_late(x,proof)
+    _recompose(x,desktop_case)
+    assert _c1_economic_bytes(x)==before
+    _c1_blocked_routes(x,proof,monkeypatch,request)
+    request.node.user_properties.append(('c1_restart_fresh_objects',True))
+
+
+@pytest.mark.parametrize('change',['authority','owner_graph'])
+def test_c1_stale_replay_cannot_redirect_quarantine_after_fresh_read(exact_case,monkeypatch,request,change):
+    from trading_robot.exact_late_fee import ExactLateFeeError
+    x=exact_case;intent,raw,trade,fee,proof=_c1_completed(x);a=x.c.execution_adapter;m=a.cash_authority_manager
+    raw.pop('executedCommission');before=_c1_economic_bytes(x);done=m.status();posts=x.p.order_calls
+    original=x.p.get_order_state;own=a.cl7_own_funds_policy;changed=[]
+    def drift(*args,**kwargs):
+        result=original(*args,**kwargs)
+        if not changed:
+            if change=='authority':
+                candidate=m._change(done,at=a.cl7_clock(),kind='ARM_EXACT',state=RuntimeCashAuthorityState.EXACT_CASH_ARMED)
+                changed.append(m.store._commit_unlocked(candidate,expected_revision=done.record_revision,expected_sha256=done.sha256))
+            else:
+                a.cl7_own_funds_policy=None;changed.append(done)
+        return result
+    monkeypatch.setattr(x.p,'get_order_state',drift)
+    with pytest.raises(ExactLateFeeError):_late(x,proof)
+    a.cl7_own_funds_policy=own
+    assert changed and m.status()==changed[0]
+    assert m.status().transition_kind!='LATE_FEE_REVIEW_HELD'
+    assert _c1_economic_bytes(x)==before and x.p.order_calls-posts==0
+    request.node.user_properties.append(('c1_new_post_calls',x.p.order_calls-posts))
+
+
+@pytest.fixture
+def c1_large_cash_case(desktop_case,monkeypatch,request):
+    # Independent synthetic opening cash, through the unchanged native fixture.
+    # This is a monetary amount, not an order quantity or fabricated proof.
+    x=refresh_case.__wrapped__(desktop_case,monkeypatch)
+    x.p.wallet_rub=Decimal('100000000000')
+    x.p.payload['totalAmountPortfolio']=money(x.p.wallet_rub)
+    x.p.payload['totalAmountCurrencies']=money(x.p.wallet_rub)
+    native=exact_case.__wrapped__(x,monkeypatch,request)
+    try:
+        yield next(native)
+    finally:
+        native.close()
+
+
+def test_c1_completed_replay_preserves_native_money_range(c1_large_cash_case,request):
+    x=c1_large_cash_case;a=x.c.execution_adapter
+    intent,raw,trade=_input(x,fee='0')
+    # _input's historical cash fixture starts with one million RUB; retain its
+    # genuine trade delta while restoring this test's independent opening cash.
+    x.p.wallet_rub+=Decimal('100000000000')-Decimal('1000000')
+    x.p.payload['positions']=[position(intent.candidate.target_lots)]
+    cash=_record(x);_close(x,cash.proof_sha256)
+    x.p.clock_at+=timedelta(days=1,seconds=1)
+    delta=Decimal('10000000000')
+    raw['executedCommission']=money(delta)
+    x.operations.append({'id':'PRIVATE_LARGE_ADDITIONAL_FEE','cursor':'PRIVATE_LARGE_CURSOR',
+        'brokerAccountId':ACCOUNT,'date':stamp(x.p.clock_at),'type':'OPERATION_TYPE_BROKER_FEE',
+        'state':'OPERATION_STATE_EXECUTED','quantity':'0','quantityDone':'0','quantityRest':'0',
+        'payment':money(-delta),'commission':money(0),'parentOperationId':trade['id'],
+        'instrumentUid':UID,'childOperations':[]})
+    x.p.wallet_rub-=delta;x.advance()
+    first=_late(x,cash.proof_sha256)
+    assert first.fee_delta_nano==10**19 and first.appended_transactions==1 and not first.replay
+    before=_snapshot(x);authority=a.cash_authority_manager.status();posts=x.p.order_calls
+    repeated=_late(x,cash.proof_sha256)
+    assert repeated.replay and repeated.appended_transactions==0 and repeated.fee_delta_nano==10**19
+    assert _snapshot(x)==before and a.cash_authority_manager.status()==authority
+    assert authority.state is RuntimeCashAuthorityState.EXACT_CASH_DISARMED
+    assert x.p.order_calls-posts==0
+    request.node.user_properties.extend([('c1_new_post_calls',0),('c1_replay_appends',0),
+        ('c1_native_money_delta_nano',str(first.fee_delta_nano))])

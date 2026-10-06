@@ -518,6 +518,7 @@ _TRANSITION_KINDS = frozenset(
         "FEE_REPLACEMENT_REVIEW_HELD",
         "LATE_FEE_ADJUSTMENT_HELD",
         "LATE_FEE_ADJUSTMENT_CLOSED_DISARMED",
+        "LATE_FEE_REVIEW_HELD",
         "VERSIONED_SOURCE_CUTOVER_HELD",
         "VERSIONED_SOURCE_SELECTED_DISARMED",
         "VERSIONED_SELECTED_SYNC_HELD",
@@ -1199,6 +1200,10 @@ def _transition_pair(
             {RuntimeCashAuthorityState.EXACT_CASH_DISARMED},
             RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING,
         ),
+        "LATE_FEE_REVIEW_HELD": (
+            {RuntimeCashAuthorityState.EXACT_CASH_DISARMED},
+            RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING,
+        ),
         "LATE_FEE_ADJUSTMENT_CLOSED_DISARMED": (
             {RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING},
             RuntimeCashAuthorityState.EXACT_CASH_DISARMED,
@@ -1354,6 +1359,7 @@ def _transition_pair(
             "ledger_revision", "operations_complete_through",
         },
         "LATE_FEE_ADJUSTMENT_HELD": {"pending_dispatch_proof_sha256"},
+        "LATE_FEE_REVIEW_HELD": {"pending_dispatch_proof_sha256"},
         "LATE_FEE_ADJUSTMENT_CLOSED_DISARMED": {
             "pending_dispatch_proof_sha256", "ledger_head_sha256",
             "ledger_revision", "operations_complete_through",
@@ -1481,7 +1487,8 @@ def _transition_pair(
                 or current.transition_at < previous.transition_at):
             _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
     if current.transition_kind == "LATE_FEE_ADJUSTMENT_CLOSED_DISARMED":
-        if (current.ledger_revision is None or previous.ledger_revision is None
+        if (previous.transition_kind != "LATE_FEE_ADJUSTMENT_HELD"
+                or current.ledger_revision is None or previous.ledger_revision is None
                 or current.ledger_revision != previous.ledger_revision + 1
                 or current.ledger_head_sha256 == previous.ledger_head_sha256
                 or current.operations_complete_through is None
@@ -1489,6 +1496,13 @@ def _transition_pair(
                 or not previous.operations_complete_through < current.operations_complete_through <= current.transition_at
                 or current.transition_at < previous.transition_at):
             _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
+    if current.transition_kind == "LATE_FEE_REVIEW_HELD" and (
+                previous.transition_kind != "LATE_FEE_ADJUSTMENT_CLOSED_DISARMED"
+                or previous.post_attempt_count < 1
+                or previous.pending_dispatch_proof_sha256 is not None
+                or current.pending_dispatch_proof_sha256 is None
+                or current.transition_at < previous.transition_at):
+        _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
     if current.transition_kind == "VERSIONED_SOURCE_CUTOVER_HELD":
         if (current.pending_dispatch_proof_sha256 is None
                 or current.transition_at < previous.transition_at):
@@ -1691,6 +1705,18 @@ class RuntimeCashAuthorityStore:
         ):
             _fail(CL7RuntimeReason.CAS_CONFLICT)
         _transition_pair(current, candidate)
+        if candidate.transition_kind == "LATE_FEE_REVIEW_HELD":
+            # The completed record's retained predecessor carries its exact
+            # consumed proof. A structurally valid unrelated hash cannot be
+            # committed as a review hold, even through this internal store API.
+            origin = RuntimeCashAuthorityRecord.from_canonical_bytes(
+                self.lastgood_path.read_bytes()
+            )
+            if (origin.transition_kind != "LATE_FEE_ADJUSTMENT_HELD"
+                    or origin.state is not RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING
+                    or current.previous_record_sha256 != origin.sha256
+                    or candidate.pending_dispatch_proof_sha256 != origin.pending_dispatch_proof_sha256):
+                _fail(CL7RuntimeReason.STATE_TRANSITION_INVALID)
         next_temp = self._write_temp(self.path, candidate.canonical_bytes)
         checksum_temp: Path | None = None
         lastgood_temp: Path | None = None

@@ -10,6 +10,8 @@ The new authority hold is committed BEFORE provider reads and before any CL2
 write. An error retains it. A keyed immutable plan admits only the exact CL2
 append prefix; authority returns to DISARMED last. This is not an atomic
 multi-store transaction, fee finality proof, background scanner or re-arm API.
+Completed replay first authenticates local custody. Invalid fresh evidence then
+commits a distinct review hold; no automatic resolution of that hold exists.
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ from typing import Any, Iterator
 from . import broker_read_adapters as cl3
 from . import cash_ledger_opening_reconciliation as cl4
 from .cash_ledger_domain import LedgerAccount, LedgerClassification, LedgerPosting, LedgerTransaction
+from .cash_ledger_persistence import InboxObservation
 from .central_order_manager import CentralOrderState
 from .desktop_fill_recovery import DesktopFillRecovery
 from .exact_cash_settlement import (
@@ -40,6 +43,7 @@ from .state_persistence import atomic_write_json
 _DOMAIN = "CL7_EXACT_LATE_ADDITIVE_FEE_V1"
 _HOLD = "LATE_FEE_ADJUSTMENT_HELD"
 _DONE = "LATE_FEE_ADJUSTMENT_CLOSED_DISARMED"
+_REVIEW = "LATE_FEE_REVIEW_HELD"
 _MAX_WINDOW_NS = 7 * 24 * 3600 * 10**9
 
 
@@ -151,7 +155,138 @@ def _collect_overlap(a: Any, scope: str, start: str, end: str, deadline: int,
     return batch, rows
 
 
+def _ledger_component(export: dict[str, Any], tx_hash: str) -> tuple[Any, LedgerTransaction]:
+    rows = [v for v in export["transactions"] if v["sha256"] == tx_hash]
+    links = [v for v in export["provenance_links"] if v["transaction_sha256"] == tx_hash]
+    _require(len(rows) == len(links) == 1, "COMPLETED_COMPONENT_MISSING")
+    obs = [v for v in export["observations"] if v["sha256"] == links[0]["observation_sha256"]]
+    _require(len(obs) == 1 and obs[0]["current_status"] == "LEDGER_LINKED", "COMPLETED_OBSERVATION_MISSING")
+    observation = InboxObservation.from_canonical_bytes(obs[0]["canonical_json_ascii"], (cl3.TBANK_OPERATION_CODEC,))
+    transaction = LedgerTransaction.from_canonical_dict(json.loads(rows[0]["canonical_json_ascii"]))
+    _require(transaction.sha256 == tx_hash and transaction.source == observation.source, "COMPLETED_SOURCE_INVALID")
+    return observation, transaction
+
+
+def _completed_replay_authority(a: Any, r: DesktopFillRecovery, proof_hash: str) -> RuntimeCashAuthorityRecord | None:
+    """Authenticate the exact completed local lineage before any fresh reads.
+
+    A caller hash, a plan signature or a DISARMED label alone is insufficient.
+    This reader grants no quarantine over an unfinished or unrelated authority.
+    """
+    manager, store, key = a.cash_authority_manager, a.cl7_ledger_store, a.cl7_identity_key
+    current = manager.store._load_unlocked(allow_missing_legacy=False)
+    if current.state is not RuntimeCashAuthorityState.EXACT_CASH_DISARMED or current.transition_kind != _DONE:
+        return None
+    root = a.manager.store.path.parent
+    plan = _LateFeeStore(root, proof_hash, key).load()
+    closure = _ClosureStore(root, proof_hash, key).load()
+    cash_plan = _PlanStore(root, proof_hash, key).load()
+    _require(plan is not None and closure is not None and cash_plan is not None, "COMPLETED_PLANS_REQUIRED")
+    config = _config(a, r)
+    _require(plan["proof_sha256"] == closure["proof_sha256"] == proof_hash
+             and cash_plan["match"]["proof_sha256"] == proof_hash
+             and plan["closure_sha256"] == _sha(_canonical(closure))
+             and plan["cash_plan_sha256"] == closure["cash_binding"]["plan_sha256"] == _sha(_canonical(cash_plan))
+             and plan["config_sha256"] == closure["config_sha256"] == config, "COMPLETED_PLAN_BINDING_INVALID")
+    owners = _owners(a, r)
+    _require(all(owners[k] == closure["after"][k] for k in ("portfolio", "risk", "central")), "COMPLETED_OWNERS_CHANGED")
+    central = CentralOrderState.from_dict(owners["central"])
+    _require(central.blocking_intent is None and not central.queued, "COMPLETED_CENTRAL_NOT_QUIESCENT")
+    pending = RuntimeCashAuthorityRecord.from_canonical_dict(closure["before"]["authority"])
+    original = manager._recovery_intent_from_state(pending,
+        CentralOrderState.from_dict(closure["before"]["central"]), identity_key=key)
+    proof = validate_exact_receipt_binding(original, account_id=a.policy.account_id,
+        identity_key=key, identity_key_id=a.cl7_identity_key_id,
+        instrument=a.cl7_own_funds_policy.instruments.get(original.candidate.instrument_id))
+    _require(proof.sha256 == proof_hash, "COMPLETED_PROOF_INVALID")
+    baseline = plan["baseline_export_ascii"].encode("ascii")
+    _require(_sha(baseline) == closure["cash_binding"]["ledger_export_sha256"], "COMPLETED_BASELINE_CHANGED")
+    base = json.loads(baseline)
+    old_components = tuple(_ledger_component(base, item["transaction_sha256"]) for item in cash_plan["match"]["components"])
+    _require([o.sha256 for o, _ in old_components] == [item["observation_sha256"] for item in cash_plan["match"]["components"]]
+             and _check_prefix(json.loads(cash_plan["baseline_export_ascii"]), base, old_components) == len(old_components),
+             "COMPLETED_CASH_PREFIX_INVALID")
+    match = plan["match"]
+    _require(type(match) is dict and set(match) == {"old_receipt_sha256", "new_receipt_sha256", "delta_nano",
+             "observations", "observation_sha256", "transaction_sha256", "overlap_start"}, "COMPLETED_MATCH_INVALID")
+    store.validate()
+    exported = store.export_bytes()
+    final = json.loads(exported)
+    observation, transaction = _ledger_component(final, match["transaction_sha256"])
+    payment = next(p.money.minor_units for p in transaction.postings if p.account is LedgerAccount.ASSET_BROKER_CASH)
+    # The validated Money posting supplies the range; a quantity parser would
+    # incorrectly narrow the existing nanorouble monetary profile to uint64.
+    delta = -payment
+    _require(delta > 0 and match["delta_nano"] == str(delta) and transaction.classification is LedgerClassification.COMMISSION
+             and transaction.corrects_sha256 is None and transaction.reversal_of_sha256 is None
+             and observation.source.account_scope_sha256 == proof.account_scope_sha256
+             and observation.sha256 == match["observation_sha256"]
+             and type(match["new_receipt_sha256"]) is str and _HEX.fullmatch(match["new_receipt_sha256"]) is not None
+             and match["new_receipt_sha256"] != match["old_receipt_sha256"]
+             and match["old_receipt_sha256"] == cash_plan["match"]["receipt_sha256"] == closure["cash_binding"]["receipt_sha256"]
+             and _check_prefix(base, final, ((observation, transaction),)) == 1, "COMPLETED_LEDGER_INVALID")
+    watermark = cl3.CompletenessWatermark(
+        account_scope_sha256=plan["watermark"]["account_scope_sha256"],
+        from_inclusive=plan["watermark"]["from_inclusive"], to_exclusive=plan["watermark"]["to_exclusive"],
+        request_fingerprint_sha256=plan["watermark"]["request_fingerprint_sha256"],
+        page_chain_sha256=plan["watermark"]["page_chain_sha256"],
+        page_count=_uint(plan["watermark"]["page_count"]), item_count=_uint(plan["watermark"]["item_count"]))
+    expected_observations = sorted([o.sha256 for o, _ in old_components] + [observation.sha256])
+    _require(json.loads(watermark.canonical_bytes) == plan["watermark"]
+             and watermark.account_scope_sha256 == proof.account_scope_sha256
+             and watermark.from_inclusive == match["overlap_start"] == pending.operations_complete_through
+             and watermark.item_count == len(expected_observations) and match["observations"] == expected_observations,
+             "COMPLETED_WATERMARK_INVALID")
+    closed = RuntimeCashAuthorityRecord.from_canonical_dict(closure["after"]["authority"])
+    _require(closed.account_scope_sha256 == proof.account_scope_sha256
+             and closed.identity_key_id == a.cl7_identity_key_id
+             and closed.ledger_head_sha256 == base["ledger_head_sha256"]
+             and closed.ledger_revision == int(base["ledger_revision"]), "COMPLETED_CLOSURE_LEDGER_MISMATCH")
+    held = RuntimeCashAuthorityRecord.from_canonical_dict(plan["held_authority"])
+    wanted = manager._change(closed, at=held.transition_at, kind=_HOLD,
+        state=RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING, pending_dispatch_proof_sha256=proof_hash)
+    _require(held == wanted and RuntimeCashAuthorityRecord.from_canonical_bytes(manager.store.lastgood_path.read_bytes()) == held,
+             "COMPLETED_HOLD_LINEAGE_INVALID")
+    done = manager._change(held, at=watermark.to_exclusive, kind=_DONE,
+        state=RuntimeCashAuthorityState.EXACT_CASH_DISARMED, pending_dispatch_proof_sha256=None,
+        ledger_head_sha256=final["ledger_head_sha256"], ledger_revision=int(final["ledger_revision"]),
+        operations_complete_through=watermark.to_exclusive)
+    _require(current == done, "COMPLETED_AUTHORITY_MISMATCH")
+    return done
+
+
 def _reconcile_locked(a: Any, r: DesktopFillRecovery, proof_hash: str) -> LateFeeResult:
+    completed = _completed_replay_authority(a, r, proof_hash)
+    identity = (a.cash_authority_manager, a.cl7_ledger_store, a.transport, a.cl7_own_funds_policy,
+                a.cl7_identity_key, a.cl7_identity_key_id)
+    try:
+        return _adjust_locked(a, r, proof_hash)
+    except Exception:
+        if completed is not None:
+            # Do not redirect a stale observation onto another owner/authority.
+            now = (a.cash_authority_manager, a.cl7_ledger_store, a.transport, a.cl7_own_funds_policy,
+                   a.cl7_identity_key, a.cl7_identity_key_id)
+            _require(all(before is after for before, after in zip(identity[:4], now[:4], strict=True))
+                     and identity[4:] == now[4:], "REPLAY_OWNER_GRAPH_CHANGED")
+            with _owner_locks(a, r, ledger=True):
+                _require(_completed_replay_authority(a, r, proof_hash) == completed, "REPLAY_QUARANTINE_CONFLICT")
+                try:
+                    at = _time(a.cl7_clock())
+                    _require(at >= completed.transition_at, "REPLAY_CLOCK_REGRESSION")
+                except Exception:
+                    # A hold grants no freshness. Retain the last authenticated
+                    # timestamp when the failing read/clock cannot supply one.
+                    at = completed.transition_at
+                reviewed = a.cash_authority_manager._change(completed, at=at, kind=_REVIEW,
+                    state=RuntimeCashAuthorityState.EXACT_CASH_FEE_ADJUSTMENT_PENDING,
+                    pending_dispatch_proof_sha256=proof_hash)
+                committed = a.cash_authority_manager.store._commit_unlocked(reviewed,
+                    expected_revision=completed.record_revision, expected_sha256=completed.sha256)
+                _require(committed == reviewed, "REPLAY_QUARANTINE_READBACK_FAILED")
+        raise
+
+
+def _adjust_locked(a: Any, r: DesktopFillRecovery, proof_hash: str) -> LateFeeResult:
     store, manager, key = a.cl7_ledger_store, a.cash_authority_manager, a.cl7_identity_key
     root = a.manager.store.path.parent
     transport, key_id = a.transport, a.cl7_identity_key_id
