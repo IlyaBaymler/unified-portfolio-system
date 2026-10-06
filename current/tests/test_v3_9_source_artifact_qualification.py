@@ -3,12 +3,20 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from tools.build_release import build_zip, collect_release_files, zip_identity
+from tools.build_release import (
+    build_zip,
+    collect_release_files,
+    verify_deterministic_pair,
+    zip_identity,
+)
+from tools.release_cleanup import PRIVATE_RUNTIME_DIRECTORIES, RUNTIME_NAMES
 from tools.v3_9_source_artifact_qualification import (
     ARCHIVE_ROOT,
     inspect_archive,
@@ -29,18 +37,103 @@ def artifact_pair(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]
     return first, second
 
 
-def test_valid_source_artifacts_are_byte_identical_and_sandbox_only(
-    artifact_pair: tuple[Path, Path],
-) -> None:
-    absent_canary = "ABSENT" + "-" + "CANARY"
-    report = verify_artifacts(*artifact_pair, secret_canaries=[absent_canary])
+@pytest.fixture(scope="module")
+def current_artifact_pair(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> tuple[Path, Path, dict]:
+    output = tmp_path_factory.mktemp("v3-10-source-artifacts")
+    # Audit hooks stay in a disposable child. Only artifact-output writes are
+    # permitted; provider POST, network, database and subprocess access fail closed.
+    script = r'''
+import json, os, sys
+from pathlib import Path
+root, output = (Path(value).resolve() for value in sys.argv[1:])
+sys.path.insert(0, str(root))
+from tools.build_release import build_zip
+from trading_robot.tbank_sandbox import TBankSandboxClient
+observed = {"provider_post_attempts": 0, "network_attempts": 0,
+            "runtime_write_attempts": 0, "database_attempts": 0,
+            "subprocess_attempts": 0}
+def no_post(*args, **kwargs):
+    observed["provider_post_attempts"] += 1
+    raise AssertionError("Current artifact qualification forbids provider POST")
+TBankSandboxClient._post = no_post
+def output_only(path):
+    if isinstance(path, int):
+        return  # fdopen wraps the already checked mkstemp output descriptor.
+    if not Path(os.fsdecode(path)).resolve().is_relative_to(output):
+        observed["runtime_write_attempts"] += 1
+        raise AssertionError("Current artifact qualification forbids non-artifact writes")
+def policy(event, args):
+    if event == "open":
+        mode, flags = args[1], args[2]
+        if (isinstance(mode, str) and any(char in mode for char in "wax+")) or (
+            isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)
+        ):
+            output_only(args[0])
+    elif event in {"os.remove", "os.rmdir", "os.mkdir", "os.chmod", "os.truncate", "os.utime"}:
+        output_only(args[0])
+    elif event in {"os.rename", "os.link", "os.symlink"}:
+        output_only(args[0]); output_only(args[1])
+    elif event in {"socket.connect", "socket.getaddrinfo"}:
+        observed["network_attempts"] += 1
+        raise AssertionError("Current artifact qualification forbids network")
+    elif event == "sqlite3.connect":
+        observed["database_attempts"] += 1
+        raise AssertionError("Current artifact qualification forbids database access")
+    elif event in {"subprocess.Popen", "os.system"}:
+        observed["subprocess_attempts"] += 1
+        raise AssertionError("Current artifact qualification forbids subprocesses")
+sys.addaudithook(policy)
+for name in ("candidate-a.zip", "candidate-b.zip"):
+    build_zip(root, output / name, "moex_trading_robot_research_v3_10_0",
+              secret_canaries=("ABSENT" + "-" + "CANARY",))
+print(json.dumps(observed))
+'''
+    completed = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", script, str(ROOT), str(output)],
+        check=True, capture_output=True, text=True, timeout=120,
+    )
+    return output / "candidate-a.zip", output / "candidate-b.zip", json.loads(completed.stdout)
 
-    assert report["status"] == "PASS", report["failures"]
-    assert report["byte_identical"] is True
-    assert report["broker_calls_performed"] is False
-    assert report["runtime_writes_performed"] is False
-    assert report["provider_post_performed"] is False
-    assert report["artifacts"][0]["member_count"] > 200
+
+def test_valid_source_artifacts_are_byte_identical_and_sandbox_only(
+    current_artifact_pair: tuple[Path, Path, dict],
+) -> None:
+    first, second, observed = current_artifact_pair
+    assert first != second
+    report = verify_deterministic_pair(first, second)
+    assert report["status"] == "PASS"
+    assert report["first"] == report["second"]
+    assert report["first"]["sha256"] == report["second"]["sha256"]
+    assert observed == {
+        "provider_post_attempts": 0, "network_attempts": 0,
+        "runtime_write_attempts": 0, "database_attempts": 0, "subprocess_attempts": 0,
+    }
+    assert {path.name for path in first.parent.iterdir()} == {first.name, second.name}
+    archive_root = "moex_trading_robot_research_v3_10_0"
+    expected_members = [
+        f"{archive_root}/{path.relative_to(ROOT).as_posix()}"
+        for path in collect_release_files(ROOT)
+    ] + [f"{archive_root}/ZIP_CONTENTS.txt"]
+    assert len(expected_members) > 200
+    absent_canary = "ABSENT" + "-" + "CANARY"
+    for path, identity in ((first, report["first"]), (second, report["second"])):
+        assert identity["members"] == expected_members
+        with zipfile.ZipFile(path) as archive:
+            for name in expected_members[:-1]:
+                relative = Path(name).relative_to(archive_root)
+                assert archive.read(name) == (ROOT / relative).read_bytes()
+                assert not any(part.casefold() in PRIVATE_RUNTIME_DIRECTORIES for part in relative.parts[:-1])
+                assert relative.name.casefold() not in {value.casefold() for value in RUNTIME_NAMES}
+                assert not relative.name.casefold().endswith((".pyc", ".pyo", ".lock", "-wal", "-shm"))
+                assert absent_canary.encode("utf-8") not in archive.read(name)
+            manifest = json.loads(archive.read(f"{archive_root}/build_manifest.json"))
+        assert manifest["software_version"] == __version__ == "0.3.10"
+        assert manifest["display_version"] == "v3.10.0"
+        assert manifest["release_channel"] == "stable"
+        assert manifest["sandbox_only"] is True
+        assert manifest["real_account_execution"] is False
 
 
 def test_artifact_verifier_rejects_path_traversal(
